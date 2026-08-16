@@ -1,0 +1,1 @@
+"""SeizureAI backend application package."""

@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pyedflib
+numpy
+scipy
+sqlmodel
+psycopg[binary]
+alembic
+redis
+rq

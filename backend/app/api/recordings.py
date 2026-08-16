@@ -1,0 +1,118 @@
+"""Safe recording, prediction, explanation, and signal endpoints."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlmodel import Session, select
+
+from backend.app.database.db import get_session
+from backend.app.database.models.eeg import EEGRecording, Explanation, Prediction
+from backend.app.database.repositories.recording_repository import get_by_public_id, list_predictions
+from backend.app.services.session_service import public_record
+from backend.app.eeg.edf_io import read_uniform_edf
+from backend.app.core.config import BACKEND_ROOT
+
+
+router = APIRouter(prefix="/api", tags=["recordings"])
+
+
+def _get_record(db: Session, record_id: str) -> EEGRecording:
+    record = get_by_public_id(db, record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Recording was not found.")
+    return record
+
+
+@router.get("/recordings/{record_id}")
+def get_recording(record_id: str, db: Session = Depends(get_session)) -> dict:
+    return public_record(_get_record(db, record_id))
+
+
+@router.get("/recordings/{record_id}/prediction")
+def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
+    record = _get_record(db, record_id)
+    predictions = list_predictions(db, record.id)
+    return {
+        "record_id": record.record_id,
+        "model": (
+            {
+                "name": predictions[0].model_name,
+                "version": predictions[0].model_version,
+            }
+            if predictions
+            else None
+        ),
+        "predictions": [
+            {
+                "window_index": item.window_index,
+                "start_seconds": item.start_seconds,
+                "end_seconds": item.end_seconds,
+                "probability": item.probability,
+                "seizure_detected": item.seizure_detected,
+            }
+            for item in predictions
+        ],
+    }
+
+
+@router.get("/recordings/{record_id}/explanation")
+def get_explanation(record_id: str, db: Session = Depends(get_session)) -> dict:
+    record = _get_record(db, record_id)
+    predictions = list_predictions(db, record.id)
+    prediction_ids = [prediction.id for prediction in predictions if prediction.id is not None]
+    explanations = list(
+        db.exec(select(Explanation).where(Explanation.prediction_db_id.in_(prediction_ids))).all()
+    ) if prediction_ids else []
+    items = []
+    for explanation in explanations:
+        payload = None
+        if explanation.explanation_path and Path(explanation.explanation_path).exists():
+            try:
+                payload = json.loads(Path(explanation.explanation_path).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = None
+        items.append({
+            "method": explanation.method,
+            "is_clinical": explanation.is_clinical,
+            "data": payload,
+        })
+    return {"record_id": record.record_id, "explanations": items}
+
+
+@router.get("/recordings/{record_id}/signal")
+def get_signal(
+    record_id: str,
+    start_seconds: float = Query(0, ge=0),
+    duration_seconds: float = Query(10, gt=0, le=60),
+    max_points: int = Query(2000, gt=0, le=10000),
+    db: Session = Depends(get_session),
+) -> dict:
+    record = _get_record(db, record_id)
+    if not record.deidentified_path:
+        raise HTTPException(status_code=409, detail="De-identified signal is not available.")
+    try:
+        signal_path = Path(record.deidentified_path)
+        if not signal_path.is_absolute():
+            signal_path = BACKEND_ROOT / signal_path
+        signals, sampling_rate, labels = read_uniform_edf(signal_path)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Signal could not be read.") from exc
+
+    start = min(int(start_seconds * sampling_rate), signals.shape[1])
+    end = min(int((start_seconds + duration_seconds) * sampling_rate), signals.shape[1])
+    selected = signals[:, start:end]
+    if selected.shape[1] > max_points:
+        indices = np.linspace(0, selected.shape[1] - 1, max_points, dtype=int)
+        selected = selected[:, indices]
+    return {
+        "record_id": record.record_id,
+        "sampling_rate": sampling_rate,
+        "channel_labels": labels,
+        "start_seconds": start / sampling_rate,
+        "duration_seconds": selected.shape[1] / sampling_rate,
+        "samples": selected.tolist(),
+    }

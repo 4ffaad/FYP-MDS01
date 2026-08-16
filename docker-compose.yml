@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: seizureai
+      POSTGRES_USER: seizureai
+      POSTGRES_PASSWORD: seizureai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seizureai -d seizureai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://seizureai:seizureai@postgres:5432/seizureai
+      REDIS_URL: redis://redis:6379/0
+      MODEL_RUNTIME: stub
+      STORAGE_DIR: /app/backend/storage
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_storage:/app/backend/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >-
+      sh -c "alembic -c backend/alembic.ini upgrade head &&
+      uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://seizureai:seizureai@postgres:5432/seizureai
+      REDIS_URL: redis://redis:6379/0
+      MODEL_RUNTIME: stub
+      STORAGE_DIR: /app/backend/storage
+    volumes:
+      - backend_storage:/app/backend/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: python -m backend.app.workers.worker
+
+volumes:
+  postgres_data:
+  backend_storage:
