@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, create_engine
 
 from backend.app.core.config import DATABASE_URL, ensure_runtime_directories
 
@@ -17,17 +17,15 @@ engine = create_engine(
 )
 
 
-def create_db_and_tables() -> None:
-    """Compatibility helper for local prototype callers.
+def get_session() -> Generator[Session, None, None]:
+    """Yield one database session for the lifetime of an API request.
 
-    Production startup uses Alembic. This helper is intentionally not called
-    by FastAPI startup, but remains useful for isolated local tests.
+    Yields
+    ------
+    sqlmodel.Session
+        A session bound to the configured database engine. The context
+        manager closes it after the request or background operation completes.
     """
 
-    SQLModel.metadata.create_all(engine)
-
-
-def get_session() -> Generator[Session, None, None]:
     with Session(engine) as session:
         yield session
-

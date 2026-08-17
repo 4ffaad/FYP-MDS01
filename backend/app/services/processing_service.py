@@ -1,4 +1,4 @@
-"""Worker-owned end-to-end EEG processing orchestration."""
+"""End-to-end EEG processing orchestration for FastAPI background tasks."""
 
 from __future__ import annotations
 
@@ -29,16 +29,45 @@ from backend.app.services.validation_service import ValidationError, validate_ed
 
 
 def _now() -> datetime:
+    """Return the current UTC time for processing audit timestamps."""
+
     return datetime.now(timezone.utc)
 
 
 def _safe_error(exc: Exception) -> str:
+    """Convert an exception into a bounded, non-sensitive status message.
+
+    Parameters
+    ----------
+    exc : Exception
+        Internal exception raised by a pipeline stage.
+
+    Returns
+    -------
+    str
+        Safe message suitable for a database status row and API response.
+    """
+
     if isinstance(exc, (ValidationError, ValueError, RuntimeError)):
         return str(exc)[:500]
     return "Processing failed unexpectedly."
 
 
 def _set_session_status(db: Session, session: EEGSession, status: AnalysisStatus, stage: str | None = None) -> None:
+    """Persist the current session status and pipeline stage.
+
+    Parameters
+    ----------
+    db : sqlmodel.Session
+        Database session owned by the background task.
+    session : EEGSession
+        Session row being processed.
+    status : AnalysisStatus
+        New session-level state.
+    stage : str or None
+        Human-readable current pipeline stage.
+    """
+
     session.status = status
     session.current_stage = stage
     db.add(session)
@@ -48,14 +77,31 @@ def _set_session_status(db: Session, session: EEGSession, status: AnalysisStatus
 def _begin_attempt(
     db: Session,
     session: EEGSession,
-    job_id: str,
     stage: ProcessingStage,
     recording: EEGRecording | None = None,
 ) -> ProcessingAttempt:
+    """Create and persist a running processing-attempt audit row.
+
+    Parameters
+    ----------
+    db : sqlmodel.Session
+        Database session owned by the background task.
+    session : EEGSession
+        Session being processed.
+    stage : ProcessingStage
+        Pipeline stage being started.
+    recording : EEGRecording or None
+        Recording row when the attempt is recording-specific.
+
+    Returns
+    -------
+    ProcessingAttempt
+        Persisted running attempt with its database ID.
+    """
+
     attempt = ProcessingAttempt(
         session_db_id=session.id,
         recording_db_id=recording.id if recording else None,
-        job_id=job_id,
         stage=stage,
         status=ProcessingStatus.RUNNING,
         started_at=_now(),
@@ -67,6 +113,20 @@ def _begin_attempt(
 
 
 def _finish_attempt(db: Session, attempt: ProcessingAttempt, status: ProcessingStatus, error: str | None = None) -> None:
+    """Complete one processing-attempt audit row.
+
+    Parameters
+    ----------
+    db : sqlmodel.Session
+        Database session owned by the background task.
+    attempt : ProcessingAttempt
+        Attempt row to update.
+    status : ProcessingStatus
+        Final success or failure state.
+    error : str or None
+        Safe bounded error message, if the stage failed.
+    """
+
     attempt.status = status
     attempt.error_message = error
     attempt.finished_at = _now()
@@ -74,7 +134,25 @@ def _finish_attempt(db: Session, attempt: ProcessingAttempt, status: ProcessingS
     db.commit()
 
 
-def process_session(session_id: str, job_id: str) -> None:
+def process_session(session_id: str) -> None:
+    """Run validation and all per-recording stages for one queued session.
+
+    Parameters
+    ----------
+    session_id : str
+        Opaque session identifier created by the upload API.
+    Returns
+    -------
+    None
+        State, errors, predictions, and explanation references are persisted
+        in PostgreSQL. A malformed recording does not stop sibling recordings.
+
+    Privacy
+    -------
+    Original and derived files remain in private session storage. Only safe
+    status messages are written to public-facing database fields.
+    """
+
     storage = SessionStorage()
     with Session(engine) as db:
         session = db.exec(select(EEGSession).where(EEGSession.session_id == session_id)).first()
@@ -84,7 +162,7 @@ def process_session(session_id: str, job_id: str) -> None:
         try:
             inference = get_inference_service()
             _set_session_status(db, session, AnalysisStatus.VALIDATING, "validation")
-            validation_attempt = _begin_attempt(db, session, job_id, ProcessingStage.VALIDATION)
+            validation_attempt = _begin_attempt(db, session, ProcessingStage.VALIDATION)
             extracted_paths = storage.extract_edfs(session.session_id, Path(session.original_path))
             _finish_attempt(db, validation_attempt, ProcessingStatus.SUCCEEDED)
         except Exception as exc:
@@ -98,7 +176,6 @@ def process_session(session_id: str, job_id: str) -> None:
             db.commit()
             return
 
-        records: list[EEGRecording] = []
         any_errors = False
         for sequence_index, extracted_path in enumerate(extracted_paths, start=1):
             record = EEGRecording(
@@ -112,10 +189,8 @@ def process_session(session_id: str, job_id: str) -> None:
             db.add(record)
             db.commit()
             db.refresh(record)
-            records.append(record)
-
             try:
-                _process_record(db, session, record, storage, inference, job_id)
+                _process_record(db, session, record, storage, inference)
             except Exception as exc:
                 any_errors = True
                 record.status = RecordingStatus.FAILED
@@ -130,7 +205,33 @@ def process_session(session_id: str, job_id: str) -> None:
         db.commit()
 
 
-def _process_record(db: Session, session: EEGSession, record: EEGRecording, storage: SessionStorage, inference, job_id: str) -> None:
+def _process_record(db: Session, session: EEGSession, record: EEGRecording, storage: SessionStorage, inference) -> None:
+    """Process one extracted EDF through all remaining pipeline stages.
+
+    Parameters
+    ----------
+    db : sqlmodel.Session
+        Database session owned by the background task.
+    session : EEGSession
+        Parent session row.
+    record : EEGRecording
+        Recording row being processed.
+    storage : SessionStorage
+        Session-scoped private storage service.
+    inference : InferenceService
+        Configured real or development inference adapter.
+    Returns
+    -------
+    None
+        Updates the recording, prediction, explanation, and attempt tables.
+
+    Raises
+    ------
+    Exception
+        Stage errors are re-raised to the session coordinator, which marks
+        only this recording as failed and continues with the next one.
+    """
+
     technical = validate_edf(Path(record.extracted_path or ""))
     record.duration_seconds = technical["duration_seconds"]
     record.sampling_rate = technical["sampling_rate"]
@@ -139,7 +240,7 @@ def _process_record(db: Session, session: EEGSession, record: EEGRecording, stor
     db.commit()
 
     _set_session_status(db, session, AnalysisStatus.DEIDENTIFYING, "deidentification")
-    deid_attempt = _begin_attempt(db, session, job_id, ProcessingStage.DEIDENTIFICATION, record)
+    deid_attempt = _begin_attempt(db, session, ProcessingStage.DEIDENTIFICATION, record)
     deid_path = storage.deidentified_path(session.session_id, record.record_id)
     try:
         deidentify_edf(record.extracted_path or "", deid_path, record.record_id)
@@ -153,7 +254,7 @@ def _process_record(db: Session, session: EEGSession, record: EEGRecording, stor
         raise
 
     _set_session_status(db, session, AnalysisStatus.PREPROCESSING, "preprocessing")
-    prep_attempt = _begin_attempt(db, session, job_id, ProcessingStage.PREPROCESSING, record)
+    prep_attempt = _begin_attempt(db, session, ProcessingStage.PREPROCESSING, record)
     processed_path = storage.processed_path(session.session_id, record.record_id)
     try:
         output_path, _details = preprocess_edf_to_npz(
@@ -171,7 +272,7 @@ def _process_record(db: Session, session: EEGSession, record: EEGRecording, stor
         raise
 
     _set_session_status(db, session, AnalysisStatus.INFERENCE, "inference")
-    inference_attempt = _begin_attempt(db, session, job_id, ProcessingStage.INFERENCE, record)
+    inference_attempt = _begin_attempt(db, session, ProcessingStage.INFERENCE, record)
     try:
         with np.load(processed_path) as payload:
             windows = payload["model_windows"]
@@ -198,7 +299,7 @@ def _process_record(db: Session, session: EEGSession, record: EEGRecording, stor
         raise
 
     _set_session_status(db, session, AnalysisStatus.EXPLAINING, "explainability")
-    explanation_attempt = _begin_attempt(db, session, job_id, ProcessingStage.EXPLAINABILITY, record)
+    explanation_attempt = _begin_attempt(db, session, ProcessingStage.EXPLAINABILITY, record)
     try:
         stored_predictions = list(
             db.exec(select(Prediction).where(Prediction.recording_db_id == record.id)).all()

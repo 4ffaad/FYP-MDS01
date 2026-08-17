@@ -1,1 +1,1 @@
-"""Database engine, migrations, and request/worker sessions."""
+"""Database engine, migrations, and request/background-task sessions."""

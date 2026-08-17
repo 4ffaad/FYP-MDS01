@@ -14,6 +14,23 @@ def write_stub_explanation(
     record_id: str,
     prediction: WindowPrediction,
 ) -> dict:
+    """Write a deterministic, explicitly non-clinical explanation artifact.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Destination path inside the session explanation directory.
+    record_id : str
+        Opaque recording identifier.
+    prediction : WindowPrediction
+        Prediction metadata to include in the artifact.
+
+    Returns
+    -------
+    dict
+        JSON-compatible artifact payload written to disk.
+    """
+
     payload = {
         "record_id": record_id,
         "window_index": prediction.window_index,
@@ -27,4 +44,3 @@ def write_stub_explanation(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
-

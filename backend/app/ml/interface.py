@@ -10,6 +10,8 @@ import numpy as np
 
 @dataclass(frozen=True)
 class WindowPrediction:
+    """Serializable model output for one fixed-duration EEG window."""
+
     window_index: int
     start_seconds: float
     end_seconds: float
@@ -18,6 +20,8 @@ class WindowPrediction:
 
 
 class InferenceService(Protocol):
+    """Structural interface implemented by real and development runtimes."""
+
     model_name: str
     model_version: str
     threshold: float
@@ -27,5 +31,7 @@ class InferenceService(Protocol):
         windows: np.ndarray,
         window_starts: np.ndarray,
         record_id: str,
-    ) -> list[WindowPrediction]: ...
+    ) -> list[WindowPrediction]:
+        """Return one prediction for each model-input window."""
 
+        ...

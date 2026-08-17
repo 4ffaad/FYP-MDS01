@@ -8,14 +8,15 @@ out of scope for backend changes.
 The backend flow is:
 
 ```text
-ZIP upload → FastAPI → PostgreSQL session → Redis/RQ worker
+ZIP upload → FastAPI → PostgreSQL session → FastAPI BackgroundTasks
   → validation → de-identification → preprocessing
   → inference adapter → explanation artifact → PostgreSQL results
 ```
 
 FastAPI routes must remain thin. Business logic belongs in services,
 database access belongs in repositories, and long-running EEG work belongs in
-`backend/app/workers/`.
+`backend/app/services/processing_service.py` and is scheduled through FastAPI
+BackgroundTasks.
 
 ## Privacy boundaries
 
@@ -64,8 +65,8 @@ GET  /api/recordings/{record_id}/explanation
 GET  /api/recordings/{record_id}/signal
 ```
 
-`/api/v1/deidentify` and `/api/v1/preprocess/{session_id}` are deprecated
-compatibility routes and must not become a second implementation.
+The old `/api/v1` prototype routes have been removed. New backend changes must
+use only the asynchronous session and recording API documented in `docs/api.md`.
 
 ## Development rules
 
@@ -73,7 +74,8 @@ compatibility routes and must not become a second implementation.
 2. Preserve working behavior and existing user changes.
 3. Add tests for new validation, privacy, processing, and API behavior.
 4. Use Alembic migrations; do not rely on production startup `create_all()`.
-5. Use PostgreSQL and Redis/RQ in Docker Compose for the deployed workflow.
+5. Use PostgreSQL in Docker Compose; schedule prototype processing with
+   FastAPI BackgroundTasks.
 6. Keep the real model integration blocked behind an explicit adapter until
    the artifact and training-time preprocessing are supplied.
 7. Treat stub predictions and explanations as non-clinical development data.

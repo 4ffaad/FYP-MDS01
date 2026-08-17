@@ -13,6 +13,25 @@ class ValidationError(ValueError):
 
 
 def validate_edf(path: Path) -> dict:
+    """Validate an EDF and return safe technical metadata.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        EDF file to inspect. The function reads signal data and metadata but
+        does not expose patient-identifying values.
+
+    Returns
+    -------
+    dict
+        Duration, sampling rate, channel count, and channel labels.
+
+    Raises
+    ------
+    ValidationError
+        Raised when the EDF cannot be read or contains unusable signal data.
+    """
+
     try:
         signals, sampling_rate, labels = read_uniform_edf(path)
         metadata = inspect_metadata(path)
@@ -31,4 +50,3 @@ def validate_edf(path: Path) -> dict:
         "channel_count": len(labels),
         "channel_labels": labels,
     }
-

@@ -10,10 +10,6 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", str(BACKEND_ROOT / "storage"))).resolve()
 SESSION_STORAGE_DIR = STORAGE_DIR / "sessions"
-PROJECT_ROOT = BACKEND_ROOT
-INCOMING_DIR = STORAGE_DIR / "incoming"
-DEIDENTIFIED_DIR = STORAGE_DIR / "deidentified"
-PROCESSED_DIR = STORAGE_DIR / "processed"
 DATABASE_DIR = BACKEND_ROOT / "database"
 
 # Docker supplies PostgreSQL. SQLite remains a small local fallback so unit
@@ -22,9 +18,6 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     f"sqlite:///{DATABASE_DIR / 'eeg.db'}",
 )
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-RQ_QUEUE_NAME = os.getenv("RQ_QUEUE_NAME", "eeg-processing")
-
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
 MAX_ARCHIVE_MEMBER_BYTES = int(
     os.getenv("MAX_ARCHIVE_MEMBER_BYTES", str(2 * 1024 * 1024 * 1024))
@@ -42,8 +35,6 @@ class Settings:
     """Stable settings object for dependency injection and tests."""
 
     database_url: str = DATABASE_URL
-    redis_url: str = REDIS_URL
-    rq_queue_name: str = RQ_QUEUE_NAME
     storage_dir: Path = STORAGE_DIR
     max_upload_bytes: int = MAX_UPLOAD_BYTES
     max_archive_member_bytes: int = MAX_ARCHIVE_MEMBER_BYTES
@@ -59,15 +50,14 @@ settings = Settings()
 
 
 def ensure_runtime_directories() -> None:
-    """Create only backend-owned runtime directories."""
+    """Create backend-owned directories required by local execution.
+
+    Returns
+    -------
+    None
+        The function creates the session-storage and local database parent
+        directories if they do not already exist.
+    """
 
     SESSION_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     DATABASE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def ensure_storage_directories() -> None:
-    """Compatibility alias for the pre-reorganization API."""
-
-    ensure_runtime_directories()
-    for directory in (INCOMING_DIR, DEIDENTIFIED_DIR, PROCESSED_DIR):
-        directory.mkdir(parents=True, exist_ok=True)

@@ -1,22 +1,33 @@
 """Basic end-to-end checks using a small synthetic EDF fixture.
 
-Run with: .venv/bin/python -m unittest discover -s tests -v
+Run with: PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v
 """
 
 from datetime import datetime
+import asyncio
+import io
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pyedflib
+from fastapi import BackgroundTasks, UploadFile
+from sqlmodel import Session, SQLModel, create_engine
 
-from backend.app.privacy.deidentify import deidentify_edf, generate_record_id, inspect_metadata
+from backend.app.main import app
+from backend.app.database.models.eeg import AnalysisStatus, EEGRecording, EEGSession, RecordingStatus
+from backend.app.database.repositories.recording_repository import list_for_session, list_predictions
+from backend.app.database.repositories.session_repository import get_by_public_id, list_sessions
 from backend.app.eeg.edf_io import read_uniform_edf
 from backend.app.eeg.preprocessing import EEGPreprocessor
 from backend.app.eeg.model_input import MODEL_CHANNELS, prepare_model_windows
 from backend.app.ml.stub_inference import StubInferenceService
+from backend.app.privacy.deidentify import deidentify_edf, generate_record_id, inspect_metadata
 from backend.app.services.storage_service import SessionStorage, StorageError
+from backend.app.services.session_service import public_record
+from backend.app.services.validation_service import ValidationError, validate_edf
 
 
 class BackendTests(unittest.TestCase):
@@ -133,6 +144,99 @@ class BackendTests(unittest.TestCase):
                 output.writestr("../escape.edf", b"not an EDF")
             with self.assertRaises(StorageError):
                 storage.extract_edfs("SES-TEST", archive)
+
+    def test_openapi_contains_only_current_routes(self) -> None:
+        paths = set(app.openapi()["paths"])
+        self.assertNotIn("/api/v1/deidentify", paths)
+        self.assertNotIn("/api/v1/preprocess/{session_id}", paths)
+        self.assertIn("/api/sessions/upload", paths)
+        self.assertIn("/api/recordings/{record_id}/prediction", paths)
+
+    def test_upload_schedules_background_pipeline_without_rq_job_id(self) -> None:
+        from backend.app.api.sessions import upload_session
+
+        archive = UploadFile(filename="session.zip", file=io.BytesIO(b"zip"))
+        session = EEGSession(
+            session_id="SES-BACKGROUND",
+            patient_reference="internal",
+            original_filename="session.zip",
+            original_path="/private/session.zip",
+            status=AnalysisStatus.QUEUED,
+        )
+        tasks = BackgroundTasks()
+
+        with (
+            patch("backend.app.api.sessions.create_session", new=AsyncMock(return_value=session)),
+            patch("backend.app.api.sessions.SessionStorage"),
+            patch("backend.app.api.sessions.process_session") as process,
+        ):
+            payload = asyncio.run(upload_session(tasks, archive, "internal"))
+
+        self.assertEqual(payload, {"session_id": "SES-BACKGROUND", "status": "queued"})
+        self.assertNotIn("job_id", payload)
+        self.assertEqual(len(tasks.tasks), 1)
+        self.assertIs(tasks.tasks[0].func, process)
+        self.assertEqual(tasks.tasks[0].args, ("SES-BACKGROUND",))
+
+    def test_prototype_has_no_redis_rq_or_worker_configuration(self) -> None:
+        from backend.app.core import config
+
+        compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+        requirements = Path("backend/requirements.txt").read_text(encoding="utf-8")
+        self.assertFalse(hasattr(config, "REDIS_URL"))
+        self.assertFalse(hasattr(config, "RQ_QUEUE_NAME"))
+        self.assertNotIn("\n  redis:\n", compose)
+        self.assertNotIn("\n  worker:\n", compose)
+        self.assertNotIn("redis", requirements)
+        self.assertNotIn("rq", requirements)
+
+    def test_validation_rejects_corrupt_edf(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "corrupt.edf"
+            path.write_bytes(b"not an EDF")
+            with self.assertRaises(ValidationError):
+                validate_edf(path)
+
+    def test_public_record_hides_submitted_filename(self) -> None:
+        record = EEGRecording(
+            record_id="REC-TEST",
+            session_db_id=1,
+            sequence_index=1,
+            original_filename="Jane-Doe-Identifiable.edf",
+            status=RecordingStatus.DEIDENTIFIED,
+        )
+        payload = public_record(record)
+        self.assertEqual(payload["source_filename"], "recording_01.edf")
+        self.assertNotIn("Jane", str(payload))
+
+    def test_repositories_query_sessions_recordings_and_predictions(self) -> None:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as db:
+            session = EEGSession(
+                session_id="SES-REPOSITORY",
+                patient_reference="internal",
+                original_filename="upload.zip",
+                original_path="/private/upload.zip",
+                status=AnalysisStatus.COMPLETED,
+            )
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+            record = EEGRecording(
+                record_id="REC-REPOSITORY",
+                session_db_id=session.id,
+                sequence_index=1,
+                original_filename="recording.edf",
+            )
+            db.add(record)
+            db.commit()
+            db.refresh(record)
+
+            self.assertEqual(get_by_public_id(db, "SES-REPOSITORY").session_id, "SES-REPOSITORY")
+            self.assertEqual(len(list_sessions(db)), 1)
+            self.assertEqual(list_for_session(db, session.id)[0].record_id, "REC-REPOSITORY")
+            self.assertEqual(list_predictions(db, record.id), [])
 
 if __name__ == "__main__":
     unittest.main()

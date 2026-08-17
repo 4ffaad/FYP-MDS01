@@ -17,6 +17,20 @@ class EEGPreprocessor:
         high_freq=100,
         notch_freq=60,
     ):
+        """Configure the fixed EEG filtering and normalization pipeline.
+
+        Parameters
+        ----------
+        sampling_rate : int
+            Signal sampling rate in Hertz.
+        low_freq : float
+            Lower band-pass cutoff in Hertz.
+        high_freq : float
+            Upper band-pass cutoff in Hertz.
+        notch_freq : float
+            Power-line notch frequency in Hertz.
+        """
+
         self.fs = sampling_rate
         self.low_freq = low_freq
         self.high_freq = high_freq

@@ -10,6 +10,8 @@ from backend.app.privacy.hashing import stable_probability
 
 
 class StubInferenceService:
+    """Deterministic non-clinical adapter used until the real model arrives."""
+
     model_name = MODEL_NAME
     model_version = MODEL_VERSION
     threshold = MODEL_THRESHOLD
@@ -20,6 +22,30 @@ class StubInferenceService:
         window_starts: np.ndarray,
         record_id: str,
     ) -> list[WindowPrediction]:
+        """Generate reproducible placeholder predictions for model windows.
+
+        Parameters
+        ----------
+        windows : numpy.ndarray
+            Float32 model input with shape ``(N, 1024, 18)``. Values are not
+            used to make a clinical claim; shape validation is still enforced.
+        window_starts : numpy.ndarray
+            Start time in seconds for each window.
+        record_id : str
+            Opaque recording identifier used to make output reproducible.
+
+        Returns
+        -------
+        list[WindowPrediction]
+            One explicitly non-clinical prediction per window.
+
+        Raises
+        ------
+        ValueError
+            Raised when the model-input shape is incompatible with the
+            configured contract.
+        """
+
         if windows.ndim != 3 or windows.shape[1:] != (1024, 18):
             raise ValueError("Model input must have shape (N, 1024, 18).")
         predictions: list[WindowPrediction] = []
@@ -35,4 +61,3 @@ class StubInferenceService:
                 )
             )
         return predictions
-

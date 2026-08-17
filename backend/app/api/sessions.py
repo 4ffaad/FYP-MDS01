@@ -1,8 +1,8 @@
-"""Asynchronous session upload and status endpoints."""
+"""Session upload and status endpoints."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import BackgroundTasks, APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlmodel import Session
 
 from backend.app.database.db import get_session
@@ -12,8 +12,8 @@ from backend.app.services.session_service import (
     public_session,
     public_session_list,
 )
+from backend.app.services.processing_service import process_session
 from backend.app.services.storage_service import SessionStorage, StorageError
-from backend.app.workers.jobs import enqueue_pipeline
 
 
 router = APIRouter(prefix="/api", tags=["sessions"])
@@ -21,10 +21,38 @@ router = APIRouter(prefix="/api", tags=["sessions"])
 
 @router.post("/sessions/upload", status_code=status.HTTP_202_ACCEPTED)
 async def upload_session(
+    background_tasks: BackgroundTasks,
     archive: UploadFile = File(...),
     patient_reference: str = Form(...),
     db: Session = Depends(get_session),
 ) -> dict:
+    """Accept a ZIP archive, create a session, and schedule background work.
+
+    Parameters
+    ----------
+    archive : fastapi.UploadFile
+        ZIP archive containing one or more EDF recordings.
+    patient_reference : str
+        Restricted internal reference stored in PostgreSQL and never exposed
+        through public response serializers.
+    background_tasks : fastapi.BackgroundTasks
+        FastAPI-managed in-process task runner used to start the EEG pipeline
+        after the HTTP response is sent.
+    db : sqlmodel.Session
+        Request-scoped database session.
+
+    Returns
+    -------
+    dict
+        HTTP 202 payload containing the session ID and queued status.
+
+    Raises
+    ------
+    fastapi.HTTPException
+        Raised with 400 for invalid form input or 503 when storage is
+        unavailable.
+    """
+
     if not archive.filename or not archive.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Upload one ZIP archive containing EDF files.")
     if not patient_reference.strip():
@@ -32,27 +60,56 @@ async def upload_session(
 
     try:
         session = await create_session(db, SessionStorage(), archive, patient_reference)
-        job_id = enqueue_pipeline(session.session_id)
-    except (StorageError, RuntimeError) as exc:
+    except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    session.job_id = job_id
-    db.add(session)
-    db.commit()
+    background_tasks.add_task(process_session, session.session_id)
     return {
         "session_id": session.session_id,
-        "job_id": job_id,
         "status": session.status.value,
     }
 
 
 @router.get("/sessions")
 def get_sessions(db: Session = Depends(get_session)) -> list[dict]:
+    """List sessions using privacy-safe public serialization.
+
+    Parameters
+    ----------
+    db : sqlmodel.Session
+        Request-scoped database session.
+
+    Returns
+    -------
+    list[dict]
+        Sessions ordered from newest to oldest without patient references.
+    """
+
     return public_session_list(db)
 
 
 @router.get("/sessions/{session_id}")
 def get_session_detail(session_id: str, db: Session = Depends(get_session)) -> dict:
+    """Return one session and its safe recording summaries.
+
+    Parameters
+    ----------
+    session_id : str
+        Opaque session identifier.
+    db : sqlmodel.Session
+        Request-scoped database session.
+
+    Returns
+    -------
+    dict
+        Public session status, timestamps, and recording summaries.
+
+    Raises
+    ------
+    fastapi.HTTPException
+        Raised with 404 when the session does not exist.
+    """
+
     session = get_session_or_none(db, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
@@ -61,6 +118,21 @@ def get_session_detail(session_id: str, db: Session = Depends(get_session)) -> d
 
 @router.get("/sessions/{session_id}/status")
 def get_session_status(session_id: str, db: Session = Depends(get_session)) -> dict:
+    """Return the current pipeline stage and status for a session.
+
+    Parameters
+    ----------
+    session_id : str
+        Opaque session identifier.
+    db : sqlmodel.Session
+        Request-scoped database session.
+
+    Returns
+    -------
+    dict
+        Current status, stage, and a safe error message when applicable.
+    """
+
     session = get_session_or_none(db, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
@@ -74,8 +146,22 @@ def get_session_status(session_id: str, db: Session = Depends(get_session)) -> d
 
 @router.get("/sessions/{session_id}/recordings")
 def get_session_recordings(session_id: str, db: Session = Depends(get_session)) -> list[dict]:
+    """List the safe recording summaries belonging to a session.
+
+    Parameters
+    ----------
+    session_id : str
+        Opaque session identifier.
+    db : sqlmodel.Session
+        Request-scoped database session.
+
+    Returns
+    -------
+    list[dict]
+        Recording metadata without original filenames or storage paths.
+    """
+
     session = get_session_or_none(db, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
     return public_session(db, session)["recordings"]
-

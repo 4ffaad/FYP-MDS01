@@ -7,5 +7,3 @@ scipy
 sqlmodel
 psycopg[binary]
 alembic
-redis
-rq

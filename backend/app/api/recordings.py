@@ -21,6 +21,26 @@ router = APIRouter(prefix="/api", tags=["recordings"])
 
 
 def _get_record(db: Session, record_id: str) -> EEGRecording:
+    """Load a recording by its public identifier or raise HTTP 404.
+
+    Parameters
+    ----------
+    db : sqlmodel.Session
+        Database session for the request.
+    record_id : str
+        Opaque recording identifier supplied by the client.
+
+    Returns
+    -------
+    EEGRecording
+        The matching recording row.
+
+    Raises
+    ------
+    fastapi.HTTPException
+        Raised with status 404 when the recording does not exist.
+    """
+
     record = get_by_public_id(db, record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Recording was not found.")
@@ -29,11 +49,42 @@ def _get_record(db: Session, record_id: str) -> EEGRecording:
 
 @router.get("/recordings/{record_id}")
 def get_recording(record_id: str, db: Session = Depends(get_session)) -> dict:
+    """Return safe technical metadata for one recording.
+
+    Parameters
+    ----------
+    record_id : str
+        Opaque recording identifier.
+    db : sqlmodel.Session
+        Request-scoped database session.
+
+    Returns
+    -------
+    dict
+        Public recording metadata without patient references or filesystem
+        paths.
+    """
+
     return public_record(_get_record(db, record_id))
 
 
 @router.get("/recordings/{record_id}/prediction")
 def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
+    """Return model metadata and window predictions for a recording.
+
+    Parameters
+    ----------
+    record_id : str
+        Opaque recording identifier.
+    db : sqlmodel.Session
+        Request-scoped database session.
+
+    Returns
+    -------
+    dict
+        Model version and one safe prediction object per EEG window.
+    """
+
     record = _get_record(db, record_id)
     predictions = list_predictions(db, record.id)
     return {
@@ -61,6 +112,22 @@ def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
 
 @router.get("/recordings/{record_id}/explanation")
 def get_explanation(record_id: str, db: Session = Depends(get_session)) -> dict:
+    """Return stored non-clinical explanation artifacts for a recording.
+
+    Parameters
+    ----------
+    record_id : str
+        Opaque recording identifier.
+    db : sqlmodel.Session
+        Request-scoped database session.
+
+    Returns
+    -------
+    dict
+        Explanation metadata and JSON payloads when the artifact is readable.
+        Internal artifact paths are never returned.
+    """
+
     record = _get_record(db, record_id)
     predictions = list_predictions(db, record.id)
     prediction_ids = [prediction.id for prediction in predictions if prediction.id is not None]
@@ -91,6 +158,32 @@ def get_signal(
     max_points: int = Query(2000, gt=0, le=10000),
     db: Session = Depends(get_session),
 ) -> dict:
+    """Return a bounded, downsampled view of de-identified EEG signal data.
+
+    Parameters
+    ----------
+    record_id : str
+        Opaque recording identifier.
+    start_seconds : float
+        Start time within the recording, defaulting to zero.
+    duration_seconds : float
+        Requested duration, limited to sixty seconds.
+    max_points : int
+        Maximum number of samples returned per channel.
+    db : sqlmodel.Session
+        Request-scoped database session.
+
+    Returns
+    -------
+    dict
+        Channel labels, sampling rate, timing metadata, and bounded samples.
+
+    Raises
+    ------
+    fastapi.HTTPException
+        Raised when the de-identified signal is unavailable or unreadable.
+    """
+
     record = _get_record(db, record_id)
     if not record.deidentified_path:
         raise HTTPException(status_code=409, detail="De-identified signal is not available.")
