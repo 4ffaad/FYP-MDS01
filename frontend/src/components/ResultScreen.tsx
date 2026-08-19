@@ -62,7 +62,7 @@ export function ResultScreen({ jobId }: { jobId: string }) {
   );
 }
 
-function Detail({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0"><dt className="text-[0.68rem] uppercase tracking-[0.1em] text-ink-faint">{label}</dt><dd className={`text-sm text-ink ${mono ? "font-mono" : "font-semibold"}`}>{value}</dd></div>; }
+function Detail({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0"><dt className="text-[0.68rem] uppercase tracking-widest text-ink-faint">{label}</dt><dd className={`text-sm text-ink ${mono ? "font-mono" : "font-semibold"}`}>{value}</dd></div>; }
 
 function predictionCopy(prediction: PredictionLabel): { title: string; icon: "check" | "alert"; tone: "teal" | "amber" | "red" } {
   if (prediction === "seizure") return { title: "Seizure pattern indicated", icon: "alert", tone: "red" };
