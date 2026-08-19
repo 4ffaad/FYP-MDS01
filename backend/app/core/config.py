@@ -30,11 +30,16 @@ MAX_ARCHIVE_MEMBER_BYTES = int(
     os.getenv("MAX_ARCHIVE_MEMBER_BYTES", str(2 * 1024 * 1024 * 1024))
 )
 MAX_EDF_FILES_PER_ARCHIVE = int(os.getenv("MAX_EDF_FILES_PER_ARCHIVE", "500"))
-ORIGINAL_RETENTION_DAYS = int(os.getenv("ORIGINAL_RETENTION_DAYS", "30"))
 MODEL_RUNTIME = os.getenv("MODEL_RUNTIME", "stub")
 MODEL_NAME = os.getenv("MODEL_NAME", "development-stub")
 MODEL_VERSION = os.getenv("MODEL_VERSION", "stub-0.1.0")
 MODEL_THRESHOLD = float(os.getenv("MODEL_THRESHOLD", "0.5"))
+H5_MODEL_PATH = Path(os.getenv("H5_MODEL_PATH", str(BACKEND_ROOT / "model" / "best_seizure_model.h5")))
+H5_CONTRACT_PATH = Path(os.getenv("H5_CONTRACT_PATH", str(BACKEND_ROOT / "model" / "model-contract.json")))
+ENABLE_SIGNAL_PREVIEW = os.getenv("ENABLE_SIGNAL_PREVIEW", "false").lower() == "true"
+SUPPORTED_PRIVACY_METHODS = ("control", "cancellable-signal-projection")
+STORAGE_KEY_ENV = "MDS01_STORAGE_KEY"
+TEMPLATE_KEY_ENV = "MDS01_TEMPLATE_KEY"
 
 
 def ensure_runtime_directories() -> None:

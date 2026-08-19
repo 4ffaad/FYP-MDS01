@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import BackgroundTasks, APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlmodel import Session
 
+from backend.app.core.config import SUPPORTED_PRIVACY_METHODS
 from backend.app.database.db import get_session
 from backend.app.services.session_service import (
     create_session,
@@ -23,8 +24,7 @@ router = APIRouter(prefix="/api", tags=["sessions"])
 async def upload_session(
     background_tasks: BackgroundTasks,
     archive: UploadFile = File(...),
-    patient_reference: str = Form(...),
-    privacy_method: str = Form("raw-control"),
+    privacy_method: str = Form("control"),
     db: Session = Depends(get_session),
 ) -> dict:
     """Accept a ZIP archive, create a session, and schedule background work.
@@ -33,12 +33,8 @@ async def upload_session(
     ----------
     archive : fastapi.UploadFile
         ZIP archive containing one or more EDF recordings.
-    patient_reference : str
-        Restricted internal reference stored in PostgreSQL and never exposed
-        through public response serializers.
     privacy_method : str
-        Requested privacy configuration recorded with the session. It does
-        not imply that an unimplemented privacy algorithm was applied.
+        ``control`` or ``cancellable-signal-projection`` research privacy mode.
     background_tasks : fastapi.BackgroundTasks
         FastAPI-managed in-process task runner used to start the EEG pipeline
         after the HTTP response is sent.
@@ -59,17 +55,18 @@ async def upload_session(
 
     if not archive.filename or not archive.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Upload one ZIP archive containing EDF files.")
-    if not patient_reference.strip():
-        raise HTTPException(status_code=400, detail="patient_reference is required.")
-    if not privacy_method.strip() or len(privacy_method) > 64:
-        raise HTTPException(status_code=400, detail="privacy_method must contain at most 64 characters.")
+    privacy_method = privacy_method.strip()
+    if privacy_method not in SUPPORTED_PRIVACY_METHODS:
+        raise HTTPException(
+            status_code=400,
+            detail="privacy_method must be control or cancellable-signal-projection.",
+        )
 
     try:
         session = await create_session(
             db,
             SessionStorage(),
             archive,
-            patient_reference,
             privacy_method,
         )
     except StorageError as exc:

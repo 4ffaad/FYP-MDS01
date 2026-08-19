@@ -6,6 +6,7 @@ Run with: PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v
 from datetime import datetime
 import asyncio
 import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from unittest.mock import ANY, AsyncMock, patch
 import numpy as np
 import pyedflib
 from fastapi import BackgroundTasks, UploadFile
+from fastapi import HTTPException
 from sqlmodel import Session, SQLModel, create_engine
 
 from backend.app.main import app
@@ -41,12 +43,23 @@ from backend.app.eeg.preprocessing import EEGPreprocessor
 from backend.app.eeg.model_input import MODEL_CHANNELS, prepare_model_windows
 from backend.app.ml.stub_inference import StubInferenceService
 from backend.app.privacy.deidentify import deidentify_edf, generate_record_id, inspect_metadata
+from backend.app.privacy.signal_projection import cancellable_signal_projection
+from backend.app.privacy.template import psd_features
+from backend.app.research.chb_mit import seizure_window_labels, sidecar_path
 from backend.app.services.storage_service import SessionStorage, StorageError
 from backend.app.services.session_service import create_session, public_record
 from backend.app.services.validation_service import ValidationError, validate_edf
 
 
 class BackendTests(unittest.TestCase):
+    storage_key = b"s" * 32
+
+    def _store_archive(self, storage: SessionStorage, session_id: str, archive: Path) -> Path:
+        """Store a local ZIP through the same encrypted upload path as the API."""
+
+        upload = UploadFile(filename=archive.name, file=io.BytesIO(archive.read_bytes()))
+        return asyncio.run(storage.save_upload(session_id, upload))
+
     def _create_source_edf(
         self,
         path: Path,
@@ -86,6 +99,7 @@ class BackendTests(unittest.TestCase):
             })
             writer.setSignalHeaders(headers)
             writer.writeSamples(samples, digital=True)
+            writer.writeAnnotation(1.0, 2.0, "Jane Doe seizure note")
         finally:
             writer.close()
         return samples
@@ -108,7 +122,12 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(reader.getPatientName(), anonymous_id)
                 self.assertEqual(reader.getPatientCode(), anonymous_id)
                 self.assertEqual(reader.getTechnician(), "")
+                self.assertEqual(reader.getEquipment(), "")
                 self.assertEqual(reader.getBirthdate(), "")
+                onsets, durations, descriptions = reader.readAnnotations()
+                self.assertEqual(onsets.tolist(), [1.0])
+                self.assertEqual(durations.tolist(), [2.0])
+                self.assertEqual(descriptions.tolist(), [""])
             finally:
                 reader.close()
 
@@ -145,14 +164,23 @@ class BackendTests(unittest.TestCase):
 
     def test_stub_predictions_are_deterministic_and_non_clinical_contract_is_stable(self) -> None:
         service = StubInferenceService()
-        windows = np.zeros((2, 1024, 18), dtype=np.float32)
+        windows = np.arange(2 * 1024 * 18, dtype=np.float32).reshape(2, 1024, 18) / 1000
         starts = np.asarray([0.0, 4.0], dtype=np.float32)
         first = service.predict(windows, starts, "REC-TEST")
         second = service.predict(windows, starts, "REC-TEST")
+        transformed = cancellable_signal_projection(windows, b"t" * 32)
+        projected = service.predict(transformed, starts, "REC-TEST")
         self.assertEqual(first, second)
+        self.assertNotEqual(first, projected)
         self.assertEqual(service.model_name, "development-stub")
         self.assertEqual(service.model_version, "stub-0.1.0")
         self.assertTrue(all(0 <= item.probability <= 1 for item in first))
+
+    def test_h5_runtime_fails_closed_without_a_reviewed_contract(self) -> None:
+        from backend.app.ml.h5_inference import H5InferenceService, H5ModelError
+
+        with self.assertRaises(H5ModelError):
+            H5InferenceService(Path("missing-model.h5"), Path("missing-contract.json"))
 
     def test_storage_rejects_archive_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -165,12 +193,48 @@ class BackendTests(unittest.TestCase):
             with self.assertRaises(StorageError):
                 storage.extract_edfs("SES-TEST", archive)
 
+    def test_storage_encrypts_uploads_and_rejects_tampering(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            storage = SessionStorage(root / "sessions", self.storage_key)
+            payload = b"PK\x03\x04encrypted archive bytes"
+            archive = asyncio.run(
+                storage.save_upload("SES-CRYPTO", UploadFile(filename="session.zip", file=io.BytesIO(payload)))
+            )
+            self.assertNotIn(payload, archive.read_bytes())
+            self.assertEqual(storage.materialize_archive("SES-CRYPTO", archive).read_bytes(), payload)
+            with archive.open("r+b") as output:
+                output.seek(24)
+                output.write(b"x")
+            with self.assertRaises(StorageError):
+                storage.materialize_archive("SES-CRYPTO", archive)
+
+    def test_cancellable_signal_projection_is_keyed_lossy_and_model_compatible(self) -> None:
+        windows = np.random.default_rng(42).normal(size=(2, 1024, 18)).astype(np.float32)
+        first = cancellable_signal_projection(windows, b"a" * 32)
+        second = cancellable_signal_projection(windows, b"a" * 32)
+        rotated = cancellable_signal_projection(windows, b"b" * 32)
+        features = psd_features(first)
+        self.assertEqual(features.shape, (2, 90))
+        self.assertEqual(first.shape, (2, 1024, 18))
+        self.assertEqual(first.dtype, np.float32)
+        self.assertTrue(np.array_equal(first, second))
+        self.assertFalse(np.array_equal(first, rotated))
+        self.assertFalse(np.array_equal(first, windows))
+
     def test_openapi_contains_only_current_routes(self) -> None:
-        paths = set(app.openapi()["paths"])
+        schema = app.openapi()
+        paths = set(schema["paths"])
         self.assertNotIn("/api/v1/deidentify", paths)
         self.assertNotIn("/api/v1/preprocess/{session_id}", paths)
         self.assertIn("/api/sessions/upload", paths)
         self.assertIn("/api/recordings/{record_id}/prediction", paths)
+        self.assertNotIn("patient_reference", str(schema))
+
+    def test_chb_mit_window_labels_and_sidecar_name_are_deterministic(self) -> None:
+        recording = Path("chb01_03.edf")
+        self.assertEqual(sidecar_path(recording).name, "chb01_03.edf.seizures")
+        self.assertEqual(seizure_window_labels([0.0, 4.0, 8.0], [(3.0, 6.0)]), [0, 1, 0])
 
     def test_upload_schedules_background_pipeline_without_rq_job_id(self) -> None:
         from backend.app.api.sessions import upload_session
@@ -178,7 +242,6 @@ class BackendTests(unittest.TestCase):
         archive = UploadFile(filename="session.zip", file=io.BytesIO(b"zip"))
         session = EEGSession(
             session_id="SES-BACKGROUND",
-            patient_reference="internal",
             original_filename="session.zip",
             original_path="/private/session.zip",
             status=AnalysisStatus.QUEUED,
@@ -190,7 +253,7 @@ class BackendTests(unittest.TestCase):
             patch("backend.app.api.sessions.SessionStorage"),
             patch("backend.app.api.sessions.process_session") as process,
         ):
-            payload = asyncio.run(upload_session(tasks, archive, "internal", "channel-anonymization"))
+            payload = asyncio.run(upload_session(tasks, archive, "control"))
 
         self.assertEqual(payload, {"session_id": "SES-BACKGROUND", "status": "queued"})
         self.assertNotIn("job_id", payload)
@@ -198,12 +261,33 @@ class BackendTests(unittest.TestCase):
             ANY,
             ANY,
             archive,
-            "internal",
-            "channel-anonymization",
+            "control",
         )
         self.assertEqual(len(tasks.tasks), 1)
         self.assertIs(tasks.tasks[0].func, process)
         self.assertEqual(tasks.tasks[0].args, ("SES-BACKGROUND",))
+
+    def test_upload_rejects_unimplemented_privacy_method(self) -> None:
+        from backend.app.api.sessions import upload_session
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(
+                upload_session(BackgroundTasks(), UploadFile(filename="session.zip", file=io.BytesIO(b"zip")), "differential-privacy")
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(
+                upload_session(BackgroundTasks(), UploadFile(filename="session.zip", file=io.BytesIO(b"zip")), "cancellable-psd-template")
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+
+    def test_signal_endpoint_is_disabled_by_default(self) -> None:
+        from backend.app.api.recordings import get_signal
+
+        with self.assertRaises(HTTPException) as raised:
+            get_signal("REC-NOT-LOOKED-UP", db=None)
+        self.assertEqual(raised.exception.status_code, 404)
 
     def test_prototype_has_no_redis_rq_or_worker_configuration(self) -> None:
         from backend.app.core import config
@@ -238,11 +322,11 @@ class BackendTests(unittest.TestCase):
 
     def test_repositories_query_sessions_recordings_and_predictions(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
         SQLModel.metadata.create_all(engine)
         with Session(engine) as db:
             session = EEGSession(
                 session_id="SES-REPOSITORY",
-                patient_reference="internal",
                 original_filename="upload.zip",
                 original_path="/private/upload.zip",
                 status=AnalysisStatus.COMPLETED,
@@ -267,28 +351,26 @@ class BackendTests(unittest.TestCase):
 
     def test_failed_upload_rolls_back_session_row(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
         SQLModel.metadata.create_all(engine)
         storage = SessionStorage(Path(tempfile.mkdtemp()) / "sessions")
         archive = UploadFile(filename="session.zip", file=io.BytesIO(b"zip"))
 
-        with Session(engine) as db, patch.object(
-            storage,
-            "save_upload",
-            new=AsyncMock(side_effect=StorageError("upload failed")),
-        ):
+        with Session(engine) as db, patch.dict(os.environ, {"MDS01_STORAGE_KEY": ""}):
             with self.assertRaises(StorageError):
-                asyncio.run(create_session(db, storage, archive, "internal"))
+                asyncio.run(create_session(db, storage, archive))
             self.assertEqual(list_sessions(db), [])
+            self.assertEqual(list(storage.root.iterdir()), [])
 
     def test_processing_attempt_records_completion(self) -> None:
         from backend.app.services.processing_service import _begin_attempt, _finish_attempt
 
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
         SQLModel.metadata.create_all(engine)
         with Session(engine) as db:
             session = EEGSession(
                 session_id="SES-ATTEMPT",
-                patient_reference="internal",
                 original_filename="upload.zip",
                 original_path="/private/upload.zip",
             )
@@ -319,15 +401,16 @@ class BackendTests(unittest.TestCase):
                 output.write(second, second.name)
 
             database = create_engine("sqlite://", connect_args={"check_same_thread": False})
+            self.addCleanup(database.dispose)
             SQLModel.metadata.create_all(database)
-            storage = SessionStorage(root / "sessions")
+            storage = SessionStorage(root / "sessions", self.storage_key)
+            encrypted_archive = self._store_archive(storage, "SES-PARTIAL", archive)
             with Session(database) as db:
                 db.add(
                     EEGSession(
                         session_id="SES-PARTIAL",
-                        patient_reference="internal",
                         original_filename="session.zip",
-                        original_path=str(archive),
+                        original_path=str(encrypted_archive),
                     )
                 )
                 db.commit()
@@ -366,16 +449,17 @@ class BackendTests(unittest.TestCase):
                 output.write(source, source.name)
 
             database = create_engine("sqlite://", connect_args={"check_same_thread": False})
+            self.addCleanup(database.dispose)
             SQLModel.metadata.create_all(database)
-            storage = SessionStorage(root / "sessions")
+            storage = SessionStorage(root / "sessions", self.storage_key)
+            encrypted_archive = self._store_archive(storage, "SES-FULL", archive)
             with Session(database) as db:
                 db.add(
                     EEGSession(
                         session_id="SES-FULL",
-                        patient_reference="internal",
-                        privacy_method="channel-anonymization",
+                        privacy_method="cancellable-signal-projection",
                         original_filename="session.zip",
-                        original_path=str(archive),
+                        original_path=str(encrypted_archive),
                     )
                 )
                 db.commit()
@@ -383,6 +467,7 @@ class BackendTests(unittest.TestCase):
             with (
                 patch("backend.app.services.processing_service.engine", database),
                 patch("backend.app.services.processing_service.SessionStorage", return_value=storage),
+                patch("backend.app.services.processing_service.read_base64_key", return_value=b"t" * 32),
             ):
                 process_session("SES-FULL")
 
@@ -392,18 +477,23 @@ class BackendTests(unittest.TestCase):
                 predictions = list_predictions(db, records[0].id)
                 explanations = list_explanations(db, [prediction.id for prediction in predictions])
                 self.assertEqual(session.status, AnalysisStatus.COMPLETED)
-                self.assertEqual(session.privacy_method, "channel-anonymization")
+                self.assertEqual(session.privacy_method, "cancellable-signal-projection")
                 self.assertEqual(records[0].status, RecordingStatus.INFERRED)
                 self.assertEqual(len(predictions), 1)
                 self.assertEqual(len(explanations), 1)
+                self.assertEqual(session.original_path, "")
+                self.assertIsNone(records[0].extracted_path)
+                self.assertIsNone(records[0].deidentified_path)
+                self.assertIsNone(records[0].preprocessed_path)
+                self.assertFalse((storage.root / "SES-FULL").exists())
 
     def test_repository_lists_explanations(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
         SQLModel.metadata.create_all(engine)
         with Session(engine) as db:
             session = EEGSession(
                 session_id="SES-EXPLANATION",
-                patient_reference="internal",
                 original_filename="upload.zip",
                 original_path="/private/upload.zip",
             )

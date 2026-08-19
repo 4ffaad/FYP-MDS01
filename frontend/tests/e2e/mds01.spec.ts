@@ -8,7 +8,7 @@ test("upload leads with one clear action and creates a queued analysis", async (
   await page.goto("/upload");
   await expect(page.getByRole("heading", { name: "Submit an EEG recording for analysis." })).toBeVisible();
   await page.getByLabel("EEG recording").setInputFiles({ name: "recording_01.zip", mimeType: "application/zip", buffer: Buffer.from("synthetic") });
-  await page.getByRole("radio", { name: /Channel Anonymization/ }).check();
+  await page.getByRole("radio", { name: /Cancellable signal projection/ }).check();
   await page.screenshot({ path: test.info().outputPath("upload.png"), fullPage: true });
   await page.getByRole("button", { name: "Submit for Analysis" }).click();
   await expect(page).toHaveURL(/dashboard/);

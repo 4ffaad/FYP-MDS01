@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 import numpy as np
@@ -20,12 +21,19 @@ from backend.app.database.models.eeg import (
     ProcessingStatus,
     RecordingStatus,
 )
-from backend.app.database.repository import get_session_by_public_id, list_predictions
+from backend.app.database.repository import (
+    get_session_by_public_id,
+    list_predictions,
+    list_recordings_for_session,
+)
+from backend.app.core.config import ENABLE_SIGNAL_PREVIEW, TEMPLATE_KEY_ENV
 from backend.app.eeg.model_input import preprocess_edf_to_npz
 from backend.app.ml.interface import InferenceService, WindowPrediction
 from backend.app.ml.model_loader import get_inference_service
+from backend.app.privacy.crypto import read_base64_key
 from backend.app.privacy.deidentify import deidentify_edf, generate_record_id
-from backend.app.services.explanation_service import write_stub_explanation
+from backend.app.privacy.signal_projection import cancellable_signal_projection
+from backend.app.services.explanation_service import build_stub_explanation
 from backend.app.services.storage_service import SessionStorage
 from backend.app.services.validation_service import ValidationError, validate_edf
 
@@ -146,13 +154,14 @@ def process_session(session_id: str) -> None:
     Returns
     -------
     None
-        State, errors, predictions, and explanation references are persisted
+        State, errors, predictions, and safe explanations are persisted
         in PostgreSQL. A malformed recording does not stop sibling recordings.
 
     Privacy
     -------
-    Original and derived files remain in private session storage. Only safe
-    status messages are written to public-facing database fields.
+    Original and derived waveform files are removed after processing unless a
+    local-only signal preview is explicitly enabled. Only safe result metadata
+    remains available through the API.
     """
 
     storage = SessionStorage()
@@ -161,52 +170,65 @@ def process_session(session_id: str) -> None:
         if session is None or session.id is None:
             return
 
-        validation_attempt: ProcessingAttempt | None = None
         try:
-            inference = get_inference_service()
-            _set_session_status(db, session, AnalysisStatus.VALIDATING, "validation")
-            validation_attempt = _begin_attempt(db, session, ProcessingStage.VALIDATION)
-            extracted_paths = storage.extract_edfs(session.session_id, Path(session.original_path))
-            _finish_attempt(db, validation_attempt, ProcessingStatus.SUCCEEDED)
-        except Exception as exc:
-            error = _safe_error(exc)
-            if validation_attempt is not None:
-                _finish_attempt(db, validation_attempt, ProcessingStatus.FAILED, error)
-            session.status = AnalysisStatus.FAILED
-            session.current_stage = "validation"
-            session.error_message = error
+            validation_attempt: ProcessingAttempt | None = None
+            try:
+                inference = get_inference_service()
+                _set_session_status(db, session, AnalysisStatus.VALIDATING, "validation")
+                validation_attempt = _begin_attempt(db, session, ProcessingStage.VALIDATION)
+                archive_path = storage.materialize_archive(session.session_id, Path(session.original_path))
+                extracted_paths = storage.extract_edfs(session.session_id, archive_path)
+                _finish_attempt(db, validation_attempt, ProcessingStatus.SUCCEEDED)
+            except Exception as exc:
+                error = _safe_error(exc)
+                if validation_attempt is not None:
+                    _finish_attempt(db, validation_attempt, ProcessingStatus.FAILED, error)
+                session.status = AnalysisStatus.FAILED
+                session.current_stage = "validation"
+                session.error_message = error
+                session.completed_at = _now()
+                db.add(session)
+                db.commit()
+                return
+
+            any_errors = False
+            for sequence_index, extracted_path in enumerate(extracted_paths, start=1):
+                record = EEGRecording(
+                    record_id=generate_record_id(),
+                    session_db_id=session.id,
+                    sequence_index=sequence_index,
+                    original_filename="",
+                    extracted_path=str(extracted_path),
+                    status=RecordingStatus.VALIDATING,
+                )
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+                try:
+                    _process_record(db, session, record, storage, inference)
+                except Exception as exc:
+                    any_errors = True
+                    record.status = RecordingStatus.FAILED
+                    record.error_message = _safe_error(exc)
+                    db.add(record)
+                    db.commit()
+
+            session.status = AnalysisStatus.COMPLETED_WITH_ERRORS if any_errors else AnalysisStatus.COMPLETED
+            session.current_stage = None
             session.completed_at = _now()
             db.add(session)
             db.commit()
-            return
-
-        any_errors = False
-        for sequence_index, extracted_path in enumerate(extracted_paths, start=1):
-            record = EEGRecording(
-                record_id=generate_record_id(),
-                session_db_id=session.id,
-                sequence_index=sequence_index,
-                original_filename=extracted_path.name,
-                extracted_path=str(extracted_path),
-                status=RecordingStatus.VALIDATING,
-            )
-            db.add(record)
-            db.commit()
-            db.refresh(record)
-            try:
-                _process_record(db, session, record, storage, inference)
-            except Exception as exc:
-                any_errors = True
-                record.status = RecordingStatus.FAILED
-                record.error_message = _safe_error(exc)
+        finally:
+            storage.cleanup_session(session.session_id, keep_deidentified=ENABLE_SIGNAL_PREVIEW)
+            session.original_path = ""
+            for record in list_recordings_for_session(db, session.id):
+                record.extracted_path = None
+                record.preprocessed_path = None
+                if not ENABLE_SIGNAL_PREVIEW:
+                    record.deidentified_path = None
                 db.add(record)
-                db.commit()
-
-        session.status = AnalysisStatus.COMPLETED_WITH_ERRORS if any_errors else AnalysisStatus.COMPLETED
-        session.current_stage = None
-        session.completed_at = _now()
-        db.add(session)
-        db.commit()
+            db.add(session)
+            db.commit()
 
 
 def _process_record(
@@ -287,7 +309,10 @@ def _process_record(
         with np.load(processed_path) as payload:
             windows = payload["model_windows"]
             starts = payload["window_start_seconds"]
-        predictions = inference.predict(windows, starts, record.record_id)
+        model_windows = windows
+        if session.privacy_method == "cancellable-signal-projection":
+            model_windows = cancellable_signal_projection(windows, read_base64_key(TEMPLATE_KEY_ENV))
+        predictions = inference.predict(model_windows, starts, record.record_id)
         for prediction in predictions:
             db_prediction = Prediction(
                 recording_db_id=record.id,
@@ -313,9 +338,7 @@ def _process_record(
     try:
         stored_predictions = list_predictions(db, record.id)
         for stored in stored_predictions:
-            explanation_path = storage.explanation_path(session.session_id, stored.id or 0)
-            payload = write_stub_explanation(
-                explanation_path,
+            payload = build_stub_explanation(
                 record_id=record.record_id,
                 prediction=WindowPrediction(
                     window_index=stored.window_index,
@@ -329,8 +352,8 @@ def _process_record(
                 Explanation(
                     prediction_db_id=stored.id,
                     method="development-stub",
-                    explanation_path=str(explanation_path),
-                    explanation_data=str(payload),
+                    explanation_path="",
+                    explanation_data=json.dumps(payload),
                     is_clinical=False,
                 )
             )

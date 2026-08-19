@@ -26,6 +26,7 @@ export interface AnalysisResult {
   privacyMethod: PrivacyMethod;
   timeSeries: number[];
   attentionWeights: number[];
+  signalPreviewAvailable: boolean;
   explanationSummary: string;
   modelName: string;
   modelVersion: string;

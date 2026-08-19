@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 
 from fastapi import UploadFile
 from sqlmodel import Session
@@ -33,8 +32,7 @@ async def create_session(
     db: Session,
     storage: SessionStorage,
     archive: UploadFile,
-    patient_reference: str,
-    privacy_method: str = "raw-control",
+    privacy_method: str = "control",
 ) -> EEGSession:
     """Persist an upload session and stream its ZIP into private storage.
 
@@ -46,11 +44,8 @@ async def create_session(
         Session-scoped storage implementation.
     archive : fastapi.UploadFile
         Client ZIP upload.
-    patient_reference : str
-        Restricted internal reference. It is stored in the database only.
     privacy_method : str
-        Requested privacy configuration stored with the session. This is
-        metadata until a matching processing implementation is supplied.
+        Selected research privacy mode stored with the session.
 
     Returns
     -------
@@ -65,9 +60,8 @@ async def create_session(
 
     session = EEGSession(
         session_id=new_session_id(),
-        patient_reference=patient_reference.strip(),
         privacy_method=privacy_method.strip(),
-        original_filename=Path(archive.filename or "upload.zip").name,
+        original_filename="",
         original_path="",
     )
     db.add(session)
@@ -75,6 +69,7 @@ async def create_session(
     try:
         original_path = await storage.save_upload(session.session_id, archive)
     except Exception:
+        storage.cleanup_session(session.session_id)
         db.rollback()
         raise
     session.original_path = str(original_path)

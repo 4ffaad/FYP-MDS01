@@ -18,7 +18,7 @@ from backend.app.database.repository import (
 )
 from backend.app.services.session_service import public_record
 from backend.app.eeg.edf_io import read_uniform_edf
-from backend.app.core.config import BACKEND_ROOT
+from backend.app.core.config import BACKEND_ROOT, ENABLE_SIGNAL_PREVIEW
 
 
 router = APIRouter(prefix="/api", tags=["recordings"])
@@ -139,10 +139,10 @@ def get_explanation(record_id: str, db: Session = Depends(get_session)) -> dict:
     items = []
     for explanation in explanations:
         payload = None
-        if explanation.explanation_path and Path(explanation.explanation_path).exists():
+        if explanation.explanation_data:
             try:
-                payload = json.loads(Path(explanation.explanation_path).read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                payload = json.loads(explanation.explanation_data)
+            except json.JSONDecodeError:
                 payload = None
         items.append({
             "method": explanation.method,
@@ -186,6 +186,8 @@ def get_signal(
         Raised when the de-identified signal is unavailable or unreadable.
     """
 
+    if not ENABLE_SIGNAL_PREVIEW:
+        raise HTTPException(status_code=404, detail="Signal preview is disabled.")
     record = _get_record(db, record_id)
     if not record.deidentified_path:
         raise HTTPException(status_code=409, detail="De-identified signal is not available.")

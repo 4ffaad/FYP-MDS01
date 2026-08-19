@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import shutil
 import re
+import os
+import secrets
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import UploadFile
 
 from backend.app.core.config import (
@@ -14,21 +17,28 @@ from backend.app.core.config import (
     MAX_EDF_FILES_PER_ARCHIVE,
     MAX_UPLOAD_BYTES,
     SESSION_STORAGE_DIR,
+    STORAGE_KEY_ENV,
 )
+from backend.app.privacy.crypto import CryptoError, read_base64_key
 
 
 class StorageError(ValueError):
     """Raised when an archive or storage operation is unsafe."""
 
 
+_ENCRYPTED_MAGIC = b"MDS01GCM1"
+_NONCE_BYTES = 12
+_TAG_BYTES = 16
+
+
 class SessionStorage:
     """Manage private files for opaque analysis sessions.
 
     The class owns the directory layout but never exposes private paths in
-    API responses. Original uploads remain separate from derived artifacts.
+    API responses. All original and derived artifacts are transient by default.
     """
 
-    def __init__(self, root: Path = SESSION_STORAGE_DIR) -> None:
+    def __init__(self, root: Path = SESSION_STORAGE_DIR, storage_key: bytes | None = None) -> None:
         """Configure storage beneath a session-root directory.
 
         Parameters
@@ -38,6 +48,7 @@ class SessionStorage:
         """
 
         self.root = root
+        self.storage_key = storage_key
 
     def session_dir(self, session_id: str) -> Path:
         """Create and return the private root for one session.
@@ -65,7 +76,7 @@ class SessionStorage:
         session_id : str
             Opaque session identifier.
         name : str
-            One of ``original``, ``extracted``, ``deidentified``,
+            One of ``original``, ``work``, ``extracted``, ``deidentified``,
             ``processed``, or ``explanations``.
 
         Returns
@@ -79,7 +90,7 @@ class SessionStorage:
             Raised for unknown artifact categories.
         """
 
-        if name not in {"original", "extracted", "deidentified", "processed", "explanations"}:
+        if name not in {"original", "work", "extracted", "deidentified", "processed", "explanations"}:
             raise StorageError("Unknown session storage area.")
         path = self.session_dir(session_id) / name
         path.mkdir(parents=True, exist_ok=True)
@@ -108,16 +119,66 @@ class SessionStorage:
 
         if not upload.filename:
             raise StorageError("Uploaded archive has no filename.")
-        destination = self.directory(session_id, "original") / "upload.zip"
+        destination = self.directory(session_id, "original") / "upload.zip.enc"
         total = 0
+        nonce = secrets.token_bytes(_NONCE_BYTES)
+        encryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce)).encryptor()
         with destination.open("wb") as output:
+            output.write(_ENCRYPTED_MAGIC)
+            output.write(nonce)
             while chunk := await upload.read(1024 * 1024):
                 total += len(chunk)
                 if total > MAX_UPLOAD_BYTES:
                     destination.unlink(missing_ok=True)
                     raise StorageError("Uploaded archive exceeds the size limit.")
-                output.write(chunk)
+                output.write(encryptor.update(chunk))
+            output.write(encryptor.finalize())
+            output.write(encryptor.tag)
+        os.chmod(destination, 0o600)
         return destination
+
+    def _key(self) -> bytes:
+        """Return the injected test key or the required runtime storage key."""
+
+        try:
+            return self.storage_key or read_base64_key(STORAGE_KEY_ENV)
+        except CryptoError as exc:
+            raise StorageError(str(exc)) from exc
+
+    def materialize_archive(self, session_id: str, encrypted_path: Path) -> Path:
+        """Decrypt one private ZIP into a short-lived, owner-only work path."""
+
+        destination = self.directory(session_id, "work") / "upload.zip"
+        try:
+            size = encrypted_path.stat().st_size
+            minimum_size = len(_ENCRYPTED_MAGIC) + _NONCE_BYTES + _TAG_BYTES
+            if size < minimum_size:
+                raise StorageError("Stored archive is incomplete.")
+            with encrypted_path.open("rb") as source:
+                if source.read(len(_ENCRYPTED_MAGIC)) != _ENCRYPTED_MAGIC:
+                    raise StorageError("Stored archive is not encrypted.")
+                nonce = source.read(_NONCE_BYTES)
+                source.seek(size - _TAG_BYTES)
+                tag = source.read(_TAG_BYTES)
+                source.seek(len(_ENCRYPTED_MAGIC) + _NONCE_BYTES)
+                remaining = size - len(_ENCRYPTED_MAGIC) - _NONCE_BYTES - _TAG_BYTES
+                decryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce, tag)).decryptor()
+                with destination.open("wb") as output:
+                    while remaining:
+                        chunk = source.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise StorageError("Stored archive is incomplete.")
+                        remaining -= len(chunk)
+                        output.write(decryptor.update(chunk))
+                    output.write(decryptor.finalize())
+            os.chmod(destination, 0o600)
+            return destination
+        except StorageError:
+            destination.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            destination.unlink(missing_ok=True)
+            raise StorageError("Stored archive cannot be decrypted.") from exc
 
     @staticmethod
     def _safe_member_path(member_name: str) -> PurePosixPath:
@@ -238,20 +299,14 @@ class SessionStorage:
 
         return self.directory(session_id, "processed") / f"{record_id}.npz"
 
-    def explanation_path(self, session_id: str, prediction_id: int) -> Path:
-        """Return the private destination for one explanation JSON file.
+    def cleanup_session(self, session_id: str, *, keep_deidentified: bool = False) -> None:
+        """Delete transient session files after processing, keeping only local preview data."""
 
-        Parameters
-        ----------
-        session_id : str
-            Opaque session identifier.
-        prediction_id : int
-            Internal prediction primary key.
-
-        Returns
-        -------
-        pathlib.Path
-            Internal explanation-artifact path.
-        """
-
-        return self.directory(session_id, "explanations") / f"prediction-{prediction_id}.json"
+        session_dir = self.root / session_id
+        if not session_dir.exists():
+            return
+        if not keep_deidentified:
+            shutil.rmtree(session_dir)
+            return
+        for name in ("original", "work", "extracted", "processed", "explanations"):
+            shutil.rmtree(session_dir / name, ignore_errors=True)

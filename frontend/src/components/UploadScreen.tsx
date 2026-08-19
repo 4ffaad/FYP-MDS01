@@ -86,14 +86,14 @@ export function UploadScreen() {
 
               <fieldset>
                 <legend className="text-sm font-bold text-ink">Requested privacy configuration</legend>
-                <p className="mt-1 text-sm text-ink-muted">Record the configuration requested for this analysis run.</p>
+                <p className="mt-1 text-sm text-ink-muted">Choose the research privacy mode for this analysis run.</p>
                 <div className="mt-4 grid gap-2" role="radiogroup" aria-label="Requested privacy configuration">
                   {privacyMethods.map((method) => (
                     <PrivacyOption key={method.id} method={method} selected={method.id === methodId} onSelect={setMethodId} />
                   ))}
                 </div>
                 {selectedMethod && <p className="mt-3 rounded-md bg-surface-soft px-3 py-2.5 text-xs leading-5 text-ink-muted">{selectedMethod.description}</p>}
-                <p className="mt-3 text-xs leading-5 text-ink-muted" role="note">Every upload receives EDF metadata de-identification. Other requested configurations are recorded for the run, not applied as processing modes in this prototype.</p>
+                <p className="mt-3 text-xs leading-5 text-ink-muted" role="note">Every upload receives EDF metadata de-identification. The experimental signal projection feeds both the detector and privacy evaluation; it is never returned by the API.</p>
               </fieldset>
 
               {error && <div className="flex items-start gap-2.5 rounded-md border border-red/30 bg-red-soft px-3.5 py-3 text-sm text-red" role="alert"><Icon name="alert" className="mt-0.5 size-4 shrink-0" /><span>{error}</span></div>}
@@ -116,9 +116,9 @@ export function UploadScreen() {
               <p className="mt-2 text-sm leading-6 text-ink-muted">The run moves through a small, inspectable sequence after you submit it.</p>
             </div>
             <ol className="divide-y divide-rule">
-              <ProcessStep number="01" title="Stored privately" description="The original archive is retained inside protected session storage." />
+              <ProcessStep number="01" title="Stored privately" description="The original archive is encrypted while the analysis runs." />
               <ProcessStep number="02" title="De-identified" description="Patient-identifying EDF metadata is removed before analysis." />
-              <ProcessStep number="03" title="Analysed" description="The pipeline prepares the signal and produces a development result." />
+              <ProcessStep number="03" title="Analysed and cleared" description="The pipeline stores safe results, then removes transient waveform files." />
             </ol>
             <div className="border-t border-rule bg-amber-soft px-5 py-4 text-xs leading-5 text-amber"><span className="font-bold">Review boundary.</span> The development model and attention overlay are non-clinical.</div>
           </aside>

@@ -21,13 +21,13 @@ NEXT_PUBLIC_USE_API_STUB=false
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-The adapter calls the current backend session and recording routes from `src/lib/api.ts`. It sends an opaque `web-upload` reference because the backend currently requires a restricted form field; that value is never rendered. The selected privacy configuration is stored with the backend session and returned in safe API responses. It is requested metadata only until matching processing algorithms are implemented.
+The adapter calls the current backend session and recording routes from `src/lib/api.ts`. It submits only the ZIP and selected research privacy mode—never a patient reference or the original filename as a public value. `control` performs metadata scrubbing; `cancellable-signal-projection` additionally runs a keyed, lossy transformation that feeds both detector and privacy evaluation. Neither mode is an anonymity guarantee.
 
 ## Routes
 
 - `/upload` - choose an EEG ZIP, select a config-driven privacy method, and submit one analysis;
 - `/dashboard` - monitor queued, processing, complete, and failed runs;
-- `/results/[jobId]` - inspect prediction, confidence, a bounded waveform/attention view, privacy configuration, and the non-clinical notice.
+- `/results/[jobId]` - inspect prediction, confidence, privacy configuration, and the non-clinical notice. A waveform preview is local-development-only because EEG can remain biometrically sensitive.
 
 ## Verification
 

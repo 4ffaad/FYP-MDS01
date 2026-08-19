@@ -2,24 +2,18 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from backend.app.ml.interface import WindowPrediction
 
 
-def write_stub_explanation(
-    path: Path,
+def build_stub_explanation(
     *,
     record_id: str,
     prediction: WindowPrediction,
 ) -> dict:
-    """Write a deterministic, explicitly non-clinical explanation artifact.
+    """Build a deterministic, explicitly non-clinical explanation payload.
 
     Parameters
     ----------
-    path : pathlib.Path
-        Destination path inside the session explanation directory.
     record_id : str
         Opaque recording identifier.
     prediction : WindowPrediction
@@ -28,7 +22,7 @@ def write_stub_explanation(
     Returns
     -------
     dict
-        JSON-compatible artifact payload written to disk.
+        JSON-compatible artifact payload stored in database metadata.
     """
 
     payload = {
@@ -41,6 +35,4 @@ def write_stub_explanation(
         "window_end_seconds": prediction.end_seconds,
         "probability": prediction.probability,
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload

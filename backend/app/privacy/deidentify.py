@@ -1,7 +1,7 @@
 """EDF de-identification utilities.
 
 The source EDF is never modified in place.  A new EDF is written with the
-same digital samples and signal headers, while patient-identifying header
+    same digital samples and technical signal headers, while patient-identifying header
 fields are cleared or replaced by a newly generated recording identifier.
 """
 
@@ -40,7 +40,6 @@ def inspect_metadata(edf_path: str) -> dict:
                 "channel_labels": reader.getSignalLabels(),
                 "sampling_frequencies_hz": reader.getSampleFrequencies().tolist(),
                 "duration_seconds": reader.getFileDuration(),
-                "equipment": reader.getEquipment(),
             },
             "potential_identifiers_present": {
                 # Our generated ANON-* value is a record reference, not PII.
@@ -49,6 +48,7 @@ def inspect_metadata(edf_path: str) -> dict:
                 "patient_additional": bool(reader.getPatientAdditional().strip()),
                 "birthdate": bool(reader.getBirthdate().strip()),
                 "technician": bool(reader.getTechnician().strip()),
+                "equipment": bool(reader.getEquipment().strip()),
                 "admincode": bool(reader.getAdmincode().strip()),
                 "recording_additional": bool(reader.getRecordingAdditional().strip()),
             },
@@ -105,15 +105,15 @@ def deidentify_edf(input_path: str | Path, output_path: str | Path, anonymous_id
                 header["physical_max"] = intercept + actual_digital_max * slope
         annotations = reader.readAnnotations()
 
-        # Equipment can be useful for technical interpretation.  Personal and
-        # administrative fields are blanked; the random ID labels this record.
+        # Free-text EDF fields can carry patient, operator, or device details.
+        # The generated record ID is the only retained non-signal identifier.
         safe_header = {
             "technician": "",
             "recording_additional": "",
             "patientname": anonymous_id,
             "patient_additional": "",
             "patientcode": anonymous_id,
-            "equipment": reader.getEquipment(),
+            "equipment": "",
             "admincode": "",
             "sex": "",
             "startdate": datetime(1970, 1, 1),
@@ -129,10 +129,10 @@ def deidentify_edf(input_path: str | Path, output_path: str | Path, anonymous_id
         writer.setSignalHeaders(signal_headers)
         writer.writeSamples(digital_signals, digital=True)
 
-        # EDF+ annotations carry onset/duration information needed for seizure
-        # alignment, so retain them instead of stripping timestamps blindly.
+        # Preserve relative timing for seizure alignment, but remove all
+        # free-text descriptions because they can contain clinical identifiers.
         for onset, duration, description in zip(*annotations):
-            writer.writeAnnotation(float(onset), float(duration), str(description))
+            writer.writeAnnotation(float(onset), float(duration), "")
     except Exception:
         if destination.exists():
             destination.unlink()

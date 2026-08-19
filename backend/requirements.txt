@@ -7,3 +7,4 @@ scipy
 sqlmodel
 psycopg[binary]
 alembic
+cryptography

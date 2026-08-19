@@ -55,8 +55,9 @@ claim autonomous diagnosis.
 - `/upload` accepts an EEG file, a privacy-method choice, and one prominent
   submit action.
 - The privacy-method selector must accept a configuration list; the initial
-  examples are Raw/Control, PSD Features, Channel Anonymization, and
-  Differential Privacy, but this set may change.
+  the research modes are Control and Cancellable Signal Projection. They
+  separate metadata-only handling from an experimental, shared EEG
+  transformation and must not be presented as an anonymity guarantee.
 - `/dashboard` shows submitted jobs with a generated safe recording label, submitted time, status,
   state icon, and state label. Users can submit another job without waiting.
 - `/results/[jobId]` shows prediction, confidence, selected privacy method,

@@ -6,7 +6,8 @@ training-time preprocessing are supplied.
 
 from __future__ import annotations
 
-from backend.app.core.config import MODEL_RUNTIME
+from backend.app.core.config import H5_CONTRACT_PATH, H5_MODEL_PATH, MODEL_RUNTIME
+from backend.app.ml.h5_inference import H5InferenceService
 from backend.app.ml.interface import InferenceService
 from backend.app.ml.stub_inference import StubInferenceService
 
@@ -28,6 +29,8 @@ def get_inference_service() -> InferenceService:
 
     if MODEL_RUNTIME == "stub":
         return StubInferenceService()
+    if MODEL_RUNTIME == "h5":
+        return H5InferenceService(H5_MODEL_PATH, H5_CONTRACT_PATH)
     raise RuntimeError(
         "MODEL_RUNTIME is not 'stub', but no real model adapter has been supplied."
     )

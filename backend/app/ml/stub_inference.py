@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import hashlib
 
 from backend.app.core.config import MODEL_NAME, MODEL_THRESHOLD, MODEL_VERSION
 from backend.app.ml.interface import WindowPrediction
@@ -50,7 +51,8 @@ class StubInferenceService:
             raise ValueError("Model input must have shape (N, 1024, 18).")
         predictions: list[WindowPrediction] = []
         for index, start in enumerate(window_starts.tolist()):
-            probability = stable_probability(f"{record_id}:{index}")
+            window_digest = hashlib.sha256(windows[index].tobytes()).hexdigest()
+            probability = stable_probability(f"{record_id}:{index}:{window_digest}")
             predictions.append(
                 WindowPrediction(
                     window_index=index,

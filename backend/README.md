@@ -10,6 +10,8 @@ explanation artifact generation.
 From the repository root:
 
 ```bash
+cp .env.example .env
+# Set MDS01_STORAGE_KEY and MDS01_TEMPLATE_KEY to different `openssl rand -base64 32` values.
 docker compose up --build
 PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v
 ```
@@ -18,8 +20,22 @@ The API documentation is available at `http://127.0.0.1:8000/docs`.
 
 ## Storage
 
-Runtime files are written to `backend/storage/sessions/{session_id}/` and are
-ignored by Git. PostgreSQL stores metadata and result references only.
+The upload archive is AES-256-GCM encrypted while the job runs. Original,
+extracted, de-identified, processed, and explanation files are
+removed when processing ends; PostgreSQL retains only safe session metadata,
+predictions, and explanation JSON. Set `ENABLE_SIGNAL_PREVIEW=true` only for a
+local waveform demonstration.
+
+## Privacy modes and research tools
+
+- `control`: EDF header and free-text annotation scrubbing.
+- `cancellable-signal-projection`: the same scrubbing plus an in-memory,
+  keyed, lossy EEG transformation. Its transformed windows feed both the
+  detector and the offline identity attacker for research-only comparison.
+
+Install `requirements-research.txt` for the optional CHB-MIT evaluator and H5
+verifier. Neither tool exposes individual transformed signals or data through
+the API.
 
 ## Model status
 
@@ -33,3 +49,6 @@ use.
 
 See the repository [design system](../DESIGN.md) for the shared interface and
 privacy presentation rules.
+
+For a beginner-friendly explanation of startup, data flow, statuses, storage,
+and the code map, see [the workflow diagrams](../docs/workflow.md).

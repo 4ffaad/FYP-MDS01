@@ -2,13 +2,12 @@ import type { AnalysisResult, ApiErrorPayload, Job, JobStatus, PrivacyMethod } f
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 const USE_STUB = process.env.NEXT_PUBLIC_USE_API_STUB !== "false";
+const SHOW_SIGNAL_PREVIEW = USE_STUB || process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW === "true";
 const JOBS_KEY = "mds01.jobs.v1";
 
 export const PRIVACY_METHODS: PrivacyMethod[] = [
-  { id: "raw-control", label: "Raw / Control", description: "Records an unmodified-control configuration request." },
-  { id: "psd-features", label: "PSD Features", description: "Records a PSD-feature request; no PSD transform is active yet." },
-  { id: "channel-anonymization", label: "Channel Anonymization", description: "Records this request; EDF metadata de-identification runs for every upload." },
-  { id: "differential-privacy", label: "Differential Privacy", description: "Records this request; no differential-privacy transform is active yet." },
+  { id: "control", label: "Control", description: "Removes EDF metadata; detector and privacy evaluation use the same preprocessed windows." },
+  { id: "cancellable-signal-projection", label: "Cancellable signal projection", description: "Uses a keyed, lossy EEG transformation for both detection and privacy evaluation; it is not an anonymity guarantee." },
 ];
 
 export class ApiError extends Error {
@@ -102,6 +101,7 @@ function createStubResult(job: Job): AnalysisResult {
     modelName: "development-stub",
     modelVersion: "stub-0.1.0",
     nonClinical: true,
+    signalPreviewAvailable: true,
   };
 }
 
@@ -139,7 +139,6 @@ export async function submitAnalysis(file: File, privacyMethodId: string, onProg
   }
   const formData = new FormData();
   formData.append("archive", file);
-  formData.append("patient_reference", "web-upload");
   formData.append("privacy_method", privacyMethodId);
   const response = await uploadJson<{ session_id: string }>("/api/sessions/upload", formData, onProgress, signal);
   return { jobId: response.session_id };
@@ -159,11 +158,11 @@ export async function getResult(jobId: string, signal?: AbortSignal): Promise<An
   const [predictionPayload, explanationPayload, signalPayload] = await Promise.all([
     getJson<BackendPredictionResponse>(`/api/recordings/${encodeURIComponent(record.record_id)}/prediction`, signal),
     getJson<BackendExplanationResponse>(`/api/recordings/${encodeURIComponent(record.record_id)}/explanation`, signal),
-    getJson<BackendSignalResponse>(`/api/recordings/${encodeURIComponent(record.record_id)}/signal?duration_seconds=10&max_points=180`, signal),
+    SHOW_SIGNAL_PREVIEW ? getJson<BackendSignalResponse>(`/api/recordings/${encodeURIComponent(record.record_id)}/signal?duration_seconds=10&max_points=180`, signal) : Promise.resolve(null),
   ]);
   const predictions = predictionPayload.predictions;
   const strongest = predictions.reduce((current, item) => item.probability > current.probability ? item : current, predictions[0] ?? { probability: 0, seizure_detected: false, start_seconds: 0, end_seconds: 0 });
-  const timeSeries = downsample(signalPayload.samples[0] ?? [], 180);
+  const timeSeries = downsample(signalPayload?.samples[0] ?? [], 180);
   const attentionWeights = timeSeries.map((_, index) => {
     const seconds = (index / Math.max(timeSeries.length - 1, 1)) * 10;
     const window = predictions.find((item) => seconds >= item.start_seconds && seconds <= item.end_seconds);
@@ -182,6 +181,7 @@ export async function getResult(jobId: string, signal?: AbortSignal): Promise<An
     modelName: predictionPayload.model?.name ?? "backend-model",
     modelVersion: predictionPayload.model?.version ?? "unknown",
     nonClinical: explanationPayload.explanations.every((item) => !item.is_clinical),
+    signalPreviewAvailable: SHOW_SIGNAL_PREVIEW,
   };
 }
 

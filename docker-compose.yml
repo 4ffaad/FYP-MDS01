@@ -24,6 +24,9 @@ services:
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
       MODEL_RUNTIME: stub
       STORAGE_DIR: /app/backend/storage
+      MDS01_STORAGE_KEY: ${MDS01_STORAGE_KEY:-}
+      MDS01_TEMPLATE_KEY: ${MDS01_TEMPLATE_KEY:-}
+      ENABLE_SIGNAL_PREVIEW: ${ENABLE_SIGNAL_PREVIEW:-false}
     ports:
       - "8000:8000"
     volumes:

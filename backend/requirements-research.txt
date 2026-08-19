@@ -1,0 +1,4 @@
+-r requirements.txt
+h5py
+scikit-learn
+tensorflow-cpu
