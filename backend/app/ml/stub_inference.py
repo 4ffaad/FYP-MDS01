@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-import numpy as np
 import hashlib
+import numpy as np
 
 from backend.app.core.config import MODEL_NAME, MODEL_THRESHOLD, MODEL_VERSION
 from backend.app.ml.interface import WindowPrediction
-from backend.app.privacy.hashing import stable_probability
+
+
+def _stable_probability(value: str) -> float:
+    """Return a deterministic development-only value in the range [0, 1]."""
+
+    raw = hashlib.sha256(value.encode("utf-8")).digest()
+    return int.from_bytes(raw[:8], "big") / float(2**64 - 1)
 
 
 class StubInferenceService:
@@ -52,7 +58,7 @@ class StubInferenceService:
         predictions: list[WindowPrediction] = []
         for index, start in enumerate(window_starts.tolist()):
             window_digest = hashlib.sha256(windows[index].tobytes()).hexdigest()
-            probability = stable_probability(f"{record_id}:{index}:{window_digest}")
+            probability = _stable_probability(f"{record_id}:{index}:{window_digest}")
             predictions.append(
                 WindowPrediction(
                     window_index=index,

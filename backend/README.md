@@ -33,9 +33,9 @@ local waveform demonstration.
   keyed, lossy EEG transformation. Its transformed windows feed both the
   detector and the offline identity attacker for research-only comparison.
 
-Install `requirements-research.txt` for the optional CHB-MIT evaluator and H5
-verifier. Neither tool exposes individual transformed signals or data through
-the API.
+The endpoint stack does not need `requirements-research.txt`; it uses the
+deterministic stub. The optional H5 runtime remains blocked until a compatible
+artifact and manually reviewed model contract are supplied.
 
 ## Model status
 
@@ -50,5 +50,6 @@ use.
 See the repository [design system](../DESIGN.md) for the shared interface and
 privacy presentation rules.
 
-For a beginner-friendly explanation of startup, data flow, statuses, storage,
-and the code map, see [the workflow diagrams](../docs/workflow.md).
+For beginner-friendly instructions and Mermaid diagrams, see the [setup
+guide](../docs/setup.md) and [backend internals](../docs/backend.md). The
+frontend has its own [internal guide](../docs/frontend.md).

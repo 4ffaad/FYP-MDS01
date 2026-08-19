@@ -43,8 +43,7 @@ from backend.app.eeg.preprocessing import EEGPreprocessor
 from backend.app.eeg.model_input import MODEL_CHANNELS, prepare_model_windows
 from backend.app.ml.stub_inference import StubInferenceService
 from backend.app.privacy.deidentify import deidentify_edf, generate_record_id, inspect_metadata
-from backend.app.privacy.signal_projection import cancellable_signal_projection
-from backend.app.privacy.template import psd_features
+from backend.app.privacy.signal_projection import cancellable_signal_projection, psd_features
 from backend.app.research.chb_mit import seizure_window_labels, sidecar_path
 from backend.app.services.storage_service import SessionStorage, StorageError
 from backend.app.services.session_service import create_session, public_record

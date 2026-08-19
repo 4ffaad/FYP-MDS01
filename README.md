@@ -44,10 +44,10 @@ de-identified, processed, and explanation files are removed. The public API
 keeps only safe result metadata. A waveform preview is disabled by default and
 may be enabled only for local development with `ENABLE_SIGNAL_PREVIEW=true`.
 
-For the optional CHB-MIT research utilities, install
-`backend/requirements-research.txt`. Verify an H5 model before enabling it;
-the verifier writes an unreviewed contract that must be manually reviewed
-before `MODEL_RUNTIME=h5` can start.
+The endpoint stack uses the deterministic stub and does not need
+`backend/requirements-research.txt`. The optional H5 runtime remains blocked
+until a compatible artifact and manually reviewed model contract are supplied;
+keep `MODEL_RUNTIME=stub` for endpoint testing.
 
 ## What `.env.example` means
 
@@ -61,7 +61,9 @@ signal transformation. Generate different values with `openssl rand -base64 32`.
 ## Documentation
 
 - [Design system](DESIGN.md)
-- [Beginner workflow and Mermaid diagrams](docs/workflow.md)
+- [Setup guide](docs/setup.md)
+- [Backend internals](docs/backend.md)
+- [Frontend internals](docs/frontend.md)
 
 ## Frontend
 

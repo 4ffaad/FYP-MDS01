@@ -6,12 +6,14 @@ import hashlib
 import hmac
 
 import numpy as np
+from scipy.signal import welch
 
 
 TRANSFORMATION_VERSION = "cancellable-signal-projection-v1"
 MODEL_SHAPE = (1024, 18)
 REMOVED_CHANNEL_DIMENSIONS = 3
 QUANTIZATION_STEP = np.float32(1 / 16)
+PSD_BANDS = ((0.5, 4.0), (4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 45.0))
 
 
 def cancellable_signal_projection(windows: np.ndarray, key: bytes) -> np.ndarray:
@@ -41,3 +43,21 @@ def cancellable_signal_projection(windows: np.ndarray, key: bytes) -> np.ndarray
     return (
         np.rint(np.clip(projected, -5.0, 5.0) / QUANTIZATION_STEP) * QUANTIZATION_STEP
     ).astype(np.float32)
+
+
+def psd_features(windows: np.ndarray, sampling_rate: int = 256) -> np.ndarray:
+    """Return 90 log-bandpower features for offline identity evaluation."""
+
+    if windows.ndim != 3 or windows.shape[1:] != MODEL_SHAPE:
+        raise ValueError("PSD input must have shape (N, 1024, 18).")
+    frequencies, power = welch(
+        windows.transpose(0, 2, 1),
+        fs=sampling_rate,
+        nperseg=windows.shape[1],
+        axis=-1,
+    )
+    features = [
+        power[..., (frequencies >= low) & (frequencies < high)].mean(axis=-1)
+        for low, high in PSD_BANDS
+    ]
+    return np.log10(np.maximum(np.stack(features, axis=-1), 1e-12)).reshape(len(windows), -1)
