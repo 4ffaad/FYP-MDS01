@@ -37,7 +37,7 @@ export function ResultScreen({ jobId }: { jobId: string }) {
               <div className={`mt-1 grid size-11 shrink-0 place-items-center rounded-full ${prediction.tone === "teal" ? "bg-teal-soft text-teal-dark" : prediction.tone === "amber" ? "bg-amber-soft text-amber" : "bg-red-soft text-red"}`}><Icon name={prediction.icon} className="size-5" /></div>
               <div>
                 <p className="eyebrow">Analysis result</p>
-                <h1 id="result-heading" className="mt-2 max-w-2xl text-[clamp(1.9rem,4vw,3.35rem)] font-semibold leading-[1.05] tracking-[-0.05em] text-ink">{prediction.title}</h1>
+                <h1 id="result-heading" className="mt-2 max-w-2xl text-[clamp(1.9rem,4vw,3.35rem)] font-semibold leading-[1.05] tracking-tighter text-ink">{prediction.title}</h1>
                 <p className="mt-3 text-sm text-ink-muted">{result.recordingLabel}<span className="mx-2 text-rule-strong">·</span><span className="font-mono">{result.jobId}</span></p>
               </div>
             </div>
