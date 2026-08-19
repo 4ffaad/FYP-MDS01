@@ -8,15 +8,18 @@ import {
   CheckCircle,
   Clock,
   FileZip,
-  Info,
+ Info,
+ List,
   ListBullets,
-  LockKey,
-  Pulse,
-  ShieldCheck,
-  SpinnerGap,
-  UploadSimple,
-  WarningCircle,
-  type IconProps,
+ LockKey,
+ Pulse,
+ ShieldCheck,
+ SpinnerGap,
+ UploadSimple,
+ WarningCircle,
+ Trash,
+ X,
+ type IconProps,
 } from "@phosphor-icons/react";
 
 type IconName =
@@ -34,7 +37,10 @@ type IconName =
   | "file"
   | "refresh"
   | "info"
-  | "activity";
+  | "activity"
+  | "trash"
+  | "menu"
+  | "close";
 
 const iconMap = {
   upload: UploadSimple,
@@ -52,6 +58,9 @@ const iconMap = {
   refresh: ArrowClockwise,
   info: Info,
   activity: Pulse,
+  trash: Trash,
+  menu: List,
+  close: X,
 } as const;
 
 /** Render one consistent Phosphor icon for product controls and states. */

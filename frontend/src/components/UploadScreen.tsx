@@ -37,7 +37,7 @@ export function UploadScreen() {
     setError(null);
     try {
       const result = await submitAnalysis(file, methodId, setProgress);
-      router.push(`/dashboard?submitted=${encodeURIComponent(result.jobId)}`);
+      router.push(`/sessions/${encodeURIComponent(result.sessionId)}`);
     } catch (submissionError) {
       if (submissionError instanceof DOMException && submissionError.name === "AbortError") return;
       setError(submissionError instanceof Error ? submissionError.message : "The analysis could not be submitted.");
@@ -120,7 +120,7 @@ export function UploadScreen() {
               <ProcessStep number="02" title="De-identified" description="Patient-identifying EDF metadata is removed before analysis." />
               <ProcessStep number="03" title="Analysed and cleared" description="The pipeline stores safe results, then removes transient waveform files." />
             </ol>
-            <div className="border-t border-rule bg-amber-soft px-5 py-4 text-xs leading-5 text-amber"><span className="font-bold">Review boundary.</span> The development model and attention overlay are non-clinical.</div>
+            <div className="border-t border-rule bg-amber-soft px-5 py-4 text-xs leading-5 text-amber"><span className="font-bold">Review boundary.</span> The development model and score window are non-clinical.</div>
           </aside>
         </div>
       </div>

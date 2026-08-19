@@ -14,8 +14,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=list(CORS_ORIGINS),
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Accept"],
 )
 app.include_router(health_router)
 app.include_router(sessions_router)

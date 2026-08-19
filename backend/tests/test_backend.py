@@ -6,6 +6,7 @@ Run with: PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v
 from datetime import datetime
 import asyncio
 import io
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -17,6 +18,7 @@ import numpy as np
 import pyedflib
 from fastapi import BackgroundTasks, UploadFile
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 
 from backend.app.main import app
@@ -26,14 +28,17 @@ from backend.app.database.models.eeg import (
     EEGSession,
     Explanation,
     Prediction,
+    ProcessingAttempt,
     ProcessingStage,
     ProcessingStatus,
     RecordingStatus,
 )
 from backend.app.database.repository import (
     get_recording_by_public_id,
+    get_session_by_database_id,
     get_session_by_public_id,
     list_explanations,
+    list_flagged_window_counts,
     list_predictions,
     list_recordings_for_session,
     list_sessions,
@@ -44,9 +49,14 @@ from backend.app.eeg.model_input import MODEL_CHANNELS, prepare_model_windows
 from backend.app.ml.stub_inference import StubInferenceService
 from backend.app.privacy.deidentify import deidentify_edf, generate_record_id, inspect_metadata
 from backend.app.privacy.signal_projection import cancellable_signal_projection, psd_features
-from backend.app.research.chb_mit import seizure_window_labels, sidecar_path
+from backend.app.research.chb_mit import (
+    seizure_window_labels,
+    sidecar_annotations,
+    sidecar_path,
+    summary_annotations,
+)
 from backend.app.services.storage_service import SessionStorage, StorageError
-from backend.app.services.session_service import create_session, public_record
+from backend.app.services.session_service import create_session, delete_session, public_record, public_session
 from backend.app.services.validation_service import ValidationError, validate_edf
 
 
@@ -192,6 +202,19 @@ class BackendTests(unittest.TestCase):
             with self.assertRaises(StorageError):
                 storage.extract_edfs("SES-TEST", archive)
 
+    def test_storage_ignores_hidden_macos_edf_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SessionStorage(Path(directory) / "sessions")
+            archive = Path(directory) / "macos.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("chb01/chb01_01.edf", b"real")
+                output.writestr("__MACOSX/chb01/._chb01_01.edf", b"apple-double")
+                output.writestr("chb01/.hidden.edf", b"hidden")
+
+            extracted = storage.extract_edfs("SES-MACOS", archive)
+
+            self.assertEqual([path.name for path in extracted], ["chb01_01.edf"])
+
     def test_storage_encrypts_uploads_and_rejects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -204,7 +227,9 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(storage.materialize_archive("SES-CRYPTO", archive).read_bytes(), payload)
             with archive.open("r+b") as output:
                 output.seek(24)
-                output.write(b"x")
+                original_byte = output.read(1)
+                output.seek(24)
+                output.write(bytes([original_byte[0] ^ 0xFF]))
             with self.assertRaises(StorageError):
                 storage.materialize_archive("SES-CRYPTO", archive)
 
@@ -230,10 +255,98 @@ class BackendTests(unittest.TestCase):
         self.assertIn("/api/recordings/{record_id}/prediction", paths)
         self.assertNotIn("patient_reference", str(schema))
 
+    def test_status_and_stage_columns_use_varchar_enum_processing(self) -> None:
+        columns = (
+            EEGSession.__table__.c.status,
+            EEGRecording.__table__.c.status,
+            ProcessingAttempt.__table__.c.stage,
+            ProcessingAttempt.__table__.c.status,
+        )
+        for column in columns:
+            self.assertFalse(column.type.native_enum)
+
+    def test_failed_transaction_can_mark_session_failed_and_cleanup_storage(self) -> None:
+        from backend.app.services.processing_service import _mark_session_failed
+
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SessionStorage(Path(directory) / "sessions", self.storage_key)
+            session_dir = storage.session_dir("SES-DB-FAIL")
+            (session_dir / "original").mkdir()
+            (session_dir / "original" / "upload.zip.enc").write_bytes(b"private")
+            with Session(engine) as db:
+                db.add(EEGSession(session_id="SES-DB-FAIL"))
+                db.commit()
+                db.add(EEGSession(session_id="SES-DB-FAIL"))
+                with self.assertRaises(IntegrityError):
+                    db.commit()
+
+                _mark_session_failed(db, "SES-DB-FAIL", "Processing failed unexpectedly.")
+                failed = get_session_by_public_id(db, "SES-DB-FAIL")
+                self.assertEqual(failed.status, AnalysisStatus.FAILED)
+                self.assertEqual(failed.error_message, "Processing failed unexpectedly.")
+                self.assertIsNotNone(failed.completed_at)
+
+                db.rollback()
+                storage.cleanup_session("SES-DB-FAIL")
+                self.assertFalse(session_dir.exists())
+
+    def test_delete_preflight_is_allowed_from_local_frontend(self) -> None:
+        messages: list[dict[str, object]] = []
+        request = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "OPTIONS",
+            "scheme": "http",
+            "path": "/api/sessions/SES-NOT-REAL",
+            "raw_path": b"/api/sessions/SES-NOT-REAL",
+            "query_string": b"",
+            "headers": [
+                (b"origin", b"http://localhost:3000"),
+                (b"access-control-request-method", b"DELETE"),
+                (b"access-control-request-headers", b"accept"),
+            ],
+            "client": ("127.0.0.1", 0),
+            "server": ("127.0.0.1", 8000),
+        }
+
+        async def receive() -> dict[str, object]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, object]) -> None:
+            messages.append(message)
+
+        asyncio.run(app(request, receive, send))
+        response = next(message for message in messages if message["type"] == "http.response.start")
+        headers = dict(response["headers"])  # type: ignore[arg-type]
+        self.assertEqual(response["status"], 200)
+        self.assertIn(b"DELETE", headers[b"access-control-allow-methods"])
+
     def test_chb_mit_window_labels_and_sidecar_name_are_deterministic(self) -> None:
         recording = Path("chb01_03.edf")
         self.assertEqual(sidecar_path(recording).name, "chb01_03.edf.seizures")
         self.assertEqual(seizure_window_labels([0.0, 4.0, 8.0], [(3.0, 6.0)]), [0, 1, 0])
+
+    def test_chb_mit_summary_and_sidecar_annotations(self) -> None:
+        summary = """File Name: chb01_01.edf
+Number of Seizures in File: 0
+
+File Name: chb01_03.edf
+Number of Seizures in File: 1
+Seizure Start Time: 2996 seconds
+Seizure End Time: 3036 seconds
+"""
+        sidecar = bytes.fromhex(
+            "005817fc23232074696d65207265736f6c7574696f6e3a2032353600"
+            "00ecffffffff010000ec0b0000b4008000ec0000002800840000"
+        )
+
+        self.assertEqual(summary_annotations(summary)["chb01_01.edf"], [])
+        self.assertEqual(summary_annotations(summary)["chb01_03.edf"], [(2996.0, 3036.0)])
+        self.assertEqual(sidecar_annotations(sidecar), [(2996.0, 3036.0)])
 
     def test_upload_schedules_background_pipeline_without_rq_job_id(self) -> None:
         from backend.app.api.sessions import upload_session
@@ -288,6 +401,31 @@ class BackendTests(unittest.TestCase):
             get_signal("REC-NOT-LOOKED-UP", db=None)
         self.assertEqual(raised.exception.status_code, 404)
 
+    def test_signal_endpoint_returns_ten_seconds_of_model_channels(self) -> None:
+        from backend.app.api.recordings import get_signal
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "preview.edf"
+            self._create_source_edf(source, MODEL_CHANNELS, 2560)
+            database = create_engine("sqlite://", connect_args={"check_same_thread": False})
+            self.addCleanup(database.dispose)
+            SQLModel.metadata.create_all(database)
+            with Session(database) as db:
+                session = EEGSession(session_id="SES-SIGNAL")
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                db.add(EEGRecording(record_id="REC-SIGNAL", session_db_id=session.id, sequence_index=1, original_filename="", deidentified_path=str(source), status=RecordingStatus.INFERRED))
+                db.commit()
+
+                with patch("backend.app.api.recordings.ENABLE_SIGNAL_PREVIEW", True):
+                    payload = get_signal("REC-SIGNAL", 0, 10, 600, db)
+
+            self.assertEqual(payload["duration_seconds"], 10)
+            self.assertEqual(payload["channel_labels"], list(MODEL_CHANNELS))
+            self.assertEqual(len(payload["samples"]), 18)
+            self.assertEqual(len(payload["samples"][0]), 600)
+
     def test_prototype_has_no_redis_rq_or_worker_configuration(self) -> None:
         from backend.app.core import config
 
@@ -313,11 +451,48 @@ class BackendTests(unittest.TestCase):
             session_db_id=1,
             sequence_index=1,
             original_filename="Jane-Doe-Identifiable.edf",
+            reference_annotation_source="chb-mit-summary",
+            reference_intervals_json="[]",
             status=RecordingStatus.DEIDENTIFIED,
         )
         payload = public_record(record)
         self.assertEqual(payload["source_filename"], "recording_01.edf")
+        self.assertEqual(payload["reference_annotation"], {"source": "chb-mit-summary", "intervals": []})
         self.assertNotIn("Jane", str(payload))
+
+    def test_direct_recording_response_includes_safe_session_context(self) -> None:
+        from backend.app.api.recordings import get_recording
+
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as db:
+            session = EEGSession(
+                session_id="SES-RECORD-CONTEXT",
+                privacy_method="control",
+                original_filename="patient-upload.zip",
+                original_path="/private/patient-upload.zip",
+            )
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+            record = EEGRecording(
+                record_id="REC-RECORD-CONTEXT",
+                session_db_id=session.id,
+                sequence_index=12,
+                original_filename="patient-name.edf",
+                status=RecordingStatus.INFERRED,
+            )
+            db.add(record)
+            db.commit()
+
+            payload = get_recording(record.record_id, db)
+
+        self.assertEqual(payload["session_id"], "SES-RECORD-CONTEXT")
+        self.assertEqual(payload["privacy_method"], "control")
+        self.assertIn("session_created_at", payload)
+        self.assertEqual(payload["source_filename"], "recording_12.edf")
+        self.assertNotIn("patient", str(payload).lower())
 
     def test_repositories_query_sessions_recordings_and_predictions(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
@@ -344,9 +519,101 @@ class BackendTests(unittest.TestCase):
             db.refresh(record)
 
             self.assertEqual(get_session_by_public_id(db, "SES-REPOSITORY").session_id, "SES-REPOSITORY")
+            self.assertEqual(get_session_by_database_id(db, session.id).session_id, "SES-REPOSITORY")
             self.assertEqual(len(list_sessions(db)), 1)
             self.assertEqual(list_recordings_for_session(db, session.id)[0].record_id, "REC-REPOSITORY")
             self.assertEqual(list_predictions(db, record.id), [])
+
+    def test_public_session_reports_progress_and_model_alert_summary(self) -> None:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as db:
+            session = EEGSession(session_id="SES-SUMMARY", status=AnalysisStatus.COMPLETED_WITH_ERRORS)
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+            completed = EEGRecording(
+                record_id="REC-SUMMARY-1",
+                session_db_id=session.id,
+                sequence_index=1,
+                original_filename="private-1.edf",
+                status=RecordingStatus.INFERRED,
+                reference_annotation_source="chb-mit-summary",
+                reference_intervals_json="[[12, 24]]",
+            )
+            failed = EEGRecording(
+                record_id="REC-SUMMARY-2",
+                session_db_id=session.id,
+                sequence_index=2,
+                original_filename="private-2.edf",
+                status=RecordingStatus.FAILED,
+            )
+            db.add(completed)
+            db.add(failed)
+            db.commit()
+            db.refresh(completed)
+            db.add(Prediction(
+                recording_db_id=completed.id,
+                window_index=0,
+                model_name="development-stub",
+                model_version="stub-0.1.0",
+                probability=0.9,
+                seizure_detected=True,
+                start_seconds=0,
+                end_seconds=4,
+            ))
+            db.commit()
+
+            payload = public_session(db, session)
+            flagged_counts = list_flagged_window_counts(db, [completed.id])
+
+        self.assertEqual(payload["progress"], {
+            "total_recordings": 2,
+            "finished_recordings": 2,
+            "completed_recordings": 1,
+            "failed_recordings": 1,
+            "percent": 100,
+        })
+        self.assertEqual(payload["summary"], {"dataset_seizure_recordings": 1, "model_alert_recordings": 1})
+        self.assertEqual(payload["recordings"][0]["model_alert_window_count"], 1)
+        self.assertEqual(flagged_counts, {completed.id: 1})
+
+    def test_delete_session_removes_results_and_private_storage(self) -> None:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SessionStorage(Path(directory) / "sessions", self.storage_key)
+            session_dir = storage.session_dir("SES-DELETE")
+            (session_dir / "original.zip").write_bytes(b"private")
+            with Session(engine) as db:
+                session = EEGSession(session_id="SES-DELETE", status=AnalysisStatus.COMPLETED)
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                record = EEGRecording(session_db_id=session.id, record_id="REC-DELETE", original_filename="private.edf")
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+                db.add(Prediction(
+                    recording_db_id=record.id,
+                    window_index=0,
+                    model_name="stub",
+                    model_version="0.1",
+                    probability=0.5,
+                    seizure_detected=False,
+                    start_seconds=0,
+                    end_seconds=4,
+                ))
+                db.commit()
+                db.refresh(record)
+
+                delete_session(db, storage, session)
+                self.assertIsNone(get_session_by_public_id(db, "SES-DELETE"))
+                self.assertEqual(list_sessions(db), [])
+
+            self.assertFalse((storage.root / "SES-DELETE").exists())
 
     def test_failed_upload_rolls_back_session_row(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
@@ -398,6 +665,13 @@ class BackendTests(unittest.TestCase):
             with zipfile.ZipFile(archive, "w") as output:
                 output.write(first, first.name)
                 output.write(second, second.name)
+                output.writestr("__MACOSX/._one.edf", b"not an EDF")
+                output.writestr(
+                    "chb01-summary.txt",
+                    "File Name: one.edf\nNumber of Seizures in File: 1\n"
+                    "Seizure Start Time: 12 seconds\nSeizure End Time: 24 seconds\n\n"
+                    "File Name: two.edf\nNumber of Seizures in File: 0\n",
+                )
 
             database = create_engine("sqlite://", connect_args={"check_same_thread": False})
             self.addCleanup(database.dispose)
@@ -432,9 +706,13 @@ class BackendTests(unittest.TestCase):
                 session = get_session_by_public_id(db, "SES-PARTIAL")
                 records = list_recordings_for_session(db, session.id)
                 self.assertEqual(session.status, AnalysisStatus.COMPLETED_WITH_ERRORS)
+                self.assertEqual(len(records), 2)
                 self.assertEqual(records[0].status, RecordingStatus.FAILED)
                 self.assertEqual(records[1].status, RecordingStatus.INFERRED)
                 self.assertEqual(records[0].error_message, "malformed EDF")
+                self.assertEqual(records[0].reference_annotation_source, "chb-mit-summary")
+                self.assertEqual(json.loads(records[0].reference_intervals_json), [[12.0, 24.0]])
+                self.assertEqual(json.loads(records[1].reference_intervals_json), [])
 
     def test_full_pipeline_processes_a_model_compatible_edf(self) -> None:
         from backend.app.services.processing_service import process_session

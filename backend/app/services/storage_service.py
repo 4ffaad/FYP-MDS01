@@ -20,6 +20,7 @@ from backend.app.core.config import (
     STORAGE_KEY_ENV,
 )
 from backend.app.privacy.crypto import CryptoError, read_base64_key
+from backend.app.research.chb_mit import sidecar_annotations, summary_annotations
 
 
 class StorageError(ValueError):
@@ -29,6 +30,7 @@ class StorageError(ValueError):
 _ENCRYPTED_MAGIC = b"MDS01GCM1"
 _NONCE_BYTES = 12
 _TAG_BYTES = 16
+_MAX_ANNOTATION_MEMBER_BYTES = 1024 * 1024
 
 
 class SessionStorage:
@@ -208,6 +210,42 @@ class SessionStorage:
             raise StorageError("Archive contains an invalid file path.")
         return candidate
 
+    @staticmethod
+    def _is_hidden_member(path: PurePosixPath) -> bool:
+        """Return whether a ZIP member is hidden operating-system metadata."""
+
+        return any(part == "__MACOSX" or part.startswith(".") for part in path.parts)
+
+    def read_reference_annotations(self, archive_path: Path) -> dict[str, tuple[str, list[tuple[float, float]]]]:
+        """Read optional CHB-MIT reference intervals without retaining source names."""
+
+        annotations: dict[str, tuple[str, list[tuple[float, float]]]] = {}
+        summaries: dict[str, list[tuple[float, float]]] = {}
+        sidecars: dict[str, list[tuple[float, float]]] = {}
+        with zipfile.ZipFile(archive_path) as archive:
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                relative = self._safe_member_path(member.filename)
+                if self._is_hidden_member(relative) or member.file_size > _MAX_ANNOTATION_MEMBER_BYTES:
+                    continue
+                lower_name = relative.name.lower()
+                try:
+                    if lower_name.endswith("-summary.txt"):
+                        text = archive.read(member).decode("utf-8-sig")
+                        summaries.update(summary_annotations(text))
+                    elif lower_name.endswith(".edf.seizures"):
+                        edf_name = lower_name.removesuffix(".seizures")
+                        sidecars[edf_name] = sidecar_annotations(archive.read(member))
+                except (UnicodeDecodeError, ValueError):
+                    continue
+
+        for filename, intervals in sidecars.items():
+            annotations[filename] = ("chb-mit-sidecar", intervals)
+        for filename, intervals in summaries.items():
+            annotations[filename] = ("chb-mit-summary", intervals)
+        return annotations
+
     def extract_edfs(self, session_id: str, archive_path: Path) -> list[Path]:
         """Extract validated EDF members into the session directory.
 
@@ -232,11 +270,14 @@ class SessionStorage:
 
         extracted_dir = self.directory(session_id, "extracted")
         with zipfile.ZipFile(archive_path) as archive:
-            members = [
-                member
-                for member in archive.infolist()
-                if not member.is_dir() and Path(member.filename).suffix.lower() == ".edf"
-            ]
+            members: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                relative = self._safe_member_path(member.filename)
+                if self._is_hidden_member(relative) or relative.suffix.lower() != ".edf":
+                    continue
+                members.append((member, relative))
             if not members:
                 raise StorageError("ZIP archive does not contain EDF files.")
             if len(members) > MAX_EDF_FILES_PER_ARCHIVE:
@@ -246,10 +287,9 @@ class SessionStorage:
             used_names: set[str] = set()
             natural_key = lambda item: [
                 int(part) if part.isdigit() else part.lower()
-                for part in re.split(r"(\d+)", item.filename)
+                for part in re.split(r"(\d+)", item[1].name)
             ]
-            for member in sorted(members, key=natural_key):
-                relative = self._safe_member_path(member.filename)
+            for member, relative in sorted(members, key=natural_key):
                 if member.file_size > MAX_ARCHIVE_MEMBER_BYTES:
                     raise StorageError("Archive member exceeds the size limit.")
                 # Store only the basename to prevent user-controlled directory
@@ -310,3 +350,14 @@ class SessionStorage:
             return
         for name in ("original", "work", "extracted", "processed", "explanations"):
             shutil.rmtree(session_dir / name, ignore_errors=True)
+
+    def delete_session(self, session_id: str) -> None:
+        """Delete all private files belonging to one user-requested session.
+
+        Parameters
+        ----------
+        session_id : str
+            Opaque session identifier whose protected storage should be removed.
+        """
+
+        shutil.rmtree(self.root / session_id, ignore_errors=True)

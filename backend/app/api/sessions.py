@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import BackgroundTasks, APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import BackgroundTasks, APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from sqlmodel import Session
 
 from backend.app.core.config import SUPPORTED_PRIVACY_METHODS
@@ -12,6 +12,7 @@ from backend.app.services.session_service import (
     get_session_or_none,
     public_session,
     public_session_list,
+    delete_session,
 )
 from backend.app.services.processing_service import process_session
 from backend.app.services.storage_service import SessionStorage, StorageError
@@ -174,3 +175,35 @@ def get_session_recordings(session_id: str, db: Session = Depends(get_session)) 
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
     return public_session(db, session)["recordings"]
+
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_session_route(session_id: str, db: Session = Depends(get_session)) -> Response:
+    """Delete one completed session and its private artifacts.
+
+    Parameters
+    ----------
+    session_id : str
+        Opaque session identifier selected by the user.
+    db : sqlmodel.Session
+        Request-scoped database session.
+
+    Returns
+    -------
+    fastapi.Response
+        Empty HTTP 204 response after database and private-storage cleanup.
+
+    Raises
+    ------
+    fastapi.HTTPException
+        Raised with 404 when missing or 409 while processing is active.
+    """
+
+    session = get_session_or_none(db, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session was not found.")
+    try:
+        delete_session(db, SessionStorage(), session)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

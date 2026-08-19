@@ -13,11 +13,14 @@ from backend.app.database.db import get_session
 from backend.app.database.models.eeg import EEGRecording
 from backend.app.database.repository import (
     get_recording_by_public_id,
+    get_session_by_database_id,
+    list_flagged_window_counts,
     list_explanations,
     list_predictions,
 )
 from backend.app.services.session_service import public_record
 from backend.app.eeg.edf_io import read_uniform_edf
+from backend.app.eeg.model_input import MODEL_CHANNELS
 from backend.app.core.config import BACKEND_ROOT, ENABLE_SIGNAL_PREVIEW
 
 
@@ -69,7 +72,10 @@ def get_recording(record_id: str, db: Session = Depends(get_session)) -> dict:
         paths.
     """
 
-    return public_record(_get_record(db, record_id))
+    record = _get_record(db, record_id)
+    session = get_session_by_database_id(db, record.session_db_id)
+    alert_count = list_flagged_window_counts(db, [record.id] if record.id is not None else []).get(record.id or 0, 0)
+    return public_record(record, session, alert_count)
 
 
 @router.get("/recordings/{record_id}/prediction")
@@ -199,9 +205,15 @@ def get_signal(
     except Exception as exc:
         raise HTTPException(status_code=422, detail="Signal could not be read.") from exc
 
+    channel_indices = [labels.index(label) for label in MODEL_CHANNELS if label in labels]
+    if len(channel_indices) == len(MODEL_CHANNELS):
+        signals = signals[channel_indices]
+        labels = list(MODEL_CHANNELS)
+
     start = min(int(start_seconds * sampling_rate), signals.shape[1])
     end = min(int((start_seconds + duration_seconds) * sampling_rate), signals.shape[1])
     selected = signals[:, start:end]
+    actual_duration = (end - start) / sampling_rate
     if selected.shape[1] > max_points:
         indices = np.linspace(0, selected.shape[1] - 1, max_points, dtype=int)
         selected = selected[:, indices]
@@ -210,6 +222,6 @@ def get_signal(
         "sampling_rate": sampling_rate,
         "channel_labels": labels,
         "start_seconds": start / sampling_rate,
-        "duration_seconds": selected.shape[1] / sampling_rate,
+        "duration_seconds": actual_duration,
         "samples": selected.tolist(),
     }

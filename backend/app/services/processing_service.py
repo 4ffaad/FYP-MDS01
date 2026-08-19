@@ -144,6 +144,36 @@ def _finish_attempt(db: Session, attempt: ProcessingAttempt, status: ProcessingS
     db.commit()
 
 
+def _mark_session_failed(db: Session, session_id: str, error: str) -> None:
+    """Rollback a failed transaction and persist a safe terminal status.
+
+    Parameters
+    ----------
+    db : sqlmodel.Session
+        Database session whose failed transaction must be cleared first.
+    session_id : str
+        Opaque public session identifier to update.
+    error : str
+        Bounded, non-sensitive failure message.
+
+    Returns
+    -------
+    None
+        The session is marked failed when it still exists.
+    """
+
+    db.rollback()
+    failed_session = get_session_by_public_id(db, session_id)
+    if failed_session is None:
+        return
+    failed_session.status = AnalysisStatus.FAILED
+    failed_session.current_stage = None
+    failed_session.error_message = error[:500]
+    failed_session.completed_at = _now()
+    db.add(failed_session)
+    db.commit()
+
+
 def process_session(session_id: str) -> None:
     """Run validation and all per-recording stages for one queued session.
 
@@ -177,6 +207,7 @@ def process_session(session_id: str) -> None:
                 _set_session_status(db, session, AnalysisStatus.VALIDATING, "validation")
                 validation_attempt = _begin_attempt(db, session, ProcessingStage.VALIDATION)
                 archive_path = storage.materialize_archive(session.session_id, Path(session.original_path))
+                reference_annotations = storage.read_reference_annotations(archive_path)
                 extracted_paths = storage.extract_edfs(session.session_id, archive_path)
                 _finish_attempt(db, validation_attempt, ProcessingStatus.SUCCEEDED)
             except Exception as exc:
@@ -192,18 +223,26 @@ def process_session(session_id: str) -> None:
                 return
 
             any_errors = False
+            records: list[EEGRecording] = []
             for sequence_index, extracted_path in enumerate(extracted_paths, start=1):
+                reference = reference_annotations.get(extracted_path.name.lower())
                 record = EEGRecording(
                     record_id=generate_record_id(),
                     session_db_id=session.id,
                     sequence_index=sequence_index,
                     original_filename="",
                     extracted_path=str(extracted_path),
+                    reference_annotation_source=reference[0] if reference else None,
+                    reference_intervals_json=json.dumps(reference[1]) if reference else None,
                     status=RecordingStatus.VALIDATING,
                 )
                 db.add(record)
-                db.commit()
+                records.append(record)
+            db.commit()
+            for record in records:
                 db.refresh(record)
+
+            for record in records:
                 try:
                     _process_record(db, session, record, storage, inference)
                 except Exception as exc:
@@ -218,16 +257,25 @@ def process_session(session_id: str) -> None:
             session.completed_at = _now()
             db.add(session)
             db.commit()
+        except Exception as exc:
+            _mark_session_failed(db, session_id, _safe_error(exc))
         finally:
-            storage.cleanup_session(session.session_id, keep_deidentified=ENABLE_SIGNAL_PREVIEW)
-            session.original_path = ""
-            for record in list_recordings_for_session(db, session.id):
+            # A failed flush leaves SQLAlchemy unusable until rollback. Clear
+            # that state before touching private storage or querying records.
+            db.rollback()
+            storage.cleanup_session(session_id, keep_deidentified=ENABLE_SIGNAL_PREVIEW)
+            db.rollback()
+            current_session = get_session_by_public_id(db, session_id)
+            if current_session is None or current_session.id is None:
+                return
+            current_session.original_path = ""
+            for record in list_recordings_for_session(db, current_session.id):
                 record.extracted_path = None
                 record.preprocessed_path = None
                 if not ENABLE_SIGNAL_PREVIEW:
                     record.deidentified_path = None
                 db.add(record)
-            db.add(session)
+            db.add(current_session)
             db.commit()
 
 

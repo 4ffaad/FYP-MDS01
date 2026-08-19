@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
+from sqlalchemy import Column, Enum as SAEnum
 from sqlmodel import Field, SQLModel
 
 
@@ -75,7 +76,16 @@ class EEGSession(SQLModel, table=True):
     privacy_method: str = Field(default="control", max_length=64)
     original_filename: str = ""
     original_path: str = ""
-    status: AnalysisStatus = Field(default=AnalysisStatus.QUEUED, index=True)
+    # Alembic intentionally stores statuses as VARCHAR. Keep Python enum
+    # conversion without asking PostgreSQL for a native enum type.
+    status: AnalysisStatus = Field(
+        default=AnalysisStatus.QUEUED,
+        sa_column=Column(
+            SAEnum(AnalysisStatus, native_enum=False, create_constraint=False),
+            nullable=False,
+            index=True,
+        ),
+    )
     current_stage: str | None = None
     error_message: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -98,7 +108,16 @@ class EEGRecording(SQLModel, table=True):
     duration_seconds: float | None = None
     sampling_rate: int | None = None
     channel_count: int | None = None
-    status: RecordingStatus = Field(default=RecordingStatus.UPLOADED, index=True)
+    reference_annotation_source: str | None = None
+    reference_intervals_json: str | None = None
+    status: RecordingStatus = Field(
+        default=RecordingStatus.UPLOADED,
+        sa_column=Column(
+            SAEnum(RecordingStatus, native_enum=False, create_constraint=False),
+            nullable=False,
+            index=True,
+        ),
+    )
     error_message: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
@@ -111,8 +130,19 @@ class ProcessingAttempt(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     recording_db_id: int | None = Field(default=None, foreign_key="recordings.id", index=True)
     session_db_id: int = Field(foreign_key="sessions.id", index=True)
-    stage: ProcessingStage
-    status: ProcessingStatus = Field(default=ProcessingStatus.PENDING)
+    stage: ProcessingStage = Field(
+        sa_column=Column(
+            SAEnum(ProcessingStage, native_enum=False, create_constraint=False),
+            nullable=False,
+        ),
+    )
+    status: ProcessingStatus = Field(
+        default=ProcessingStatus.PENDING,
+        sa_column=Column(
+            SAEnum(ProcessingStatus, native_enum=False, create_constraint=False),
+            nullable=False,
+        ),
+    )
     error_message: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None

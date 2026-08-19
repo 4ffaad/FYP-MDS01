@@ -93,6 +93,7 @@ Sessions:
 - `GET /api/sessions/{session_id}`
 - `GET /api/sessions/{session_id}/status`
 - `GET /api/sessions/{session_id}/recordings`
+- `DELETE /api/sessions/{session_id}` (completed sessions only)
 
 Recordings:
 
@@ -101,9 +102,18 @@ Recordings:
 - `GET /api/recordings/{record_id}/explanation`
 - `GET /api/recordings/{record_id}/signal`
 
-Responses expose generated IDs, safe technical metadata, statuses, predictions,
-and explanation JSON. They do not expose patient references, original names,
-filesystem paths, original files, or cryptographic hashes.
+Responses expose generated IDs, safe technical metadata, statuses, processing
+progress, recording-level model alert counts, predictions, safe relative CHB-MIT
+reference intervals, and explanation JSON. The large result score is the peak
+probability of one four-second window, not validated patient-level confidence
+or accuracy. A whole-recording accuracy requires labelled evaluation data.
+Hidden macOS
+archive entries such as `__MACOSX/._*.edf` are ignored before recording rows
+are created. A direct recording response also includes its safe
+owning `session_id`, `session_created_at`, and `privacy_method` so a recording
+result can show when its upload was submitted. They do not expose patient
+references, original names, filesystem paths, original files, or cryptographic
+hashes.
 
 ## Database tables
 
@@ -129,6 +139,8 @@ erDiagram
         string status
         int sampling_rate
         int channel_count
+        string reference_annotation_source
+        text reference_intervals_json
     }
     PROCESSING_ATTEMPTS {
         int id PK
