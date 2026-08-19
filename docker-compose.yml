@@ -21,6 +21,7 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg://seizureai:seizureai@postgres:5432/seizureai
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
       MODEL_RUNTIME: stub
       STORAGE_DIR: /app/backend/storage
     ports:

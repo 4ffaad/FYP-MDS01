@@ -24,6 +24,7 @@ async def upload_session(
     background_tasks: BackgroundTasks,
     archive: UploadFile = File(...),
     patient_reference: str = Form(...),
+    privacy_method: str = Form("raw-control"),
     db: Session = Depends(get_session),
 ) -> dict:
     """Accept a ZIP archive, create a session, and schedule background work.
@@ -35,6 +36,9 @@ async def upload_session(
     patient_reference : str
         Restricted internal reference stored in PostgreSQL and never exposed
         through public response serializers.
+    privacy_method : str
+        Requested privacy configuration recorded with the session. It does
+        not imply that an unimplemented privacy algorithm was applied.
     background_tasks : fastapi.BackgroundTasks
         FastAPI-managed in-process task runner used to start the EEG pipeline
         after the HTTP response is sent.
@@ -57,9 +61,17 @@ async def upload_session(
         raise HTTPException(status_code=400, detail="Upload one ZIP archive containing EDF files.")
     if not patient_reference.strip():
         raise HTTPException(status_code=400, detail="patient_reference is required.")
+    if not privacy_method.strip() or len(privacy_method) > 64:
+        raise HTTPException(status_code=400, detail="privacy_method must contain at most 64 characters.")
 
     try:
-        session = await create_session(db, SessionStorage(), archive, patient_reference)
+        session = await create_session(
+            db,
+            SessionStorage(),
+            archive,
+            patient_reference,
+            privacy_method,
+        )
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

@@ -1,0 +1,52 @@
+# MDS01 frontend
+
+MDS01 is a desktop-first clinical decision-support interface for privacy-preserving EEG seizure detection. The visual system uses the local Apple design reference as a guide for white surfaces, SF Pro-style typography, hairlines, pill actions, and restrained Action Blue.
+
+## Run locally
+
+From this directory:
+
+```bash
+npm install
+cp .env.example .env.local
+npm run dev
+```
+
+Open <http://127.0.0.1:3000>. The default `NEXT_PUBLIC_USE_API_STUB=true` makes the UI usable without a running backend. It stores generated synthetic run labels in browser `localStorage`; no original filename is rendered. Model output and overlays are labelled non-clinical.
+
+To use the FastAPI adapter:
+
+```dotenv
+NEXT_PUBLIC_USE_API_STUB=false
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+```
+
+The adapter calls the current backend session and recording routes from `src/lib/api.ts`. It sends an opaque `web-upload` reference because the backend currently requires a restricted form field; that value is never rendered. The selected privacy configuration is stored with the backend session and returned in safe API responses. It is requested metadata only until matching processing algorithms are implemented.
+
+## Routes
+
+- `/upload` - choose an EEG ZIP, select a config-driven privacy method, and submit one analysis;
+- `/dashboard` - monitor queued, processing, complete, and failed runs;
+- `/results/[jobId]` - inspect prediction, confidence, a bounded waveform/attention view, privacy configuration, and the non-clinical notice.
+
+## Verification
+
+```bash
+npm run lint
+npm run build
+npm run test:e2e
+```
+
+The end-to-end suite checks desktop and mobile upload, empty, completed, error, navigation, and privacy-safe rendering states. Screenshots are written to `test-results/` during the visual checks.
+
+## Reading order
+
+1. `src/app/layout.tsx` - metadata and shell boundary;
+2. `src/app/globals.css` - named visual tokens, focus, selection, motion, and shared controls;
+3. `src/components/AppShell.tsx` and `src/components/NavLink.tsx` - workspace chrome and active navigation;
+4. `src/components/UploadScreen.tsx` - the single-action submission flow;
+5. `src/components/DashboardScreen.tsx` and `src/components/StatusBadge.tsx` - polling, filters, safe run rows, and states;
+6. `src/components/ResultScreen.tsx` and `src/components/AttentionHeatmap.tsx` - result hierarchy and evidence visualization;
+7. `src/lib/api.ts` and `src/lib/types.ts` - the replaceable data boundary and presentation types.
+
+See the durable visual contract in [`DESIGN.md`](../DESIGN.md) and the source reference in [`apple/DESIGN.md`](../apple/DESIGN.md).

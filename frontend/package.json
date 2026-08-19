@@ -1,0 +1,29 @@
+{
+  "name": "mds01-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint . --max-warnings=0",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "next": "^16.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "22.10.2",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.39.1",
+    "eslint-config-next": "^16.3.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "5.7.2"
+  }
+}

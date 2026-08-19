@@ -7,11 +7,15 @@ from pathlib import Path
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from backend.app.database.db import get_session
-from backend.app.database.models.eeg import EEGRecording, Explanation, Prediction
-from backend.app.database.repositories.recording_repository import get_by_public_id, list_predictions
+from backend.app.database.models.eeg import EEGRecording
+from backend.app.database.repository import (
+    get_recording_by_public_id,
+    list_explanations,
+    list_predictions,
+)
 from backend.app.services.session_service import public_record
 from backend.app.eeg.edf_io import read_uniform_edf
 from backend.app.core.config import BACKEND_ROOT
@@ -41,7 +45,7 @@ def _get_record(db: Session, record_id: str) -> EEGRecording:
         Raised with status 404 when the recording does not exist.
     """
 
-    record = get_by_public_id(db, record_id)
+    record = get_recording_by_public_id(db, record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Recording was not found.")
     return record
@@ -131,9 +135,7 @@ def get_explanation(record_id: str, db: Session = Depends(get_session)) -> dict:
     record = _get_record(db, record_id)
     predictions = list_predictions(db, record.id)
     prediction_ids = [prediction.id for prediction in predictions if prediction.id is not None]
-    explanations = list(
-        db.exec(select(Explanation).where(Explanation.prediction_db_id.in_(prediction_ids))).all()
-    ) if prediction_ids else []
+    explanations = list_explanations(db, prediction_ids)
     items = []
     for explanation in explanations:
         payload = None

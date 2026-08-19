@@ -1,4 +1,4 @@
-# SeizureAI backend
+# MDS01 backend
 
 The backend accepts an EEG ZIP archive, creates a session, and schedules the
 EEG pipeline with FastAPI `BackgroundTasks`. Each EDF passes through
@@ -29,15 +29,7 @@ pipeline can be tested. The unintegrated model artifact is stored at
 `backend/model/best_seizure_model.h5` and requires contract verification before
 use.
 
-## Documentation
+## Project design
 
-Read the repository documentation from the root directory:
-
-- [Architecture](../docs/architecture.md)
-- [Local setup](../docs/setup.md)
-- [API reference](../docs/api.md)
-- [EEG pipeline](../docs/pipeline.md)
-- [Database](../docs/database.md)
-- [Storage and privacy](../docs/storage-and-privacy.md)
-- [Code map](../docs/code-map.md)
-- [Troubleshooting](../docs/troubleshooting.md)
+See the repository [design system](../DESIGN.md) for the shared interface and
+privacy presentation rules.

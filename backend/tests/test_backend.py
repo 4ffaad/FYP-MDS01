@@ -9,7 +9,8 @@ import io
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+import zipfile
+from unittest.mock import ANY, AsyncMock, patch
 
 import numpy as np
 import pyedflib
@@ -17,25 +18,44 @@ from fastapi import BackgroundTasks, UploadFile
 from sqlmodel import Session, SQLModel, create_engine
 
 from backend.app.main import app
-from backend.app.database.models.eeg import AnalysisStatus, EEGRecording, EEGSession, RecordingStatus
-from backend.app.database.repositories.recording_repository import list_for_session, list_predictions
-from backend.app.database.repositories.session_repository import get_by_public_id, list_sessions
+from backend.app.database.models.eeg import (
+    AnalysisStatus,
+    EEGRecording,
+    EEGSession,
+    Explanation,
+    Prediction,
+    ProcessingStage,
+    ProcessingStatus,
+    RecordingStatus,
+)
+from backend.app.database.repository import (
+    get_recording_by_public_id,
+    get_session_by_public_id,
+    list_explanations,
+    list_predictions,
+    list_recordings_for_session,
+    list_sessions,
+)
 from backend.app.eeg.edf_io import read_uniform_edf
 from backend.app.eeg.preprocessing import EEGPreprocessor
 from backend.app.eeg.model_input import MODEL_CHANNELS, prepare_model_windows
 from backend.app.ml.stub_inference import StubInferenceService
 from backend.app.privacy.deidentify import deidentify_edf, generate_record_id, inspect_metadata
 from backend.app.services.storage_service import SessionStorage, StorageError
-from backend.app.services.session_service import public_record
+from backend.app.services.session_service import create_session, public_record
 from backend.app.services.validation_service import ValidationError, validate_edf
 
 
 class BackendTests(unittest.TestCase):
-    def _create_source_edf(self, path: Path) -> np.ndarray:
-        samples = np.array([
-            np.arange(512, dtype=np.int32) - 256,
-            np.arange(512, dtype=np.int32) - 128,
-        ])
+    def _create_source_edf(
+        self,
+        path: Path,
+        labels: tuple[str, ...] = ("FP1-F7", "F7-T7"),
+        sample_count: int = 512,
+    ) -> np.ndarray:
+        samples = np.asarray(
+            [np.arange(sample_count, dtype=np.int32) - sample_count // 2 + index for index in range(len(labels))]
+        )
         headers = [
             {
                 "label": label,
@@ -48,9 +68,9 @@ class BackendTests(unittest.TestCase):
                 "prefilter": "",
                 "transducer": "",
             }
-            for label in ("FP1-F7", "F7-T7")
+            for label in labels
         ]
-        writer = pyedflib.EdfWriter(str(path), 2, file_type=pyedflib.FILETYPE_EDFPLUS)
+        writer = pyedflib.EdfWriter(str(path), len(labels), file_type=pyedflib.FILETYPE_EDFPLUS)
         try:
             writer.setHeader({
                 "technician": "Technician Name",
@@ -166,14 +186,21 @@ class BackendTests(unittest.TestCase):
         tasks = BackgroundTasks()
 
         with (
-            patch("backend.app.api.sessions.create_session", new=AsyncMock(return_value=session)),
+            patch("backend.app.api.sessions.create_session", new=AsyncMock(return_value=session)) as create,
             patch("backend.app.api.sessions.SessionStorage"),
             patch("backend.app.api.sessions.process_session") as process,
         ):
-            payload = asyncio.run(upload_session(tasks, archive, "internal"))
+            payload = asyncio.run(upload_session(tasks, archive, "internal", "channel-anonymization"))
 
         self.assertEqual(payload, {"session_id": "SES-BACKGROUND", "status": "queued"})
         self.assertNotIn("job_id", payload)
+        create.assert_awaited_once_with(
+            ANY,
+            ANY,
+            archive,
+            "internal",
+            "channel-anonymization",
+        )
         self.assertEqual(len(tasks.tasks), 1)
         self.assertIs(tasks.tasks[0].func, process)
         self.assertEqual(tasks.tasks[0].args, ("SES-BACKGROUND",))
@@ -233,10 +260,178 @@ class BackendTests(unittest.TestCase):
             db.commit()
             db.refresh(record)
 
-            self.assertEqual(get_by_public_id(db, "SES-REPOSITORY").session_id, "SES-REPOSITORY")
+            self.assertEqual(get_session_by_public_id(db, "SES-REPOSITORY").session_id, "SES-REPOSITORY")
             self.assertEqual(len(list_sessions(db)), 1)
-            self.assertEqual(list_for_session(db, session.id)[0].record_id, "REC-REPOSITORY")
+            self.assertEqual(list_recordings_for_session(db, session.id)[0].record_id, "REC-REPOSITORY")
             self.assertEqual(list_predictions(db, record.id), [])
+
+    def test_failed_upload_rolls_back_session_row(self) -> None:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        SQLModel.metadata.create_all(engine)
+        storage = SessionStorage(Path(tempfile.mkdtemp()) / "sessions")
+        archive = UploadFile(filename="session.zip", file=io.BytesIO(b"zip"))
+
+        with Session(engine) as db, patch.object(
+            storage,
+            "save_upload",
+            new=AsyncMock(side_effect=StorageError("upload failed")),
+        ):
+            with self.assertRaises(StorageError):
+                asyncio.run(create_session(db, storage, archive, "internal"))
+            self.assertEqual(list_sessions(db), [])
+
+    def test_processing_attempt_records_completion(self) -> None:
+        from backend.app.services.processing_service import _begin_attempt, _finish_attempt
+
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as db:
+            session = EEGSession(
+                session_id="SES-ATTEMPT",
+                patient_reference="internal",
+                original_filename="upload.zip",
+                original_path="/private/upload.zip",
+            )
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+
+            attempt = _begin_attempt(db, session, ProcessingStage.VALIDATION)
+            _finish_attempt(db, attempt, ProcessingStatus.SUCCEEDED)
+            db.refresh(attempt)
+
+            self.assertEqual(attempt.status, ProcessingStatus.SUCCEEDED)
+            self.assertIsNotNone(attempt.started_at)
+            self.assertIsNotNone(attempt.finished_at)
+
+    def test_processing_continues_after_one_recording_failure(self) -> None:
+        from backend.app.services.processing_service import process_session
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "one.edf"
+            second = root / "two.edf"
+            self._create_source_edf(first)
+            self._create_source_edf(second)
+            archive = root / "session.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.write(first, first.name)
+                output.write(second, second.name)
+
+            database = create_engine("sqlite://", connect_args={"check_same_thread": False})
+            SQLModel.metadata.create_all(database)
+            storage = SessionStorage(root / "sessions")
+            with Session(database) as db:
+                db.add(
+                    EEGSession(
+                        session_id="SES-PARTIAL",
+                        patient_reference="internal",
+                        original_filename="session.zip",
+                        original_path=str(archive),
+                    )
+                )
+                db.commit()
+
+            def process_record(db, session, record, storage, inference):
+                if record.sequence_index == 1:
+                    raise ValidationError("malformed EDF")
+                record.status = RecordingStatus.INFERRED
+                db.add(record)
+                db.commit()
+
+            with (
+                patch("backend.app.services.processing_service.engine", database),
+                patch("backend.app.services.processing_service.SessionStorage", return_value=storage),
+                patch("backend.app.services.processing_service._process_record", side_effect=process_record),
+            ):
+                process_session("SES-PARTIAL")
+
+            with Session(database) as db:
+                session = get_session_by_public_id(db, "SES-PARTIAL")
+                records = list_recordings_for_session(db, session.id)
+                self.assertEqual(session.status, AnalysisStatus.COMPLETED_WITH_ERRORS)
+                self.assertEqual(records[0].status, RecordingStatus.FAILED)
+                self.assertEqual(records[1].status, RecordingStatus.INFERRED)
+                self.assertEqual(records[0].error_message, "malformed EDF")
+
+    def test_full_pipeline_processes_a_model_compatible_edf(self) -> None:
+        from backend.app.services.processing_service import process_session
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "model-compatible.edf"
+            self._create_source_edf(source, MODEL_CHANNELS, 1024)
+            archive = root / "session.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.write(source, source.name)
+
+            database = create_engine("sqlite://", connect_args={"check_same_thread": False})
+            SQLModel.metadata.create_all(database)
+            storage = SessionStorage(root / "sessions")
+            with Session(database) as db:
+                db.add(
+                    EEGSession(
+                        session_id="SES-FULL",
+                        patient_reference="internal",
+                        privacy_method="channel-anonymization",
+                        original_filename="session.zip",
+                        original_path=str(archive),
+                    )
+                )
+                db.commit()
+
+            with (
+                patch("backend.app.services.processing_service.engine", database),
+                patch("backend.app.services.processing_service.SessionStorage", return_value=storage),
+            ):
+                process_session("SES-FULL")
+
+            with Session(database) as db:
+                session = get_session_by_public_id(db, "SES-FULL")
+                records = list_recordings_for_session(db, session.id)
+                predictions = list_predictions(db, records[0].id)
+                explanations = list_explanations(db, [prediction.id for prediction in predictions])
+                self.assertEqual(session.status, AnalysisStatus.COMPLETED)
+                self.assertEqual(session.privacy_method, "channel-anonymization")
+                self.assertEqual(records[0].status, RecordingStatus.INFERRED)
+                self.assertEqual(len(predictions), 1)
+                self.assertEqual(len(explanations), 1)
+
+    def test_repository_lists_explanations(self) -> None:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as db:
+            session = EEGSession(
+                session_id="SES-EXPLANATION",
+                patient_reference="internal",
+                original_filename="upload.zip",
+                original_path="/private/upload.zip",
+            )
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+            record = EEGRecording(record_id="REC-EXPLANATION", session_db_id=session.id, original_filename="recording.edf")
+            db.add(record)
+            db.commit()
+            db.refresh(record)
+            prediction = Prediction(
+                recording_db_id=record.id,
+                window_index=0,
+                model_name="stub",
+                model_version="0.1",
+                probability=0.5,
+                seizure_detected=True,
+                start_seconds=0,
+                end_seconds=4,
+            )
+            db.add(prediction)
+            db.commit()
+            db.refresh(prediction)
+            db.add(Explanation(prediction_db_id=prediction.id, method="stub", explanation_path="/private/explanation.json"))
+            db.commit()
+
+            self.assertEqual(len(list_explanations(db, [prediction.id])), 1)
+            self.assertEqual(list_explanations(db, []), [])
 
 if __name__ == "__main__":
     unittest.main()

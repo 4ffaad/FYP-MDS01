@@ -1,7 +1,8 @@
-# SeizureAI Backend Engineering Guide
+# MDS01 Engineering Guide
 
-This repository currently contains the backend only. The future frontend is
-out of scope for backend changes.
+This repository contains the FastAPI backend and a separate Next.js frontend.
+Frontend visual work belongs under `frontend/`; backend changes must preserve
+the API privacy boundaries described below.
 
 ## Architecture
 
@@ -66,7 +67,8 @@ GET  /api/recordings/{record_id}/signal
 ```
 
 The old `/api/v1` prototype routes have been removed. New backend changes must
-use only the asynchronous session and recording API documented in `docs/api.md`.
+use only the asynchronous session and recording API described in the route list
+above.
 
 ## Development rules
 

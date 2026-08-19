@@ -9,8 +9,11 @@ from fastapi import UploadFile
 from sqlmodel import Session
 
 from backend.app.database.models.eeg import EEGRecording, EEGSession
-from backend.app.database.repositories.recording_repository import list_for_session
-from backend.app.database.repositories.session_repository import get_by_public_id, list_sessions
+from backend.app.database.repository import (
+    get_session_by_public_id,
+    list_recordings_for_session,
+    list_sessions,
+)
 from backend.app.services.storage_service import SessionStorage
 
 
@@ -31,6 +34,7 @@ async def create_session(
     storage: SessionStorage,
     archive: UploadFile,
     patient_reference: str,
+    privacy_method: str = "raw-control",
 ) -> EEGSession:
     """Persist an upload session and stream its ZIP into private storage.
 
@@ -44,6 +48,9 @@ async def create_session(
         Client ZIP upload.
     patient_reference : str
         Restricted internal reference. It is stored in the database only.
+    privacy_method : str
+        Requested privacy configuration stored with the session. This is
+        metadata until a matching processing implementation is supplied.
 
     Returns
     -------
@@ -59,15 +66,18 @@ async def create_session(
     session = EEGSession(
         session_id=new_session_id(),
         patient_reference=patient_reference.strip(),
+        privacy_method=privacy_method.strip(),
         original_filename=Path(archive.filename or "upload.zip").name,
         original_path="",
     )
     db.add(session)
-    db.commit()
-    db.refresh(session)
-    original_path = await storage.save_upload(session.session_id, archive)
+    db.flush()
+    try:
+        original_path = await storage.save_upload(session.session_id, archive)
+    except Exception:
+        db.rollback()
+        raise
     session.original_path = str(original_path)
-    db.add(session)
     db.commit()
     db.refresh(session)
     return session
@@ -89,7 +99,7 @@ def get_session_or_none(db: Session, session_id: str) -> EEGSession | None:
         Matching session row, if present.
     """
 
-    return get_by_public_id(db, session_id)
+    return get_session_by_public_id(db, session_id)
 
 
 def public_record(record: EEGRecording) -> dict:
@@ -136,9 +146,10 @@ def public_session(db: Session, session: EEGSession) -> dict:
         Safe session status, timestamps, and recording summaries.
     """
 
-    records = list_for_session(db, session.id) if session.id is not None else []
+    records = list_recordings_for_session(db, session.id) if session.id is not None else []
     return {
         "session_id": session.session_id,
+        "privacy_method": session.privacy_method,
         "status": session.status.value,
         "current_stage": session.current_stage,
         "created_at": session.created_at.isoformat(),

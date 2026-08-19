@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from backend.app.database.db import engine
 from backend.app.database.models.eeg import (
@@ -20,7 +20,9 @@ from backend.app.database.models.eeg import (
     ProcessingStatus,
     RecordingStatus,
 )
+from backend.app.database.repository import get_session_by_public_id, list_predictions
 from backend.app.eeg.model_input import preprocess_edf_to_npz
+from backend.app.ml.interface import InferenceService, WindowPrediction
 from backend.app.ml.model_loader import get_inference_service
 from backend.app.privacy.deidentify import deidentify_edf, generate_record_id
 from backend.app.services.explanation_service import write_stub_explanation
@@ -155,10 +157,11 @@ def process_session(session_id: str) -> None:
 
     storage = SessionStorage()
     with Session(engine) as db:
-        session = db.exec(select(EEGSession).where(EEGSession.session_id == session_id)).first()
+        session = get_session_by_public_id(db, session_id)
         if session is None or session.id is None:
             return
 
+        validation_attempt: ProcessingAttempt | None = None
         try:
             inference = get_inference_service()
             _set_session_status(db, session, AnalysisStatus.VALIDATING, "validation")
@@ -167,7 +170,8 @@ def process_session(session_id: str) -> None:
             _finish_attempt(db, validation_attempt, ProcessingStatus.SUCCEEDED)
         except Exception as exc:
             error = _safe_error(exc)
-            _finish_attempt(db, validation_attempt, ProcessingStatus.FAILED, error) if "validation_attempt" in locals() else None
+            if validation_attempt is not None:
+                _finish_attempt(db, validation_attempt, ProcessingStatus.FAILED, error)
             session.status = AnalysisStatus.FAILED
             session.current_stage = "validation"
             session.error_message = error
@@ -205,7 +209,13 @@ def process_session(session_id: str) -> None:
         db.commit()
 
 
-def _process_record(db: Session, session: EEGSession, record: EEGRecording, storage: SessionStorage, inference) -> None:
+def _process_record(
+    db: Session,
+    session: EEGSession,
+    record: EEGRecording,
+    storage: SessionStorage,
+    inference: InferenceService,
+) -> None:
     """Process one extracted EDF through all remaining pipeline stages.
 
     Parameters
@@ -301,12 +311,8 @@ def _process_record(db: Session, session: EEGSession, record: EEGRecording, stor
     _set_session_status(db, session, AnalysisStatus.EXPLAINING, "explainability")
     explanation_attempt = _begin_attempt(db, session, ProcessingStage.EXPLAINABILITY, record)
     try:
-        stored_predictions = list(
-            db.exec(select(Prediction).where(Prediction.recording_db_id == record.id)).all()
-        )
+        stored_predictions = list_predictions(db, record.id)
         for stored in stored_predictions:
-            from backend.app.ml.interface import WindowPrediction
-
             explanation_path = storage.explanation_path(session.session_id, stored.id or 0)
             payload = write_stub_explanation(
                 explanation_path,

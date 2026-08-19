@@ -73,6 +73,7 @@ class EEGSession(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     session_id: str = Field(index=True, unique=True)
     patient_reference: str = Field(index=True)
+    privacy_method: str = Field(default="raw-control", max_length=64)
     original_filename: str = ""
     original_path: str = ""
     status: AnalysisStatus = Field(default=AnalysisStatus.QUEUED, index=True)
