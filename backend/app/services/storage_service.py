@@ -79,7 +79,7 @@ class SessionStorage:
             Opaque session identifier.
         name : str
             One of ``original``, ``work``, ``extracted``, ``deidentified``,
-            ``processed``, or ``explanations``.
+            ``processed``, ``retained``, or ``explanations``.
 
         Returns
         -------
@@ -92,7 +92,7 @@ class SessionStorage:
             Raised for unknown artifact categories.
         """
 
-        if name not in {"original", "work", "extracted", "deidentified", "processed", "explanations"}:
+        if name not in {"original", "work", "extracted", "deidentified", "processed", "retained", "explanations"}:
             raise StorageError("Unknown session storage area.")
         path = self.session_dir(session_id) / name
         path.mkdir(parents=True, exist_ok=True)
@@ -181,6 +181,50 @@ class SessionStorage:
         except Exception as exc:
             destination.unlink(missing_ok=True)
             raise StorageError("Stored archive cannot be decrypted.") from exc
+
+    def store_encrypted_artifact(self, session_id: str, source_path: Path, name: str) -> Path:
+        """Encrypt one retained derived artifact and return its private path.
+
+        Parameters
+        ----------
+        session_id : str
+            Opaque session identifier.
+        source_path : pathlib.Path
+            Temporary plaintext artifact to encrypt and remove on success.
+        name : str
+            Safe artifact basename, without a user-controlled path.
+
+        Returns
+        -------
+        pathlib.Path
+            Private encrypted artifact path.
+
+        Raises
+        ------
+        StorageError
+            Raised when the source is invalid or encryption fails.
+        """
+
+        if Path(name).name != name or not name:
+            raise StorageError("Retained artifact name is invalid.")
+        destination = self.directory(session_id, "retained") / f"{name}.enc"
+        nonce = secrets.token_bytes(_NONCE_BYTES)
+        encryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce)).encryptor()
+        try:
+            with Path(source_path).open("rb") as source, destination.open("wb") as output:
+                output.write(_ENCRYPTED_MAGIC)
+                output.write(nonce)
+                while chunk := source.read(1024 * 1024):
+                    output.write(encryptor.update(chunk))
+                output.write(encryptor.finalize())
+                output.write(encryptor.tag)
+            os.chmod(destination, 0o600)
+            return destination
+        except Exception as exc:
+            destination.unlink(missing_ok=True)
+            raise StorageError("Retained artifact could not be encrypted.") from exc
+        finally:
+            Path(source_path).unlink(missing_ok=True)
 
     @staticmethod
     def _safe_member_path(member_name: str) -> PurePosixPath:
@@ -339,17 +383,46 @@ class SessionStorage:
 
         return self.directory(session_id, "processed") / f"{record_id}.npz"
 
-    def cleanup_session(self, session_id: str, *, keep_deidentified: bool = False) -> None:
-        """Delete transient session files after processing, keeping only local preview data."""
+    def cleanup_session(self, session_id: str, *, keep_retained: bool = False) -> None:
+        """Delete transient session files after processing.
+
+        Parameters
+        ----------
+        session_id : str
+            Opaque session identifier.
+        keep_retained : bool
+            Preserve encrypted model-positive artifacts when true.
+        """
 
         session_dir = self.root / session_id
         if not session_dir.exists():
             return
-        if not keep_deidentified:
+        if not keep_retained:
             shutil.rmtree(session_dir)
             return
-        for name in ("original", "work", "extracted", "processed", "explanations"):
+        for name in ("original", "work", "extracted", "deidentified", "processed", "explanations"):
             shutil.rmtree(session_dir / name, ignore_errors=True)
+
+    def delete_retained_artifact(self, path: Path) -> None:
+        """Delete one encrypted retained artifact after a recording failure.
+
+        Parameters
+        ----------
+        path : pathlib.Path
+            Internal retained-artifact path created by this storage service.
+
+        Raises
+        ------
+        StorageError
+            Raised when the path is outside this storage service's retained
+            directories.
+        """
+
+        retained_root = self.root.resolve()
+        candidate = path.resolve()
+        if retained_root not in candidate.parents or candidate.parent.name != "retained":
+            raise StorageError("Retained artifact path is invalid.")
+        candidate.unlink(missing_ok=True)
 
     def delete_session(self, session_id: str) -> None:
         """Delete all private files belonging to one user-requested session.

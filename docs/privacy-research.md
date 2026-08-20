@@ -1,0 +1,63 @@
+# Privacy and model-score research note
+
+MDS01 is a research prototype. It reduces practical exposure of uploaded EEG,
+but it does not prove that a person cannot be re-identified and it does not
+provide a clinical diagnosis.
+
+## What each protection does
+
+| Layer | What it protects | What it does not promise |
+| --- | --- | --- |
+| AES-256-GCM storage encryption | Files at rest and tamper detection while the backend owns them | It does not remove biometric information from decrypted EEG. |
+| Metadata scrub | EDF patient, operator, equipment, date, and free-text metadata | It preserves waveform values, so EEG-derived identity risk remains. |
+| Signal obfuscation | A keyed, lossy, shape-preserving representation used by both detector and privacy evaluation | It is experimental risk reduction, not formal anonymity or differential privacy. |
+| Minimization | Deletes the original archive, full temporary files, and non-flagged recording artifacts | It does not make the retained positive context risk-free. |
+| Research reference labels | CHB-MIT sidecars and summary intervals for offline evaluation | They never decide the dashboard model alert. |
+
+The public API exposes generated IDs, safe technical metadata, predictions,
+score timelines, and non-clinical explanation JSON. It never exposes original
+names, patient references, filesystem paths, cryptographic hashes, or retained
+artifact contents. Waveform access is disabled.
+
+## Detection and retention rule
+
+The model scores every preprocessed window. A recording is model-positive when
+at least one window crosses the reviewed threshold. Positive windows are
+expanded by 60 seconds on both sides, merged, clipped to the recording, and
+retained only as a private encrypted artifact. A dataset `.edf.seizures`
+sidecar is a reference label for research reports; it cannot create or remove
+a dashboard alert.
+
+The development stub emits deterministic hash-derived values. Those values are
+not calibrated probabilities, confidence, accuracy, or evidence of clinical
+reasoning. The UI therefore calls them `Development score` and shows the peak
+window score, flagged-window count, threshold, and score timeline.
+
+## Real-model evaluation gate
+
+Before a real model is enabled, its reviewed contract must document its input
+shape, training-time preprocessing, output semantics, threshold, model version,
+and calibration status. Calibration must use a patient-disjoint validation set;
+the test set must remain untouched. Temperature scaling is implemented as a
+reviewed contract option and returns `raw_score` plus
+`calibrated_probability`. The latter is shown as a probability only after the
+calibration procedure has been validated.
+
+The offline research report should include:
+
+- confusion matrix, ROC/AUC, precision-recall/average precision;
+- sensitivity, specificity, precision, recall, F1, and false alarms per hour;
+- threshold sweep and patient-level bootstrap intervals;
+- reliability bins, Expected Calibration Error, and Brier score;
+- training accuracy/loss only when a real training-history artifact exists.
+
+Windows must be split by recording and evaluated with patient-level separation.
+Randomly splitting adjacent windows would leak highly correlated information.
+
+## References
+
+- [NIST SP 800-38D: GCM and GMAC](https://csrc.nist.gov/pubs/sp/800/38/d/final)
+- [HHS de-identification guidance](https://www.hhs.gov/hipaa/for-professionals/special-topics/de-identification/index.html)
+- [EEG as a biometric / brainprint research](https://pmc.ncbi.nlm.nih.gov/articles/PMC9553892/)
+- [Guo et al., On Calibration of Modern Neural Networks](https://proceedings.mlr.press/v70/guo17a.html)
+

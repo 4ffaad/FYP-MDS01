@@ -21,17 +21,19 @@ The API documentation is available at `http://127.0.0.1:8000/docs`.
 ## Storage
 
 The upload archive is AES-256-GCM encrypted while the job runs. Original,
-extracted, de-identified, processed, and explanation files are
-removed when processing ends; PostgreSQL retains only safe session metadata,
-predictions, and explanation JSON. Set `ENABLE_SIGNAL_PREVIEW=true` only for a
-local waveform demonstration.
+extracted, de-identified, processed, and explanation files are removed when
+processing ends. If the model flags windows, only an encrypted, private clip
+containing those windows plus the configured context is retained. PostgreSQL
+retains safe session metadata, predictions, and explanation JSON. Waveform
+serving is disabled; the frontend shows a score timeline instead.
 
 ## Privacy modes and research tools
 
-- `control`: EDF header and free-text annotation scrubbing.
-- `cancellable-signal-projection`: the same scrubbing plus an in-memory,
-  keyed, lossy EEG transformation. Its transformed windows feed both the
-  detector and the offline identity attacker for research-only comparison.
+- `metadata-scrub`: EDF header and free-text annotation scrubbing while
+  preserving waveform values as the baseline.
+- `signal-obfuscation`: the same scrubbing plus a keyed, lossy EEG
+  transformation. Its transformed windows feed both the detector and the
+  offline identity attacker for research-only comparison.
 
 The endpoint stack does not need `requirements-research.txt`; it uses the
 deterministic stub. The optional H5 runtime remains blocked until a compatible
@@ -53,3 +55,4 @@ privacy presentation rules.
 For beginner-friendly instructions and Mermaid diagrams, see the [setup
 guide](../docs/setup.md) and [backend internals](../docs/backend.md). The
 frontend has its own [internal guide](../docs/frontend.md).
+The privacy and calibration boundary is documented in the [research note](../docs/privacy-research.md).

@@ -36,7 +36,7 @@ async def create_session(
     db: Session,
     storage: SessionStorage,
     archive: UploadFile,
-    privacy_method: str = "control",
+    privacy_method: str = "metadata-scrub",
 ) -> EEGSession:
     """Persist an upload session and stream its ZIP into private storage.
 
@@ -148,6 +148,7 @@ def public_record(record: EEGRecording, session: EEGSession | None = None, model
         "channel_count": record.channel_count,
         "reference_annotation": reference_annotation,
         "model_alert_window_count": model_alert_window_count,
+        "model_alert": model_alert_window_count > 0,
         "error_message": record.error_message,
     }
     if session is not None:

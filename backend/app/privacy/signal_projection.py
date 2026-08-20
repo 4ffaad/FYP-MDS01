@@ -1,4 +1,4 @@
-"""Experimental cancellable, lossy EEG transformations for research evaluation."""
+"""Experimental keyed, lossy signal obfuscation for research evaluation."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ import numpy as np
 from scipy.signal import welch
 
 
-TRANSFORMATION_VERSION = "cancellable-signal-projection-v1"
+TRANSFORMATION_VERSION = "signal-obfuscation-v1"
 MODEL_SHAPE = (1024, 18)
 REMOVED_CHANNEL_DIMENSIONS = 3
 QUANTIZATION_STEP = np.float32(1 / 16)
 PSD_BANDS = ((0.5, 4.0), (4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 45.0))
 
 
-def cancellable_signal_projection(windows: np.ndarray, key: bytes) -> np.ndarray:
+def obfuscate_signal(windows: np.ndarray, key: bytes) -> np.ndarray:
     """Return a keyed, rank-reduced, quantized EEG tensor with model shape.
 
     The operation removes a secret three-dimensional channel subspace and

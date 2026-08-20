@@ -7,7 +7,7 @@ import { formatPercent, formatSubmittedAt } from "@/lib/format";
 import type { AnalysisResult, PredictionLabel, Session } from "@/lib/types";
 import { Icon } from "./Icon";
 import { RecordingNavigator } from "./RecordingNavigator";
-import { SignalScoreChart } from "./SignalScoreChart";
+import { PredictionTimeline } from "./PredictionTimeline";
 
 /** Render one recording result within its session-scoped navigation context. */
 export function ResultScreen({ recordId }: { recordId: string }) {
@@ -58,7 +58,7 @@ function ResultContent({ recordId }: { recordId: string }) {
         <section className="mt-5 panel overflow-hidden" aria-labelledby="result-heading">
           <div className="flex flex-col justify-between gap-7 px-5 py-6 sm:px-8 sm:py-8 lg:flex-row lg:items-center">
             <div className="flex items-start gap-4">
-              <div className={`mt-1 grid size-11 shrink-0 place-items-center rounded-full ${prediction.tone === "teal" ? "bg-teal-soft text-teal-dark" : "bg-amber-soft text-amber"}`}><Icon name={prediction.icon} className="size-5" /></div>
+              <div className={`mt-1 grid size-11 shrink-0 place-items-center rounded-full ${prediction.tone === "teal" ? "bg-teal-soft text-teal-dark" : prediction.tone === "red" ? "bg-red-soft text-red" : "bg-amber-soft text-amber"}`}><Icon name={prediction.icon} className="size-5" /></div>
               <div>
                 <p className="eyebrow">Development model alert</p>
                 <h1 id="result-heading" className="mt-2 max-w-2xl text-[clamp(1.9rem,4vw,3.35rem)] font-semibold leading-[1.05] tracking-tighter text-ink">{prediction.title}</h1>
@@ -67,7 +67,7 @@ function ResultContent({ recordId }: { recordId: string }) {
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-ink-muted">{prediction.note}</p>
               </div>
             </div>
-            <div className="border-t border-rule pt-5 sm:pl-16 lg:border-l lg:border-t-0 lg:pl-8 lg:pt-0 lg:text-right"><p className="font-mono text-[clamp(2.5rem,6vw,4rem)] font-semibold leading-none tracking-[-0.07em] text-teal-dark tabular-nums">{formatPercent(result.peakWindowScore)}</p><p className="mt-2 text-xs font-bold uppercase tracking-[0.12em] text-ink-muted">Peak window score</p><p className="mt-1 text-xs text-ink-faint">{result.flaggedWindowCount} of {result.windowCount} windows flagged</p><p className="mt-1 text-[0.68rem] text-ink-faint">Not whole-recording confidence</p></div>
+            <div className="border-t border-rule pt-5 sm:pl-16 lg:border-l lg:border-t-0 lg:pl-8 lg:pt-0 lg:text-right"><p className={`font-mono text-[clamp(2.5rem,6vw,4rem)] font-semibold leading-none tracking-[-0.07em] tabular-nums ${result.prediction === "seizure" ? "text-red" : "text-teal-dark"}`}>{formatPercent(result.peakWindowScore)}</p><p className="mt-2 text-xs font-bold uppercase tracking-[0.12em] text-ink-muted">Peak window score</p><p className="mt-1 text-xs text-ink-faint">{result.flaggedWindowCount} of {result.windowCount} windows flagged</p><p className="mt-1 text-[0.68rem] text-ink-faint">Not a whole-recording probability</p></div>
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-rule bg-surface-soft px-5 py-3.5 text-xs text-ink-muted sm:px-8"><span className="inline-flex items-center gap-1.5 font-semibold text-ink"><span className="size-1.5 rounded-full bg-teal" aria-hidden="true" />Result available</span><span className="text-rule-strong">|</span><span>{result.modelName} · non-clinical</span></div>
         </section>
@@ -76,17 +76,17 @@ function ResultContent({ recordId }: { recordId: string }) {
           {session && <div className="order-2 xl:order-none xl:row-span-2 xl:sticky xl:top-5"><RecordingNavigator session={session} activeRecordId={result.recordId} /></div>}
 
           <section className="order-1 panel overflow-hidden xl:order-none" aria-labelledby="evidence-heading">
-            <div className="border-b border-rule px-5 py-5 sm:px-7"><h2 id="evidence-heading" className="text-base font-bold tracking-[-0.015em]">EEG recording viewer</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">Inspect a bounded, de-identified 10-second window across the 18 channels used by the model contract. Dataset annotations and development scores remain separate.</p></div>
+            <div className="border-b border-rule px-5 py-5 sm:px-7"><h2 id="evidence-heading" className="text-base font-bold tracking-[-0.015em]">Model score timeline</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">Review every scored window, the alert threshold, and the intervals that crossed it. Waveform access stays disabled because EEG can retain biometric information.</p></div>
             <div className="px-5 py-5 sm:px-7 sm:py-7">
               <ReferenceSummary annotation={result.referenceAnnotation} />
-              <div className="mt-5">{result.signalPreview ? <SignalScoreChart key={result.recordId} recordId={result.recordId} recordingDurationSeconds={result.recordingDurationSeconds} initialSignal={result.signalPreview} predictions={result.predictionWindows} referenceAnnotation={result.referenceAnnotation} /> : <p className="rounded-md bg-surface-soft px-4 py-4 text-sm leading-6 text-ink-muted">Signal preview is unavailable for this run. Enable it in both environments, rebuild the backend, and upload the ZIP again because previous temporary EDFs were securely removed.</p>}</div>
+              <div className="mt-5"><PredictionTimeline predictions={result.predictionWindows} durationSeconds={result.recordingDurationSeconds} threshold={result.threshold} /></div>
               <p className="mt-4 text-xs leading-5 text-ink-muted">{result.explanationSummary}</p>
             </div>
           </section>
 
           <aside className="order-3 grid gap-4 sm:grid-cols-2 xl:order-none xl:col-start-2">
-            <section className="panel px-5 py-5" aria-labelledby="run-details-heading"><h2 id="run-details-heading" className="text-xs font-bold uppercase tracking-[0.12em] text-ink-faint">Run details</h2><dl className="mt-4 divide-y divide-rule"><Detail label="Requested configuration" value={result.privacyMethod.label} /><Detail label="Submitted" value={formatSubmittedAt(result.submittedAt)} /><Detail label="Model" value={result.modelName} mono /><Detail label="Version" value={result.modelVersion} mono /><Detail label="Window coverage" value={`${result.flaggedWindowCount} of ${result.windowCount} flagged (${Math.round(result.flaggedWindowFraction * 100)}%)`} /></dl></section>
-            <section className="rounded-lg border border-amber/30 bg-amber-soft px-5 py-5" role="note"><div className="flex items-center gap-2 text-sm font-bold text-amber"><Icon name="info" className="size-4" />Non-clinical output</div><p className="mt-3 text-sm leading-6 text-amber">The color band represents the development stub’s numerical score per prediction window. It is not attention, causal reasoning, or a clinical explanation.</p></section>
+            <section className="panel px-5 py-5" aria-labelledby="run-details-heading"><h2 id="run-details-heading" className="text-xs font-bold uppercase tracking-[0.12em] text-ink-faint">Run details</h2><dl className="mt-4 divide-y divide-rule"><Detail label="Requested configuration" value={result.privacyMethod.label} /><Detail label="Submitted" value={formatSubmittedAt(result.submittedAt)} /><Detail label="Model" value={result.modelName} mono /><Detail label="Version" value={result.modelVersion} mono /><Detail label="Score semantics" value={formatScoreType(result.scoreType)} /><Detail label="Threshold" value={result.threshold.toFixed(2)} mono /><Detail label="Calibration" value={result.calibrationMethod ?? "Not calibrated"} /><Detail label="Window coverage" value={`${result.flaggedWindowCount} of ${result.windowCount} flagged (${Math.round(result.flaggedWindowFraction * 100)}%)`} /></dl></section>
+            <section className="rounded-lg border border-amber/30 bg-amber-soft px-5 py-5" role="note"><div className="flex items-center gap-2 text-sm font-bold text-amber"><Icon name="info" className="size-4" />Non-clinical output</div><p className="mt-3 text-sm leading-6 text-amber">This result is a development score, not a calibrated probability or accuracy estimate. The threshold turns a window score into an alert; it does not provide a clinical explanation.</p></section>
           </aside>
         </div>
       </div>
@@ -118,18 +118,25 @@ function formatOffset(seconds: number): string {
 function predictionCopy(prediction: PredictionLabel, annotation: AnalysisResult["referenceAnnotation"]): { title: string; note: string; icon: "check" | "alert"; tone: "teal" | "amber" | "red" } {
   const hasReferenceSeizure = (annotation?.intervals.length ?? 0) > 0;
   if (prediction === "seizure") return {
-    title: "Development activity flagged",
+    title: "Model alert detected",
     note: annotation ? hasReferenceSeizure ? "The deterministic development score flagged a window in a recording with a supplied dataset seizure annotation. This is not a seizure diagnosis." : "The deterministic development score flagged a window, but the supplied dataset reference has no seizure annotation. This is not a seizure diagnosis." : "The deterministic development score flagged a window; no dataset reference was available. This is not a seizure diagnosis.",
     icon: "alert",
-    tone: "amber",
+    tone: "red",
   };
   if (prediction === "no-seizure") return {
-    title: "No development window flagged",
+    title: "No model alert detected",
     note: annotation ? hasReferenceSeizure ? "The deterministic development score did not flag a window in a recording with a supplied dataset seizure annotation." : "The deterministic development score did not flag a window, and the supplied dataset reference has no seizure annotation." : "The deterministic development score did not flag a window; no dataset reference was available.",
     icon: "check",
     tone: "teal",
   };
   return { title: "Development result needs review", note: "The development output could not be interpreted as a completed alert.", icon: "alert", tone: "amber" };
+}
+
+/** Turn the stored score semantics into a readable result-detail label. */
+function formatScoreType(scoreType: string): string {
+  if (scoreType === "calibrated_probability") return "Calibrated probability";
+  if (scoreType === "development_score") return "Development score";
+  return scoreType.replaceAll("_", " ");
 }
 
 /** Render one labelled technical detail in the result side panel. */

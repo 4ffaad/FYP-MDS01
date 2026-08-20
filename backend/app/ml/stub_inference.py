@@ -22,6 +22,8 @@ class StubInferenceService:
     model_name = MODEL_NAME
     model_version = MODEL_VERSION
     threshold = MODEL_THRESHOLD
+    score_type = "development_score"
+    calibration_method = None
 
     def predict(
         self,
@@ -39,7 +41,9 @@ class StubInferenceService:
         window_starts : numpy.ndarray
             Start time in seconds for each window.
         record_id : str
-            Opaque recording identifier used to make output reproducible.
+            Opaque recording identifier accepted by the model interface. The
+            stub deliberately does not use it, so identical windows receive
+            identical development scores across recordings.
 
         Returns
         -------
@@ -58,7 +62,7 @@ class StubInferenceService:
         predictions: list[WindowPrediction] = []
         for index, start in enumerate(window_starts.tolist()):
             window_digest = hashlib.sha256(windows[index].tobytes()).hexdigest()
-            probability = _stable_probability(f"{record_id}:{index}:{window_digest}")
+            probability = _stable_probability(f"{index}:{window_digest}")
             predictions.append(
                 WindowPrediction(
                     window_index=index,
@@ -66,6 +70,7 @@ class StubInferenceService:
                     end_seconds=float(start + 4),
                     probability=probability,
                     seizure_detected=probability >= self.threshold,
+                    score_type=self.score_type,
                 )
             )
         return predictions

@@ -47,8 +47,11 @@ from backend.app.eeg.edf_io import read_uniform_edf
 from backend.app.eeg.preprocessing import EEGPreprocessor
 from backend.app.eeg.model_input import MODEL_CHANNELS, prepare_model_windows
 from backend.app.ml.stub_inference import StubInferenceService
+from backend.app.ml.interface import WindowPrediction
 from backend.app.privacy.deidentify import deidentify_edf, generate_record_id, inspect_metadata
-from backend.app.privacy.signal_projection import cancellable_signal_projection, psd_features
+from backend.app.privacy.signal_projection import obfuscate_signal, psd_features
+from backend.app.privacy.retention import detected_intervals, select_window_indices, write_scrubbed_edf_clip
+from backend.app.research.metrics import calibration_metrics, classification_metrics, patient_bootstrap_f1, precision_recall_points, roc_points, threshold_sweep
 from backend.app.research.chb_mit import (
     seizure_window_labels,
     sidecar_annotations,
@@ -128,8 +131,8 @@ class BackendTests(unittest.TestCase):
                 self.assertTrue(np.array_equal(copied, original))
                 self.assertEqual(reader.getSignalLabels(), ["FP1-F7", "F7-T7"])
                 self.assertEqual(reader.getSampleFrequencies().tolist(), [256.0, 256.0])
-                self.assertEqual(reader.getPatientName(), anonymous_id)
-                self.assertEqual(reader.getPatientCode(), anonymous_id)
+                self.assertIn(reader.getPatientName(), {"", "X"})
+                self.assertEqual(reader.getPatientCode(), "")
                 self.assertEqual(reader.getTechnician(), "")
                 self.assertEqual(reader.getEquipment(), "")
                 self.assertEqual(reader.getBirthdate(), "")
@@ -177,7 +180,7 @@ class BackendTests(unittest.TestCase):
         starts = np.asarray([0.0, 4.0], dtype=np.float32)
         first = service.predict(windows, starts, "REC-TEST")
         second = service.predict(windows, starts, "REC-TEST")
-        transformed = cancellable_signal_projection(windows, b"t" * 32)
+        transformed = obfuscate_signal(windows, b"t" * 32)
         projected = service.predict(transformed, starts, "REC-TEST")
         self.assertEqual(first, second)
         self.assertNotEqual(first, projected)
@@ -233,11 +236,11 @@ class BackendTests(unittest.TestCase):
             with self.assertRaises(StorageError):
                 storage.materialize_archive("SES-CRYPTO", archive)
 
-    def test_cancellable_signal_projection_is_keyed_lossy_and_model_compatible(self) -> None:
+    def test_signal_obfuscation_is_keyed_lossy_and_model_compatible(self) -> None:
         windows = np.random.default_rng(42).normal(size=(2, 1024, 18)).astype(np.float32)
-        first = cancellable_signal_projection(windows, b"a" * 32)
-        second = cancellable_signal_projection(windows, b"a" * 32)
-        rotated = cancellable_signal_projection(windows, b"b" * 32)
+        first = obfuscate_signal(windows, b"a" * 32)
+        second = obfuscate_signal(windows, b"a" * 32)
+        rotated = obfuscate_signal(windows, b"b" * 32)
         features = psd_features(first)
         self.assertEqual(features.shape, (2, 90))
         self.assertEqual(first.shape, (2, 1024, 18))
@@ -245,6 +248,60 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(np.array_equal(first, second))
         self.assertFalse(np.array_equal(first, rotated))
         self.assertFalse(np.array_equal(first, windows))
+
+    def test_retention_uses_model_positive_windows_and_context_only(self) -> None:
+        predictions = [
+            WindowPrediction(0, 4, 8, 0.9, True),
+            WindowPrediction(1, 8, 12, 0.1, False),
+            WindowPrediction(2, 200, 204, 0.8, True),
+        ]
+        intervals = detected_intervals(predictions, 300, context_seconds=60)
+        self.assertEqual(intervals, [(0.0, 68.0), (140.0, 264.0)])
+        starts = np.asarray([0, 4, 8, 140, 200, 280], dtype=np.float32)
+        self.assertEqual(select_window_indices(starts, intervals).tolist(), [0, 1, 2, 3, 4])
+
+    def test_metadata_retained_clip_is_scrubbed_and_relative(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.edf"
+            scrubbed = Path(directory) / "scrubbed.edf"
+            clip = Path(directory) / "clip.edf"
+            self._create_source_edf(source)
+            deidentify_edf(source, scrubbed, generate_record_id())
+            write_scrubbed_edf_clip(scrubbed, clip, [(0, 2)])
+            reader = pyedflib.EdfReader(str(clip))
+            try:
+                self.assertEqual(reader.getStartdatetime().year, 1970)
+                self.assertEqual(reader.getPatientCode(), "")
+                self.assertEqual(reader.readSignal(0, digital=True).size, 512)
+                self.assertEqual(reader.readAnnotations()[2].tolist(), [""])
+            finally:
+                reader.close()
+
+    def test_retained_artifact_is_encrypted_and_plaintext_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SessionStorage(Path(directory) / "sessions", self.storage_key)
+            source = Path(directory) / "clip.npz"
+            source.write_bytes(b"private EEG samples")
+            retained = storage.store_encrypted_artifact("SES-RETAINED", source, "REC-1.npz")
+            self.assertFalse(source.exists())
+            self.assertNotIn(b"private EEG samples", retained.read_bytes())
+            storage.cleanup_session("SES-RETAINED", keep_retained=True)
+            self.assertTrue(retained.exists())
+            storage.delete_retained_artifact(retained)
+            self.assertFalse(retained.exists())
+
+    def test_offline_metrics_report_detection_and_calibration_values(self) -> None:
+        labels = [0, 0, 1, 1]
+        scores = [0.1, 0.8, 0.6, 0.9]
+        metrics = classification_metrics(labels, scores, threshold=0.5)
+        self.assertEqual(metrics["confusion_matrix"], [[1, 1], [0, 2]])
+        self.assertAlmostEqual(float(metrics["sensitivity"]), 1.0)
+        self.assertEqual(len(roc_points(labels, scores)["fpr"]), 6)
+        self.assertEqual(len(precision_recall_points(labels, scores)["precision"]), 5)
+        self.assertIn("brier_score", calibration_metrics(labels, scores))
+        self.assertEqual(len(threshold_sweep(labels, scores, [0.25, 0.5, 0.75])), 3)
+        bootstrap = patient_bootstrap_f1(labels, scores, ["p1", "p1", "p2", "p2"], repeats=10)
+        self.assertLessEqual(bootstrap["lower_95"], bootstrap["upper_95"])
 
     def test_openapi_contains_only_current_routes(self) -> None:
         schema = app.openapi()
@@ -365,7 +422,7 @@ Seizure End Time: 3036 seconds
             patch("backend.app.api.sessions.SessionStorage"),
             patch("backend.app.api.sessions.process_session") as process,
         ):
-            payload = asyncio.run(upload_session(tasks, archive, "control"))
+            payload = asyncio.run(upload_session(tasks, archive, "metadata-scrub"))
 
         self.assertEqual(payload, {"session_id": "SES-BACKGROUND", "status": "queued"})
         self.assertNotIn("job_id", payload)
@@ -373,7 +430,7 @@ Seizure End Time: 3036 seconds
             ANY,
             ANY,
             archive,
-            "control",
+            "metadata-scrub",
         )
         self.assertEqual(len(tasks.tasks), 1)
         self.assertIs(tasks.tasks[0].func, process)
@@ -400,31 +457,6 @@ Seizure End Time: 3036 seconds
         with self.assertRaises(HTTPException) as raised:
             get_signal("REC-NOT-LOOKED-UP", db=None)
         self.assertEqual(raised.exception.status_code, 404)
-
-    def test_signal_endpoint_returns_ten_seconds_of_model_channels(self) -> None:
-        from backend.app.api.recordings import get_signal
-
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "preview.edf"
-            self._create_source_edf(source, MODEL_CHANNELS, 2560)
-            database = create_engine("sqlite://", connect_args={"check_same_thread": False})
-            self.addCleanup(database.dispose)
-            SQLModel.metadata.create_all(database)
-            with Session(database) as db:
-                session = EEGSession(session_id="SES-SIGNAL")
-                db.add(session)
-                db.commit()
-                db.refresh(session)
-                db.add(EEGRecording(record_id="REC-SIGNAL", session_db_id=session.id, sequence_index=1, original_filename="", deidentified_path=str(source), status=RecordingStatus.INFERRED))
-                db.commit()
-
-                with patch("backend.app.api.recordings.ENABLE_SIGNAL_PREVIEW", True):
-                    payload = get_signal("REC-SIGNAL", 0, 10, 600, db)
-
-            self.assertEqual(payload["duration_seconds"], 10)
-            self.assertEqual(payload["channel_labels"], list(MODEL_CHANNELS))
-            self.assertEqual(len(payload["samples"]), 18)
-            self.assertEqual(len(payload["samples"][0]), 600)
 
     def test_prototype_has_no_redis_rq_or_worker_configuration(self) -> None:
         from backend.app.core import config
@@ -469,7 +501,7 @@ Seizure End Time: 3036 seconds
         with Session(engine) as db:
             session = EEGSession(
                 session_id="SES-RECORD-CONTEXT",
-                privacy_method="control",
+                privacy_method="metadata-scrub",
                 original_filename="patient-upload.zip",
                 original_path="/private/patient-upload.zip",
             )
@@ -489,7 +521,7 @@ Seizure End Time: 3036 seconds
             payload = get_recording(record.record_id, db)
 
         self.assertEqual(payload["session_id"], "SES-RECORD-CONTEXT")
-        self.assertEqual(payload["privacy_method"], "control")
+        self.assertEqual(payload["privacy_method"], "metadata-scrub")
         self.assertIn("session_created_at", payload)
         self.assertEqual(payload["source_filename"], "recording_12.edf")
         self.assertNotIn("patient", str(payload).lower())
@@ -578,6 +610,43 @@ Seizure End Time: 3036 seconds
         self.assertEqual(payload["summary"], {"dataset_seizure_recordings": 1, "model_alert_recordings": 1})
         self.assertEqual(payload["recordings"][0]["model_alert_window_count"], 1)
         self.assertEqual(flagged_counts, {completed.id: 1})
+
+    def test_model_alert_is_independent_of_dataset_sidecar_reference(self) -> None:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as db:
+            session = EEGSession(session_id="SES-NO-SIDECAR", status=AnalysisStatus.COMPLETED)
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+            record = EEGRecording(
+                record_id="REC-NO-SIDECAR",
+                session_db_id=session.id,
+                sequence_index=1,
+                original_filename="private.edf",
+                status=RecordingStatus.INFERRED,
+            )
+            db.add(record)
+            db.commit()
+            db.refresh(record)
+            db.add(Prediction(
+                recording_db_id=record.id,
+                window_index=0,
+                model_name="development-stub",
+                model_version="stub-0.1.0",
+                probability=0.9,
+                seizure_detected=True,
+                start_seconds=0,
+                end_seconds=4,
+            ))
+            db.commit()
+            payload = public_session(db, session)
+
+        self.assertIsNone(payload["summary"]["dataset_seizure_recordings"])
+        self.assertEqual(payload["summary"]["model_alert_recordings"], 1)
+        self.assertTrue(payload["recordings"][0]["model_alert"])
+        self.assertNotIn("retained_artifact_path", str(payload))
 
     def test_delete_session_removes_results_and_private_storage(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
@@ -734,7 +803,7 @@ Seizure End Time: 3036 seconds
                 db.add(
                     EEGSession(
                         session_id="SES-FULL",
-                        privacy_method="cancellable-signal-projection",
+                        privacy_method="signal-obfuscation",
                         original_filename="session.zip",
                         original_path=str(encrypted_archive),
                     )
@@ -754,7 +823,7 @@ Seizure End Time: 3036 seconds
                 predictions = list_predictions(db, records[0].id)
                 explanations = list_explanations(db, [prediction.id for prediction in predictions])
                 self.assertEqual(session.status, AnalysisStatus.COMPLETED)
-                self.assertEqual(session.privacy_method, "cancellable-signal-projection")
+                self.assertEqual(session.privacy_method, "signal-obfuscation")
                 self.assertEqual(records[0].status, RecordingStatus.INFERRED)
                 self.assertEqual(len(predictions), 1)
                 self.assertEqual(len(explanations), 1)
@@ -762,7 +831,11 @@ Seizure End Time: 3036 seconds
                 self.assertIsNone(records[0].extracted_path)
                 self.assertIsNone(records[0].deidentified_path)
                 self.assertIsNone(records[0].preprocessed_path)
-                self.assertFalse((storage.root / "SES-FULL").exists())
+                self.assertTrue((storage.root / "SES-FULL").exists())
+                retained_path = records[0].retained_artifact_path
+                if retained_path:
+                    self.assertTrue(Path(retained_path).exists())
+                    self.assertEqual(Path(retained_path).parent.name, "retained")
 
     def test_repository_lists_explanations(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})

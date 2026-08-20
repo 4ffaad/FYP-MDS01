@@ -5,7 +5,6 @@ import type {
   Recording,
   RecordingStatus,
   ReferenceAnnotation,
-  SignalPreview,
   Session,
   SessionProgress,
   SessionSummary,
@@ -15,12 +14,11 @@ import type {
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 const USE_STUB = process.env.NEXT_PUBLIC_USE_API_STUB !== "false";
-const SHOW_SIGNAL_PREVIEW = USE_STUB || process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW === "true";
 const JOBS_KEY = "mds01.jobs.v1";
 
 export const PRIVACY_METHODS: PrivacyMethod[] = [
-  { id: "control", label: "Control", description: "Removes EDF metadata; detector and privacy evaluation use the same preprocessed windows." },
-  { id: "cancellable-signal-projection", label: "Cancellable signal projection", description: "Uses a keyed, lossy EEG transformation for both detection and privacy evaluation; it is not an anonymity guarantee." },
+  { id: "metadata-scrub", label: "Metadata scrub", description: "Removes identifying EDF metadata while preserving waveform values as the baseline method." },
+  { id: "signal-obfuscation", label: "Signal obfuscation", description: "Uses a keyed, lossy EEG transformation before detection and privacy evaluation; it is experimental risk reduction, not an anonymity guarantee." },
 ];
 
 export class ApiError extends Error {
@@ -77,23 +75,16 @@ type BackendRecording = {
   } | null;
   error_message?: string | null;
   model_alert_window_count?: number;
+  model_alert?: boolean;
   session_id?: string;
   session_created_at?: string;
   privacy_method?: string;
 };
 
 type BackendPredictionResponse = {
-  model: { name: string; version: string } | null;
-  summary?: { window_count: number; flagged_window_count: number; flagged_window_fraction: number; peak_window_score: number };
-  predictions: Array<{ start_seconds: number; end_seconds: number; probability: number; seizure_detected: boolean }>;
-};
-
-type BackendSignalResponse = {
-  sampling_rate: number;
-  channel_labels: string[];
-  start_seconds: number;
-  duration_seconds: number;
-  samples: number[][];
+  model: { name: string; version: string; threshold: number; score_type: string; calibrated: boolean; calibration_method: string | null } | null;
+  summary?: { window_count: number; flagged_window_count: number; flagged_window_fraction: number; peak_window_score: number; aggregation_unit: string; recording_probability_available: boolean };
+  predictions: Array<{ start_seconds: number; end_seconds: number; score?: number; probability: number; calibrated_probability?: number | null; score_type?: string; seizure_detected: boolean }>;
 };
 
 function referenceAnnotationFromBackend(annotation: BackendRecording["reference_annotation"]): ReferenceAnnotation | null {
@@ -137,6 +128,7 @@ function recordingFromBackend(recording: BackendRecording, session?: BackendSess
     channelCount: recording.channel_count,
     referenceAnnotation: referenceAnnotationFromBackend(recording.reference_annotation),
     modelAlertWindowCount: recording.model_alert_window_count ?? 0,
+    modelAlert: recording.model_alert ?? (recording.model_alert_window_count ?? 0) > 0,
     errorMessage: recording.error_message ?? undefined,
     sessionId: recording.session_id ?? session?.session_id,
     sessionCreatedAt: recording.session_created_at ?? session?.created_at,
@@ -196,6 +188,7 @@ function stubSessionFromJob(job: StubJob): Session {
       channelCount: null,
       referenceAnnotation: null,
       modelAlertWindowCount: 0,
+      modelAlert: false,
       errorMessage: job.errorMessage,
       sessionId: job.jobId,
       sessionCreatedAt: job.submittedAt,
@@ -239,6 +232,7 @@ function createStubResult(job: StubJob): AnalysisResult {
     submittedAt: job.submittedAt,
     prediction: strongest.seizureDetected ? "seizure" : "no-seizure",
     peakWindowScore: strongest.probability,
+    threshold: 0.5,
     windowCount: predictionWindows.length,
     flaggedWindowCount: predictionWindows.filter((item) => item.seizureDetected).length,
     flaggedWindowFraction: predictionWindows.filter((item) => item.seizureDetected).length / predictionWindows.length,
@@ -246,12 +240,12 @@ function createStubResult(job: StubJob): AnalysisResult {
     recordingDurationSeconds: 60,
     predictionWindows,
     referenceAnnotation: null,
-    signalPreview: createStubSignal(job.jobId, Math.max(0, strongest.startSeconds - 3)),
-    explanationSummary: "The color band shows the deterministic development-stub score for each prediction window. It is not attention or a clinical explanation.",
+    scoreType: "development_score",
+    calibrationMethod: null,
+    explanationSummary: "The timeline shows the deterministic development-stub score for each prediction window. It is not attention or a clinical explanation.",
     modelName: "development-stub",
     modelVersion: "stub-0.1.0",
     nonClinical: true,
-    signalPreviewAvailable: true,
   };
 }
 
@@ -341,9 +335,6 @@ export async function getResult(recordId: string, signal?: AbortSignal): Promise
     peak_window_score: Math.max(...predictions.map((item) => item.probability), 0),
   };
   const strongest = predictions.reduce((current, item) => item.probability > current.probability ? item : current, predictions[0] ?? { probability: 0, seizure_detected: false, start_seconds: 0, end_seconds: 0 });
-  const firstReference = record.referenceAnnotation?.intervals[0];
-  const previewStart = Math.max(0, (firstReference?.startSeconds ?? strongest.start_seconds) - 3);
-  const signalPreview = await getSignalPreview(record.recordId, previewStart, signal);
   return {
     recordId,
     sessionId: record.sessionId ?? "unknown-session",
@@ -351,61 +342,26 @@ export async function getResult(recordId: string, signal?: AbortSignal): Promise
     submittedAt: record.sessionCreatedAt ?? new Date().toISOString(),
     prediction: strongest.seizure_detected ? "seizure" : "no-seizure",
     peakWindowScore: predictionSummary.peak_window_score,
+    threshold: predictionPayload.model?.threshold ?? 0.5,
     windowCount: predictionSummary.window_count,
     flaggedWindowCount: predictionSummary.flagged_window_count,
     flaggedWindowFraction: predictionSummary.flagged_window_fraction,
+    scoreType: predictionPayload.model?.score_type ?? predictions[0]?.score_type ?? "development_score",
+    calibrationMethod: predictionPayload.model?.calibration_method ?? null,
     privacyMethod: record.privacyMethod ?? methodForId(undefined),
     recordingDurationSeconds: record.durationSeconds ?? predictions.at(-1)?.end_seconds ?? 0,
     predictionWindows: predictions.map((prediction) => ({
       startSeconds: prediction.start_seconds,
       endSeconds: prediction.end_seconds,
-      probability: prediction.probability,
+      probability: prediction.calibrated_probability ?? prediction.score ?? prediction.probability,
+      scoreType: prediction.score_type,
       seizureDetected: prediction.seizure_detected,
     })),
     referenceAnnotation: record.referenceAnnotation,
-    signalPreview,
-    explanationSummary: explanationPayload.explanations.length > 0 ? "The color band shows the development-stub score for each prediction window. It is not attention or a clinical explanation." : "No development explanation artifact was returned for this recording.",
+    explanationSummary: explanationPayload.explanations.length > 0 ? "The timeline shows the model score for each prediction window. It is not attention, causal reasoning, or a clinical explanation." : "No explanation artifact was returned for this recording.",
     modelName: predictionPayload.model?.name ?? "backend-model",
     modelVersion: predictionPayload.model?.version ?? "unknown",
     nonClinical: explanationPayload.explanations.every((item) => !item.is_clinical),
-    signalPreviewAvailable: signalPreview !== null,
-  };
-}
-
-export async function getSignalPreview(recordId: string, startSeconds: number, signal?: AbortSignal): Promise<SignalPreview | null> {
-  if (!SHOW_SIGNAL_PREVIEW) return null;
-  if (USE_STUB) {
-    await wait(80);
-    if (signal?.aborted) throw new DOMException("Request aborted.", "AbortError");
-    return createStubSignal(recordId, startSeconds);
-  }
-  try {
-    const payload = await getJson<BackendSignalResponse>(`/api/recordings/${encodeURIComponent(recordId)}/signal?start_seconds=${startSeconds}&duration_seconds=10&max_points=600`, signal);
-    return {
-      channelLabels: payload.channel_labels,
-      samples: payload.samples,
-      samplingRate: payload.sampling_rate,
-      startSeconds: payload.start_seconds,
-      durationSeconds: payload.duration_seconds,
-    };
-  } catch (error) {
-    if (error instanceof ApiError && [404, 409, 422].includes(error.status)) return null;
-    throw error;
-  }
-}
-
-function createStubSignal(seed: string, startSeconds: number): SignalPreview {
-  const channelLabels = ["FP1-F7", "F7-T7", "T7-P7", "P7-O1", "FP1-F3", "F3-C3", "C3-P3", "P3-O1", "FP2-F4", "F4-C4", "C4-P4", "P4-O2", "FP2-F8", "F8-T8", "T8-P8", "P8-O2", "FZ-CZ", "CZ-PZ"];
-  const pointCount = 360;
-  return {
-    channelLabels,
-    samples: channelLabels.map((_, channel) => Array.from({ length: pointCount }, (_, index) => {
-      const seconds = startSeconds + index / 36;
-      return Math.sin(seconds * (2.4 + channel * 0.08)) * (0.45 + channel * 0.015) + (seededNumber(seed, index + channel * 17) - 0.5) * 0.08;
-    })),
-    samplingRate: 256,
-    startSeconds,
-    durationSeconds: 10,
   };
 }
 

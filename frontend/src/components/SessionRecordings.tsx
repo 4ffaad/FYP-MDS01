@@ -23,12 +23,12 @@ export function SessionRecordings({ session }: { session: Session }) {
 /** Render one recording and link only recordings with stored inference results. */
 function RecordingRow({ recording, total, showDatasetAnnotation }: { recording: Recording; total: number; showDatasetAnnotation: boolean }) {
  const label = `Recording ${String(recording.sequenceIndex).padStart(2, "0")} of ${total}`;
-  const hasDatasetSeizure = showDatasetAnnotation && (recording.referenceAnnotation?.intervals.length ?? 0) > 0;
+  const hasModelAlert = recording.modelAlert || recording.modelAlertWindowCount > 0;
   const content = (
     <>
       <div className="flex min-w-0 items-start gap-3">
-        <span className={`grid size-8 shrink-0 place-items-center rounded-md ${hasDatasetSeizure ? "bg-red text-white" : "bg-surface-muted text-teal"}`} aria-hidden="true">
-          <Icon name={hasDatasetSeizure ? "alert" : "file"} className="size-4" />
+        <span className={`grid size-8 shrink-0 place-items-center rounded-md ${hasModelAlert ? "bg-red text-white" : "bg-surface-muted text-teal"}`} aria-hidden="true">
+          <Icon name={hasModelAlert ? "alert" : "file"} className="size-4" />
         </span>
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-ink">{label}</p>
@@ -53,9 +53,9 @@ function RecordingRow({ recording, total, showDatasetAnnotation }: { recording: 
     </>
   );
 
-  const rowClass = `grid gap-3 px-4 py-4 sm:grid-cols-[minmax(0,1.6fr)_minmax(110px,0.8fr)_minmax(150px,1fr)_20px] sm:items-center sm:px-5 ${hasDatasetSeizure ? "bg-red-soft/55" : ""}`;
+  const rowClass = `grid gap-3 px-4 py-4 sm:grid-cols-[minmax(0,1.6fr)_minmax(110px,0.8fr)_minmax(150px,1fr)_20px] sm:items-center sm:px-5 ${hasModelAlert ? "bg-red-soft/55" : ""}`;
   if (recording.status !== "inferred") return <div className={rowClass}>{content}</div>;
-  return <Link className={`${rowClass} transition-colors ${hasDatasetSeizure ? "hover:bg-red-soft" : "hover:bg-teal-soft/20"}`} href={`/results/${encodeURIComponent(recording.recordId)}`} aria-label={`Open ${label} results`}>{content}</Link>;
+  return <Link className={`${rowClass} transition-colors ${hasModelAlert ? "hover:bg-red-soft" : "hover:bg-teal-soft/20"}`} href={`/results/${encodeURIComponent(recording.recordId)}`} aria-label={`Open ${label} results`}>{content}</Link>;
 }
 
 /** Format duration without showing unnecessary decimal precision. */
@@ -77,9 +77,9 @@ export function SessionGroup({ session, onDelete }: { session: Session; onDelete
     : "Dataset findings available after processing";
   const modelSummary = analysisReady
     ? session.summary.modelAlertRecordings === 0
-      ? "No development score flags"
-      : `${session.summary.modelAlertRecordings} with development score flags`
-    : "Development scores pending";
+      ? "No model alerts detected"
+      : `${session.summary.modelAlertRecordings} recording${session.summary.modelAlertRecordings === 1 ? "" : "s"} with model alerts`
+    : "Model alerts pending";
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "touch") pointerStart.current = event.clientX;
   };
@@ -114,8 +114,8 @@ export function SessionGroup({ session, onDelete }: { session: Session; onDelete
             </div>
             <div className="text-xs leading-5 sm:border-l sm:border-rule sm:pl-6">
               <p className="font-semibold text-ink">Analysis summary</p>
-              <p className={`mt-1 ${analysisReady && (session.summary.datasetSeizureRecordings ?? 0) > 0 ? "font-semibold text-red" : "text-ink-muted"}`}>{annotationSummary}</p>
-              <p className="mt-1 text-ink-faint">{modelSummary}</p>
+              <p className={`mt-1 ${analysisReady && session.summary.modelAlertRecordings > 0 ? "font-semibold text-red" : "text-ink-muted"}`}>{modelSummary}</p>
+              <p className="mt-1 text-ink-faint">{annotationSummary}</p>
             </div>
           </div>
         </Link>
@@ -132,16 +132,16 @@ function isAnalysisReady(session: Session): boolean {
 
 /** Show whether a research dataset supplied a seizure label for the recording. */
 function ReferenceLabel({ recording, showDatasetAnnotation }: { recording: Recording; showDatasetAnnotation: boolean }) {
-  if (!showDatasetAnnotation) return <p className="mt-1 text-[0.68rem] text-ink-faint">Dataset reference pending until processing completes</p>;
  const modelLabel = recording.status !== "inferred"
-    ? "Development score pending"
+    ? "Model alert pending"
     : recording.modelAlertWindowCount > 0
-      ? `Development score: activity flagged · ${recording.modelAlertWindowCount} ${recording.modelAlertWindowCount === 1 ? "window" : "windows"}`
-      : "Development score: no activity flagged";
-  const modelClass = recording.status !== "inferred" ? "text-ink-faint" : "text-ink-muted";
-  if (!recording.referenceAnnotation) return <div className="mt-1 space-y-0.5"><p className="text-[0.68rem] text-ink-faint">Dataset annotation unavailable</p><p className={`text-[0.68rem] ${modelClass}`}>{modelLabel}</p></div>;
+      ? `Model alert · ${recording.modelAlertWindowCount} ${recording.modelAlertWindowCount === 1 ? "window" : "windows"} flagged`
+      : "No model alert detected";
+  const modelClass = recording.status !== "inferred" ? "text-ink-faint" : recording.modelAlert ? "font-semibold text-red" : "text-ink-muted";
+  if (!showDatasetAnnotation) return <div className="mt-1 space-y-0.5"><p className={`text-[0.68rem] ${modelClass}`}>{modelLabel}</p><p className="text-[0.68rem] text-ink-faint">Research reference pending until processing completes</p></div>;
+  if (!recording.referenceAnnotation) return <div className="mt-1 space-y-0.5"><p className={`text-[0.68rem] ${modelClass}`}>{modelLabel}</p><p className="text-[0.68rem] text-ink-faint">Research reference unavailable</p></div>;
   const count = recording.referenceAnnotation.intervals.length;
-  return <div className="mt-1 space-y-0.5"><p className={`text-[0.68rem] ${count > 0 ? "font-semibold text-red" : "text-ink-muted"}`}>{count > 0 ? `Dataset seizure annotation · ${count} ${count === 1 ? "interval" : "intervals"}` : "Dataset reference: no seizure"}</p><p className={`text-[0.68rem] ${modelClass}`}>{modelLabel}</p></div>;
+  return <div className="mt-1 space-y-0.5"><p className={`text-[0.68rem] ${modelClass}`}>{modelLabel}</p><p className={`text-[0.68rem] ${count > 0 ? "text-amber" : "text-ink-muted"}`}>{count > 0 ? `Research reference: ${count} dataset seizure ${count === 1 ? "interval" : "intervals"}` : "Research reference: no seizure interval"}</p></div>;
 }
 
 /** Render a destructive session action with a safe processing guard. */

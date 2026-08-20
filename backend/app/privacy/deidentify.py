@@ -1,8 +1,9 @@
 """EDF de-identification utilities.
 
 The source EDF is never modified in place.  A new EDF is written with the
-    same digital samples and technical signal headers, while patient-identifying header
-fields are cleared or replaced by a newly generated recording identifier.
+    same digital samples and technical signal headers, while patient-identifying
+    header fields are cleared. The generated recording identifier stays in the
+    database and is never written into the EDF.
 """
 
 from datetime import datetime
@@ -10,6 +11,18 @@ from pathlib import Path
 import uuid
 
 import pyedflib
+
+
+def _contains_identifier(value: str) -> bool:
+    """Return whether an EDF text field contains meaningful metadata.
+
+    ``pyedflib`` represents an empty EDF patient-name field as ``X``. That
+    format placeholder is not identifying metadata and must not make a
+    scrubbed file appear unsanitized.
+    """
+
+    normalized = value.strip().upper()
+    return bool(normalized) and normalized not in {"X", "X X X X"}
 
 
 def generate_record_id() -> str:
@@ -22,7 +35,7 @@ def inspect_metadata(edf_path: str) -> dict:
     Return safe technical metadata and flags showing whether PII is present.
 
     Raw values such as a patient name are deliberately not returned to an API
-    caller.  They are only read here to determine whether de-identification is
+    caller. They are only read here to determine whether de-identification is
     required.
     """
     reader = pyedflib.EdfReader(str(edf_path))
@@ -30,10 +43,16 @@ def inspect_metadata(edf_path: str) -> dict:
     try:
         patient_name = reader.getPatientName().strip()
         patient_code = reader.getPatientCode().strip()
-        is_deidentified = (
-            (patient_name.startswith("ANON-") or patient_name.startswith("REC-"))
-            and patient_name == patient_code
-        )
+        potential_identifiers_present = {
+            "patient_code": _contains_identifier(patient_code),
+            "patient_name": _contains_identifier(patient_name),
+            "patient_additional": _contains_identifier(reader.getPatientAdditional()),
+            "birthdate": _contains_identifier(reader.getBirthdate()),
+            "technician": _contains_identifier(reader.getTechnician()),
+            "equipment": _contains_identifier(reader.getEquipment()),
+            "admincode": _contains_identifier(reader.getAdmincode()),
+            "recording_additional": _contains_identifier(reader.getRecordingAdditional()),
+        }
         return {
             "technical": {
                 "number_of_channels": reader.signals_in_file,
@@ -41,32 +60,32 @@ def inspect_metadata(edf_path: str) -> dict:
                 "sampling_frequencies_hz": reader.getSampleFrequencies().tolist(),
                 "duration_seconds": reader.getFileDuration(),
             },
-            "potential_identifiers_present": {
-                # Our generated ANON-* value is a record reference, not PII.
-                "patient_code": bool(patient_code) and not is_deidentified,
-                "patient_name": bool(patient_name) and not is_deidentified,
-                "patient_additional": bool(reader.getPatientAdditional().strip()),
-                "birthdate": bool(reader.getBirthdate().strip()),
-                "technician": bool(reader.getTechnician().strip()),
-                "equipment": bool(reader.getEquipment().strip()),
-                "admincode": bool(reader.getAdmincode().strip()),
-                "recording_additional": bool(reader.getRecordingAdditional().strip()),
-            },
-            "is_deidentified": is_deidentified,
+            "potential_identifiers_present": potential_identifiers_present,
+            "is_deidentified": not any(potential_identifiers_present.values()),
         }
     finally:
         reader.close()
 
 
-def deidentify_edf(input_path: str | Path, output_path: str | Path, anonymous_id: str) -> Path:
+def deidentify_edf(input_path: str | Path, output_path: str | Path, record_id: str) -> Path:
     """
-    Write a de-identified copy of an EDF while preserving EEG data exactly.
+    Write a metadata-scrubbed copy of an EDF while preserving EEG data exactly.
 
     Digital samples are copied rather than calibrated physical values.  This
     avoids a second analogue-to-digital conversion and preserves the source
     signal values, labels, sample frequencies, units and filters.
     Relative annotation timing is preserved, while the identifying calendar
     start date is normalized to a fixed neutral date.
+
+    Parameters
+    ----------
+    input_path : str or pathlib.Path
+        Source EDF path in private processing storage.
+    output_path : str or pathlib.Path
+        Destination for the scrubbed EDF.
+    record_id : str
+        Generated database identifier accepted by the pipeline; it is not
+        written into the output EDF.
     """
     source = Path(input_path)
     destination = Path(output_path)
@@ -106,13 +125,13 @@ def deidentify_edf(input_path: str | Path, output_path: str | Path, anonymous_id
         annotations = reader.readAnnotations()
 
         # Free-text EDF fields can carry patient, operator, or device details.
-        # The generated record ID is the only retained non-signal identifier.
+        # The record ID remains in PostgreSQL only; it is not written into EDF.
         safe_header = {
             "technician": "",
             "recording_additional": "",
-            "patientname": anonymous_id,
+            "patientname": "",
             "patient_additional": "",
-            "patientcode": anonymous_id,
+            "patientcode": "",
             "equipment": "",
             "admincode": "",
             "sex": "",

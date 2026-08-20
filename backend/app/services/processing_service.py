@@ -26,13 +26,19 @@ from backend.app.database.repository import (
     list_predictions,
     list_recordings_for_session,
 )
-from backend.app.core.config import ENABLE_SIGNAL_PREVIEW, TEMPLATE_KEY_ENV
+from backend.app.core.config import SIGNAL_RETENTION_CONTEXT_SECONDS, TEMPLATE_KEY_ENV
 from backend.app.eeg.model_input import preprocess_edf_to_npz
 from backend.app.ml.interface import InferenceService, WindowPrediction
 from backend.app.ml.model_loader import get_inference_service
 from backend.app.privacy.crypto import read_base64_key
 from backend.app.privacy.deidentify import deidentify_edf, generate_record_id
-from backend.app.privacy.signal_projection import cancellable_signal_projection
+from backend.app.privacy.retention import (
+    detected_intervals,
+    select_window_indices,
+    write_obfuscated_npz,
+    write_scrubbed_edf_clip,
+)
+from backend.app.privacy.signal_projection import obfuscate_signal
 from backend.app.services.explanation_service import build_stub_explanation
 from backend.app.services.storage_service import SessionStorage
 from backend.app.services.validation_service import ValidationError, validate_edf
@@ -189,9 +195,10 @@ def process_session(session_id: str) -> None:
 
     Privacy
     -------
-    Original and derived waveform files are removed after processing unless a
-    local-only signal preview is explicitly enabled. Only safe result metadata
-    remains available through the API.
+    Original and full derived waveform files are removed after processing.
+    Only encrypted artifacts around model-positive windows are retained for
+    private research review; safe result metadata remains available through
+    the API.
     """
 
     storage = SessionStorage()
@@ -247,6 +254,9 @@ def process_session(session_id: str) -> None:
                     _process_record(db, session, record, storage, inference)
                 except Exception as exc:
                     any_errors = True
+                    if record.retained_artifact_path:
+                        storage.delete_retained_artifact(Path(record.retained_artifact_path))
+                        record.retained_artifact_path = None
                     record.status = RecordingStatus.FAILED
                     record.error_message = _safe_error(exc)
                     db.add(record)
@@ -263,7 +273,7 @@ def process_session(session_id: str) -> None:
             # A failed flush leaves SQLAlchemy unusable until rollback. Clear
             # that state before touching private storage or querying records.
             db.rollback()
-            storage.cleanup_session(session_id, keep_deidentified=ENABLE_SIGNAL_PREVIEW)
+            storage.cleanup_session(session_id, keep_retained=True)
             db.rollback()
             current_session = get_session_by_public_id(db, session_id)
             if current_session is None or current_session.id is None:
@@ -272,8 +282,7 @@ def process_session(session_id: str) -> None:
             for record in list_recordings_for_session(db, current_session.id):
                 record.extracted_path = None
                 record.preprocessed_path = None
-                if not ENABLE_SIGNAL_PREVIEW:
-                    record.deidentified_path = None
+                record.deidentified_path = None
                 db.add(record)
             db.add(current_session)
             db.commit()
@@ -358,8 +367,8 @@ def _process_record(
             windows = payload["model_windows"]
             starts = payload["window_start_seconds"]
         model_windows = windows
-        if session.privacy_method == "cancellable-signal-projection":
-            model_windows = cancellable_signal_projection(windows, read_base64_key(TEMPLATE_KEY_ENV))
+        if session.privacy_method == "signal-obfuscation":
+            model_windows = obfuscate_signal(windows, read_base64_key(TEMPLATE_KEY_ENV))
         predictions = inference.predict(model_windows, starts, record.record_id)
         for prediction in predictions:
             db_prediction = Prediction(
@@ -367,13 +376,17 @@ def _process_record(
                 window_index=prediction.window_index,
                 model_name=inference.model_name,
                 model_version=inference.model_version,
+                threshold=inference.threshold,
                 probability=prediction.probability,
+                raw_score=prediction.raw_score,
+                calibrated_probability=prediction.calibrated_probability,
+                score_type=prediction.score_type,
+                calibration_method=prediction.calibration_method,
                 seizure_detected=prediction.seizure_detected,
                 start_seconds=prediction.start_seconds,
                 end_seconds=prediction.end_seconds,
             )
             db.add(db_prediction)
-        record.status = RecordingStatus.INFERRED
         db.add(record)
         db.commit()
         _finish_attempt(db, inference_attempt, ProcessingStatus.SUCCEEDED)
@@ -394,6 +407,10 @@ def _process_record(
                     end_seconds=stored.end_seconds,
                     probability=stored.probability,
                     seizure_detected=stored.seizure_detected,
+                    score_type=stored.score_type,
+                    calibration_method=stored.calibration_method,
+                    raw_score=stored.raw_score,
+                    calibrated_probability=stored.calibrated_probability,
                 ),
             )
             db.add(
@@ -406,7 +423,76 @@ def _process_record(
                 )
             )
         db.commit()
+        record.retained_artifact_path = _retain_positive_artifact(
+            session=session,
+            record=record,
+            storage=storage,
+            deidentified_path=deid_path,
+            model_windows=model_windows,
+            window_starts=starts,
+            predictions=predictions,
+        )
+        record.status = RecordingStatus.INFERRED
+        db.add(record)
+        db.commit()
         _finish_attempt(db, explanation_attempt, ProcessingStatus.SUCCEEDED)
     except Exception as exc:
         _finish_attempt(db, explanation_attempt, ProcessingStatus.FAILED, _safe_error(exc))
         raise
+
+
+def _retain_positive_artifact(
+    *,
+    session: EEGSession,
+    record: EEGRecording,
+    storage: SessionStorage,
+    deidentified_path: Path,
+    model_windows: np.ndarray,
+    window_starts: np.ndarray,
+    predictions: list[WindowPrediction],
+) -> str | None:
+    """Encrypt only model-positive EEG segments for private retention.
+
+    Parameters
+    ----------
+    session : EEGSession
+        Session containing the selected privacy method.
+    record : EEGRecording
+        Recording whose model output was generated.
+    storage : SessionStorage
+        Private storage service for temporary and retained artifacts.
+    deidentified_path : pathlib.Path
+        Full metadata-scrubbed EDF used during processing.
+    model_windows : numpy.ndarray
+        Model input after the selected privacy transformation.
+    window_starts : numpy.ndarray
+        Start time of every model window.
+    predictions : list[WindowPrediction]
+        Model outputs used to determine retained ranges.
+
+    Returns
+    -------
+    str or None
+        Internal encrypted artifact path when a model alert exists.
+    """
+
+    intervals = detected_intervals(
+        predictions,
+        record.duration_seconds or 0.0,
+        SIGNAL_RETENTION_CONTEXT_SECONDS,
+    )
+    if not intervals:
+        return None
+
+    temporary_dir = storage.directory(session.session_id, "work")
+    if session.privacy_method == "metadata-scrub":
+        temporary_path = temporary_dir / f"{record.record_id}.retained.edf"
+        write_scrubbed_edf_clip(deidentified_path, temporary_path, intervals)
+        return str(storage.store_encrypted_artifact(session.session_id, temporary_path, f"{record.record_id}.edf"))
+
+    indexes = select_window_indices(window_starts, intervals)
+    if not len(indexes):
+        return None
+    temporary_path = temporary_dir / f"{record.record_id}.retained.npz"
+    write_obfuscated_npz(temporary_path, model_windows, window_starts, indexes)
+    return str(storage.store_encrypted_artifact(session.session_id, temporary_path, f"{record.record_id}.npz"))

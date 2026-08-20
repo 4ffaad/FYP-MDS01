@@ -81,11 +81,11 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
             <Summary label="Recordings" value={String(session.recordings.length)} />
             <Summary label="Completed" value={String(completedCount)} />
             <Summary label="Needs review" value={String(failedCount)} />
-            <Summary label="Development flags" value={visibleModelFlagCount === null ? "—" : String(visibleModelFlagCount)} />
-            <Summary label="Dataset seizures" value={visibleDatasetCount === null ? "—" : String(visibleDatasetCount)} />
+            <Summary label="Model alerts" value={visibleModelFlagCount === null ? "—" : String(visibleModelFlagCount)} />
+            <Summary label="Research references" value={visibleDatasetCount === null ? "—" : String(visibleDatasetCount)} />
          </div>
          <ProgressSummary session={session} />
-          <p className={`border-t px-5 py-3 text-xs leading-5 sm:px-7 ${visibleDatasetCount !== null && visibleDatasetCount > 0 ? "border-red/20 bg-red-soft font-semibold text-red" : "border-rule text-ink-muted"}`}>{!datasetFindingsReady ? "Dataset seizure annotations will be summarized after all recordings finish processing." : visibleDatasetCount !== null && visibleDatasetCount > 0 ? `${visibleDatasetCount} recording${visibleDatasetCount === 1 ? "" : "s"} have supplied dataset seizure annotations.` : labelledCount > 0 ? "No supplied dataset seizure annotations were found in this session." : "Dataset seizure annotations were not available for this session."} Development score flags are shown separately and are not seizure accuracy.</p>
+          <p className={`border-t px-5 py-3 text-xs leading-5 sm:px-7 ${visibleModelFlagCount !== null && visibleModelFlagCount > 0 ? "border-red/20 bg-red-soft font-semibold text-red" : "border-rule text-ink-muted"}`}>{!datasetFindingsReady ? "Model alerts and research reference labels will be summarized after all recordings finish processing." : visibleModelFlagCount !== null && visibleModelFlagCount > 0 ? `${visibleModelFlagCount} recording${visibleModelFlagCount === 1 ? "" : "s"} contain model-alert windows.` : "No model-alert windows were detected."} Research dataset annotations, when available, are secondary labels and do not determine the model alert.</p>
           {session.currentStage && <p className="border-t border-rule px-5 py-3 text-xs text-ink-muted sm:px-7">Current stage: <span className="font-semibold text-ink">{session.currentStage}</span></p>}
         </section>
 

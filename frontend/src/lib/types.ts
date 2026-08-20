@@ -29,6 +29,7 @@ export interface Recording {
   errorMessage?: string;
   referenceAnnotation: ReferenceAnnotation | null;
   modelAlertWindowCount: number;
+  modelAlert: boolean;
   sessionId?: string;
   sessionCreatedAt?: string;
   privacyMethod?: PrivacyMethod;
@@ -67,14 +68,7 @@ export type PredictionLabel = "seizure" | "no-seizure" | "review";
 export interface PredictionWindow extends TimeInterval {
   probability: number;
   seizureDetected: boolean;
-}
-
-export interface SignalPreview {
-  channelLabels: string[];
-  samples: number[][];
-  samplingRate: number;
-  startSeconds: number;
-  durationSeconds: number;
+  scoreType?: string;
 }
 
 export interface AnalysisResult {
@@ -84,6 +78,9 @@ export interface AnalysisResult {
   submittedAt: string;
   prediction: PredictionLabel;
   peakWindowScore: number;
+  threshold: number;
+  scoreType: string;
+  calibrationMethod: string | null;
   windowCount: number;
   flaggedWindowCount: number;
   flaggedWindowFraction: number;
@@ -91,8 +88,6 @@ export interface AnalysisResult {
   recordingDurationSeconds: number;
   predictionWindows: PredictionWindow[];
   referenceAnnotation: ReferenceAnnotation | null;
-  signalPreview: SignalPreview | null;
-  signalPreviewAvailable: boolean;
   explanationSummary: string;
   modelName: string;
   modelVersion: string;

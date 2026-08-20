@@ -34,15 +34,14 @@ medical decisions.
 
 ## Privacy research boundary
 
-`control` removes EDF metadata. `cancellable-signal-projection` additionally
-uses an ephemeral, keyed, lossy EEG transformation. The transformed windows,
-not the untransformed windows, feed both seizure detection and the offline
-identity attacker, so the utility/privacy trade-off can be measured honestly.
+`metadata-scrub` removes EDF metadata while preserving waveform values.
+`signal-obfuscation` additionally applies an ephemeral, keyed, lossy EEG
+transformation before both seizure detection and offline privacy evaluation.
 It is experimental risk reduction, not an anonymity guarantee. Uploaded
-archives are AES-GCM encrypted while processing, then original, extracted,
-de-identified, processed, and explanation files are removed. The public API
-keeps only safe result metadata. A waveform preview is disabled by default and
-may be enabled only for local development with `ENABLE_SIGNAL_PREVIEW=true`.
+archives are AES-GCM encrypted while processing. Full originals and derived
+files are deleted afterward; only encrypted artifacts around model-positive
+windows may remain for private research review. The public API keeps only safe
+result metadata and does not serve waveform data.
 
 The endpoint stack uses the deterministic stub and does not need
 `backend/requirements-research.txt`. The optional H5 runtime remains blocked
@@ -64,6 +63,7 @@ signal transformation. Generate different values with `openssl rand -base64 32`.
 - [Setup guide](docs/setup.md)
 - [Backend internals](docs/backend.md)
 - [Frontend internals](docs/frontend.md)
+- [Privacy and model-score research note](docs/privacy-research.md)
 
 ## Frontend
 

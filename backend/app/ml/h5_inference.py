@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +48,18 @@ class H5InferenceService:
         self.model_name = str(contract.get("model_name", model_path.stem))
         self.model_version = str(contract.get("model_version", "reviewed-h5"))
         self.threshold = float(threshold)
+        self.score_type = str(contract.get("score_type", "uncalibrated_probability"))
+        self.calibration_method = contract.get("calibration_method")
+        self.temperature = contract.get("temperature")
+        if self.score_type not in {"uncalibrated_probability", "calibrated_probability"}:
+            raise H5ModelError("The reviewed H5 model score_type is not supported.")
+        if self.score_type == "calibrated_probability" and not self.calibration_method:
+            raise H5ModelError("A calibrated H5 model must document its calibration method.")
+        if self.score_type == "calibrated_probability" and self.calibration_method != "temperature_scaling":
+            raise H5ModelError("Only reviewed temperature_scaling calibration is supported.")
+        if self.score_type == "calibrated_probability" and self.calibration_method == "temperature_scaling":
+            if not isinstance(self.temperature, (int, float)) or self.temperature <= 0:
+                raise H5ModelError("Temperature scaling requires a positive reviewed temperature.")
 
     def predict(
         self,
@@ -61,13 +74,26 @@ class H5InferenceService:
         probabilities = np.asarray(self.model.predict(windows, verbose=0)).reshape(-1)
         if len(probabilities) != len(window_starts) or np.any((probabilities < 0) | (probabilities > 1)):
             raise H5ModelError("The H5 model did not return one probability per input window.")
-        return [
-            WindowPrediction(
-                window_index=index,
-                start_seconds=float(start),
-                end_seconds=float(start + 4),
-                probability=float(probability),
-                seizure_detected=bool(probability >= self.threshold),
+        predictions: list[WindowPrediction] = []
+        for index, (start, raw_score) in enumerate(zip(window_starts, probabilities)):
+            calibrated_probability = None
+            score = float(raw_score)
+            if self.score_type == "calibrated_probability" and self.calibration_method == "temperature_scaling":
+                clipped = min(max(score, 1e-6), 1 - 1e-6)
+                logit = math.log(clipped / (1 - clipped))
+                calibrated_probability = 1 / (1 + math.exp(-logit / float(self.temperature)))
+                score = calibrated_probability
+            predictions.append(
+                WindowPrediction(
+                    window_index=index,
+                    start_seconds=float(start),
+                    end_seconds=float(start + 4),
+                    probability=score,
+                    seizure_detected=bool(score >= self.threshold),
+                    score_type=self.score_type,
+                    calibration_method=self.calibration_method,
+                    raw_score=float(raw_score),
+                    calibrated_probability=calibrated_probability,
+                )
             )
-            for index, (start, probability) in enumerate(zip(window_starts, probabilities))
-        ]
+        return predictions

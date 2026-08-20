@@ -8,7 +8,7 @@ test("upload leads with one clear action and creates a queued analysis", async (
   await page.goto("/upload");
   await expect(page.getByRole("heading", { name: "Submit an EEG recording for analysis." })).toBeVisible();
   await page.getByLabel("EEG recording").setInputFiles({ name: "recording_01.zip", mimeType: "application/zip", buffer: Buffer.from("synthetic") });
-  await page.getByRole("radio", { name: /Cancellable signal projection/ }).check();
+  await page.getByRole("radio", { name: /Signal obfuscation/ }).check();
   await page.screenshot({ path: test.info().outputPath("upload.png"), fullPage: true });
   await page.getByRole("button", { name: "Submit for Analysis" }).click();
   await expect(page).toHaveURL(/sessions/);
@@ -39,19 +39,24 @@ test("dashboard shows an empty state and no private fields", async ({ page }) =>
   await page.screenshot({ path: test.info().outputPath("dashboard.png"), fullPage: true });
 });
 
-test("completed analysis opens a result with confidence and explanation notice", async ({ page }) => {
+test("completed analysis opens a result with a score timeline and explanation notice", async ({ page }) => {
+  const waveformRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/recordings/") && request.url().includes("/signal")) waveformRequests.push(request.url());
+  });
   await page.goto("/upload");
   await page.getByLabel("EEG recording").setInputFiles({ name: "review_case.zip", mimeType: "application/zip", buffer: Buffer.from("synthetic") });
   await page.getByRole("button", { name: "Submit for Analysis" }).click();
   const sessionRegion = page.getByRole("region", { name: /MDS-/ });
   await expect(sessionRegion.getByRole("status", { name: "Status: Complete" })).toBeVisible({ timeout: 10000 });
   await page.getByRole("link", { name: /Open Recording 01 of 1 results/ }).click();
-  await expect(page.getByRole("heading", { name: "Development activity flagged" })).toBeVisible();
-  await expect(page.getByText("Development-stub score", { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("img", { name: /18-channel de-identified EEG viewer/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Model alert detected" })).toBeVisible();
+  await expect(page.getByText("Development score", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("img", { name: "Prediction score timeline" })).toBeVisible();
   await expect(page.getByText("Dataset annotation unavailable")).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Recordings in this session" })).toBeVisible();
   await expect(page.getByText("Non-clinical output")).toBeVisible();
+  expect(waveformRequests).toHaveLength(0);
   await expect(page.getByText("patient_reference")).not.toBeVisible();
   await page.waitForTimeout(500);
   await page.screenshot({ path: test.info().outputPath("result.png"), fullPage: true });

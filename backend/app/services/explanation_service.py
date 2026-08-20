@@ -34,5 +34,9 @@ def build_stub_explanation(
         "window_start_seconds": prediction.start_seconds,
         "window_end_seconds": prediction.end_seconds,
         "probability": prediction.probability,
+        "raw_score": prediction.raw_score,
+        "calibrated_probability": prediction.calibrated_probability,
+        "score_type": prediction.score_type,
+        "calibration_method": prediction.calibration_method,
     }
     return payload

@@ -33,18 +33,22 @@ flowchart TD
     Scrub --> Preprocess[Bandpass, notch, normalize, clip]
     Preprocess --> Windows[(N, 1024, 18) float32]
     Windows --> Method{Privacy method}
-    Method --> Control[control\nUse windows as processed]
-    Method --> Transform[cancellable-signal-projection\nKeyed lossy projection]
+    Method --> Control[metadata-scrub\nPreserve waveform values]
+    Method --> Transform[signal-obfuscation\nKeyed lossy projection]
     Control --> Detector[Inference adapter]
     Transform --> Detector
-    Control --> PSD[PSD features for identity evaluation]
+    Control --> PSD[PSD features for research evaluation]
     Transform --> PSD
     Detector --> Prediction[Prediction rows]
     Prediction --> Explanation[Non-clinical explanation JSON]
-    Explanation --> SafeResults[Public result endpoints]
+    Prediction --> Retain{Any model-positive windows?}
+    Retain -->|yes| Clip[Expand 60 seconds, merge, encrypt clip]
+    Retain -->|no| Delete[Delete recording temporary files]
+    Clip --> SafeResults[Public result endpoints]
+    Delete --> SafeResults
     RecordLoop -->|Malformed EDF| Failed[Mark one recording failed]
     Failed --> SafeResults
-    SafeResults --> Cleanup[Delete transient files]
+    SafeResults --> Cleanup[Delete full transient files and archive]
 ```
 
 The projection method is intentionally shape-preserving so the same transformed
@@ -59,9 +63,10 @@ flowchart LR
     Attacker --> Leakage[Identity leakage]
 ```
 
-`control` performs metadata de-identification but does not change the numeric
-signal. `cancellable-signal-projection` is experimental risk reduction, not a
-formal anonymity guarantee.
+`metadata-scrub` performs metadata de-identification but does not change the
+numeric signal. `signal-obfuscation` is experimental risk reduction, not a
+formal anonymity guarantee. Encryption protects storage; neither encryption
+nor metadata scrubbing removes every possible EEG biometric signal.
 
 ## Status lifecycle
 
@@ -104,9 +109,11 @@ Recordings:
 
 Responses expose generated IDs, safe technical metadata, statuses, processing
 progress, recording-level model alert counts, predictions, safe relative CHB-MIT
-reference intervals, and explanation JSON. The large result score is the peak
-probability of one four-second window, not validated patient-level confidence
-or accuracy. A whole-recording accuracy requires labelled evaluation data.
+reference intervals, and explanation JSON. Stub results expose a peak window
+development score and score timeline, not model confidence or accuracy. A
+whole-recording accuracy requires labelled evaluation data. Calibrated
+probability is returned only when a reviewed model contract says calibration is
+available.
 Hidden macOS
 archive entries such as `__MACOSX/._*.edf` are ignored before recording rows
 are created. A direct recording response also includes its safe
@@ -141,6 +148,7 @@ erDiagram
         int channel_count
         string reference_annotation_source
         text reference_intervals_json
+        string retained_artifact_path_internal
     }
     PROCESSING_ATTEMPTS {
         int id PK
@@ -154,7 +162,10 @@ erDiagram
     PREDICTIONS {
         int id PK
         int recording_db_id FK
+        float threshold
         float probability
+        string score_type
+        string calibration_method
         boolean seizure_detected
     }
     EXPLANATIONS {
@@ -178,7 +189,8 @@ migrations or using `create_all()` in the Docker runtime.
 5. `app/privacy/deidentify.py` — EDF metadata scrubbing.
 6. `app/privacy/signal_projection.py` — shared research transformation and
    PSD attacker features.
-7. `app/eeg/preprocessing.py` and `app/eeg/model_input.py` — model tensor.
-8. `app/ml/` — stub and reviewed H5 adapter.
-9. `app/database/models/eeg.py` and `app/database/repository.py` — persistence.
-10. `migrations/versions/` — database history.
+7. `app/privacy/retention.py` — positive-window selection and clip creation.
+8. `app/eeg/preprocessing.py` and `app/eeg/model_input.py` — model tensor.
+9. `app/ml/` — stub and reviewed H5 adapter.
+10. `app/database/models/eeg.py` and `app/database/repository.py` — persistence.
+11. `migrations/versions/` — database history.

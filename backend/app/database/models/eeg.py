@@ -73,7 +73,7 @@ class EEGSession(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     session_id: str = Field(index=True, unique=True)
-    privacy_method: str = Field(default="control", max_length=64)
+    privacy_method: str = Field(default="metadata-scrub", max_length=64)
     original_filename: str = ""
     original_path: str = ""
     # Alembic intentionally stores statuses as VARCHAR. Keep Python enum
@@ -104,6 +104,7 @@ class EEGRecording(SQLModel, table=True):
     original_filename: str
     extracted_path: str | None = None
     deidentified_path: str | None = None
+    retained_artifact_path: str | None = None
     preprocessed_path: str | None = None
     duration_seconds: float | None = None
     sampling_rate: int | None = None
@@ -158,7 +159,12 @@ class Prediction(SQLModel, table=True):
     window_index: int = Field(ge=0)
     model_name: str
     model_version: str
+    threshold: float = Field(default=0.5, ge=0, le=1)
     probability: float = Field(ge=0, le=1)
+    raw_score: float | None = Field(default=None, ge=0, le=1)
+    calibrated_probability: float | None = Field(default=None, ge=0, le=1)
+    score_type: str = Field(default="development_score", max_length=64)
+    calibration_method: str | None = Field(default=None, max_length=64)
     seizure_detected: bool
     start_seconds: float = Field(ge=0)
     end_seconds: float = Field(ge=0)

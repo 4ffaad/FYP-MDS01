@@ -36,8 +36,8 @@ MODEL_VERSION = os.getenv("MODEL_VERSION", "stub-0.1.0")
 MODEL_THRESHOLD = float(os.getenv("MODEL_THRESHOLD", "0.5"))
 H5_MODEL_PATH = Path(os.getenv("H5_MODEL_PATH", str(BACKEND_ROOT / "model" / "best_seizure_model.h5")))
 H5_CONTRACT_PATH = Path(os.getenv("H5_CONTRACT_PATH", str(BACKEND_ROOT / "model" / "model-contract.json")))
-ENABLE_SIGNAL_PREVIEW = os.getenv("ENABLE_SIGNAL_PREVIEW", "false").lower() == "true"
-SUPPORTED_PRIVACY_METHODS = ("control", "cancellable-signal-projection")
+SIGNAL_RETENTION_CONTEXT_SECONDS = float(os.getenv("SIGNAL_RETENTION_CONTEXT_SECONDS", "60"))
+SUPPORTED_PRIVACY_METHODS = ("metadata-scrub", "signal-obfuscation")
 STORAGE_KEY_ENV = "MDS01_STORAGE_KEY"
 TEMPLATE_KEY_ENV = "MDS01_TEMPLATE_KEY"
 

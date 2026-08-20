@@ -17,6 +17,10 @@ class WindowPrediction:
     end_seconds: float
     probability: float
     seizure_detected: bool
+    score_type: str = "development_score"
+    calibration_method: str | None = None
+    raw_score: float | None = None
+    calibrated_probability: float | None = None
 
 
 class InferenceService(Protocol):
@@ -25,6 +29,8 @@ class InferenceService(Protocol):
     model_name: str
     model_version: str
     threshold: float
+    score_type: str
+    calibration_method: str | None
 
     def predict(
         self,

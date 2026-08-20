@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api", tags=["sessions"])
 async def upload_session(
     background_tasks: BackgroundTasks,
     archive: UploadFile = File(...),
-    privacy_method: str = Form("control"),
+    privacy_method: str = Form("metadata-scrub"),
     db: Session = Depends(get_session),
 ) -> dict:
     """Accept a ZIP archive, create a session, and schedule background work.
@@ -35,7 +35,7 @@ async def upload_session(
     archive : fastapi.UploadFile
         ZIP archive containing one or more EDF recordings.
     privacy_method : str
-        ``control`` or ``cancellable-signal-projection`` research privacy mode.
+        ``metadata-scrub`` or ``signal-obfuscation`` research privacy mode.
     background_tasks : fastapi.BackgroundTasks
         FastAPI-managed in-process task runner used to start the EEG pipeline
         after the HTTP response is sent.
@@ -60,7 +60,7 @@ async def upload_session(
     if privacy_method not in SUPPORTED_PRIVACY_METHODS:
         raise HTTPException(
             status_code=400,
-            detail="privacy_method must be control or cancellable-signal-projection.",
+            detail="privacy_method must be metadata-scrub or signal-obfuscation.",
         )
 
     try:

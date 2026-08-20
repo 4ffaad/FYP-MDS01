@@ -21,28 +21,18 @@ NEXT_PUBLIC_USE_API_STUB=false
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-The adapter calls the current backend session and recording routes from `src/lib/api.ts`. It submits only the ZIP and selected research privacy mode—never a patient reference or the original filename as a public value. `control` performs metadata scrubbing; `cancellable-signal-projection` additionally runs a keyed, lossy transformation that feeds both detector and privacy evaluation. Neither mode is an anonymity guarantee.
+The adapter calls the current backend session and recording routes from `src/lib/api.ts`. It submits only the ZIP and selected research privacy mode—never a patient reference or the original filename as a public value. `metadata-scrub` preserves waveform values while removing EDF metadata; `signal-obfuscation` additionally applies a keyed, lossy transformation before detection and privacy evaluation. Neither mode is an anonymity guarantee.
 
-### Local waveform preview
-
-Waveforms are off by default. To enable the bounded, de-identified preview on your own machine only, set both flags before starting services:
-
-```dotenv
-# root .env, used by Docker/FastAPI
-ENABLE_SIGNAL_PREVIEW=true
-
-# frontend/.env.local
-NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW=true
-```
-
-Rebuild the backend, restart `npm run dev`, and upload a new ZIP. Existing runs made while preview was disabled no longer retain the de-identified EDF. The viewer requests one 10-second window at a time and renders the 18 model channels; it never downloads the full recording. Do not enable this mode in a deployed app without authentication, authorization, and a reviewed retention policy.
+Waveform access is intentionally disabled. The results page renders a bounded
+score timeline, threshold, and model-alert windows without downloading EEG
+samples.
 
 ## Routes
 
 - `/upload` - choose an EEG ZIP, select a config-driven privacy method, and submit one analysis;
 - `/dashboard` - monitor collapsed session cards and expand one only when its recordings are needed;
 - `/sessions/[sessionId]` - inspect one uploaded ZIP and every safe EDF recording summary within it;
-- `/results/[recordId]` - browse one recording’s bounded 18-channel EEG windows, dataset annotations, and separately labelled non-clinical development scores.
+- `/results/[recordId]` - review one recording’s model-alert score timeline, dataset references, and separately labelled non-clinical development scores.
 
 Session IDs start with `SES-`; recording-result IDs start with `REC-`. Opening a legacy `/results/SES-...` URL now redirects to the matching session page.
 
@@ -63,7 +53,7 @@ The end-to-end suite checks desktop and mobile upload, empty, completed, error, 
 3. `src/components/AppShell.tsx` and `src/components/NavLink.tsx` - workspace chrome and active navigation;
 4. `src/components/UploadScreen.tsx` - the single-action submission flow;
 5. `src/components/DashboardScreen.tsx` and `src/components/StatusBadge.tsx` - polling, filters, safe run rows, and states;
-6. `src/components/ResultScreen.tsx`, `RecordingNavigator.tsx`, and `SignalScoreChart.tsx` - session-scoped result review and optional local score-window preview;
+6. `src/components/ResultScreen.tsx`, `RecordingNavigator.tsx`, and `PredictionTimeline.tsx` - session-scoped result review and model score timeline;
 7. `src/lib/api.ts` and `src/lib/types.ts` - the replaceable data boundary and presentation types.
 
 See the durable visual contract in [`DESIGN.md`](../DESIGN.md) and the source reference in [`apple/DESIGN.md`](../apple/DESIGN.md).

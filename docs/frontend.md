@@ -27,7 +27,7 @@ flowchart LR
     Session --> Dashboard[/dashboard]
     Dashboard --> Poll[Poll active sessions]
     Session --> Results[/results/{recordId}]
-    Results --> Viewer[Bounded 18-channel EEG viewer]
+    Results --> Timeline[Score timeline and alert threshold]
     Results --> Dataset[Dataset seizure annotation]
     Results --> Prediction[Non-clinical model score]
 ```
@@ -74,7 +74,7 @@ NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 - `src/components/SessionRecordings.tsx` renders safe recording rows and result links.
 - `src/components/ResultScreen.tsx` owns session-scoped prediction and explanation review.
 - `src/components/RecordingNavigator.tsx` lets a clinician move through every safe recording in the current session.
-- `src/components/SignalScoreChart.tsx` browses bounded 10-second, 18-channel signal windows and renders dataset annotations separately from the development-stub score band.
+- `src/components/PredictionTimeline.tsx` renders window scores, the alert threshold, and flagged intervals without requesting waveform samples.
 - `src/components/AppShell.tsx` provides shared navigation and page frame.
 - `src/lib/api.ts` is the only frontend-to-backend adapter.
 - `src/lib/types.ts` defines the frontend view-model types.
@@ -85,22 +85,17 @@ NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 flowchart TD
     APIResponse[Safe API response] --> SessionView[Session groups and generated recording labels]
     APIResponse --> ResultView[Prediction and explanation]
-    APIResponse --> SignalGate{Signal preview enabled?}
-    SignalGate -->|false| Notice[Show privacy notice\nDo not request waveform]
-    SignalGate -->|true locally| Chart[Request bounded de-identified signal]
+    APIResponse --> Timeline[Show score timeline\nDo not request waveform]
 ```
 
 The frontend never displays patient references, original filenames, original
-paths, or unrestricted original files. The signal request is not made when
-preview is disabled. When enabled locally, it requests only one bounded,
-de-identified 10-second window after the clinician opens a recording result.
-CHB-MIT summary/sidecar intervals are displayed as dataset reference labels;
-recording rows separately show development model alert windows. “Possible
-seizure-like activity flagged” is a model alert, not proof that a seizure
-occurred. The result page labels its large number “Peak window score”; it is
-not whole-recording model confidence or accuracy. Completed sessions can be
-deleted from the dashboard or session detail page; active sessions stay
-protected until processing finishes.
+paths, unrestricted original files, or waveform samples. CHB-MIT
+summary/sidecar intervals are displayed only as research reference labels;
+recording rows and red states use model alert windows. “Model alert detected”
+is not proof that a seizure occurred. The result page labels its large number
+“Peak window score”; it is not whole-recording model confidence or accuracy.
+Completed sessions can be deleted from the dashboard or session detail page;
+active sessions stay protected until processing finishes.
 
 ## Frontend reading order
 

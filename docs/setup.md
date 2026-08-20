@@ -103,7 +103,7 @@ Use the Swagger page, or send a ZIP with curl:
 
 ```bash
 curl -F 'archive=@recordings.zip' \
-  -F 'privacy_method=control' \
+  -F 'privacy_method=metadata-scrub' \
   http://127.0.0.1:8000/api/sessions/upload
 ```
 
@@ -142,5 +142,5 @@ workers become necessary.
   sure the backend is running on port 8000.
 - Migration errors: inspect `docker compose logs backend`; the container runs
   `alembic upgrade head` before starting FastAPI.
-- Waveform endpoint returns `404`: this is expected unless
-  `ENABLE_SIGNAL_PREVIEW=true` is set for local development.
+- Waveform endpoint returns `404`: this is intentional. Results expose a score
+  timeline, not raw EEG samples, because EEG can retain biometric information.
