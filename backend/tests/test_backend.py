@@ -3,7 +3,7 @@
 Run with: PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import asyncio
 import io
 import json
@@ -12,7 +12,8 @@ from pathlib import Path
 import tempfile
 import unittest
 import zipfile
-from unittest.mock import ANY, AsyncMock, patch
+import warnings
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import numpy as np
 import pyedflib
@@ -42,15 +43,17 @@ from backend.app.database.repository import (
     list_predictions,
     list_recordings_for_session,
     list_sessions,
+    get_upload_draft,
 )
 from backend.app.eeg.edf_io import read_uniform_edf
 from backend.app.eeg.preprocessing import EEGPreprocessor
 from backend.app.eeg.model_input import MODEL_CHANNELS, prepare_model_windows
 from backend.app.ml.stub_inference import StubInferenceService
-from backend.app.ml.interface import WindowPrediction
-from backend.app.privacy.deidentify import deidentify_edf, generate_record_id, inspect_metadata
+from backend.app.ml.interface import WindowPrediction, score_crossed_threshold
+from backend.app.privacy.deidentify import deidentify_edf, generate_record_id, inspect_metadata, scrub_signal_header
 from backend.app.privacy.signal_projection import obfuscate_signal, psd_features
-from backend.app.privacy.retention import detected_intervals, select_window_indices, write_scrubbed_edf_clip
+from backend.app.privacy.methods import canonical_privacy_profile, methods_from_profile, normalize_privacy_methods
+from backend.app.privacy.retention import detected_intervals, model_alert_intervals, select_window_indices, write_obfuscated_npz, write_scrubbed_edf_clip
 from backend.app.research.metrics import calibration_metrics, classification_metrics, patient_bootstrap_f1, precision_recall_points, roc_points, threshold_sweep
 from backend.app.research.chb_mit import (
     seizure_window_labels,
@@ -59,7 +62,7 @@ from backend.app.research.chb_mit import (
     summary_annotations,
 )
 from backend.app.services.storage_service import SessionStorage, StorageError
-from backend.app.services.session_service import create_session, delete_session, public_record, public_session
+from backend.app.services.session_service import cleanup_expired_drafts, create_session, create_upload_draft, delete_session, finalize_upload_draft, public_record, public_session
 from backend.app.services.validation_service import ValidationError, validate_edf
 
 
@@ -77,6 +80,8 @@ class BackendTests(unittest.TestCase):
         path: Path,
         labels: tuple[str, ...] = ("FP1-F7", "F7-T7"),
         sample_count: int = 512,
+        physical_min: float = -1000,
+        physical_max: float = 1000,
     ) -> np.ndarray:
         samples = np.asarray(
             [np.arange(sample_count, dtype=np.int32) - sample_count // 2 + index for index in range(len(labels))]
@@ -86,8 +91,8 @@ class BackendTests(unittest.TestCase):
                 "label": label,
                 "dimension": "uV",
                 "sample_frequency": 256,
-                "physical_min": -1000,
-                "physical_max": 1000,
+                "physical_min": physical_min,
+                "physical_max": physical_max,
                 "digital_min": -2048,
                 "digital_max": 2047,
                 "prefilter": "",
@@ -122,7 +127,12 @@ class BackendTests(unittest.TestCase):
             source, output = root / "source.edf", root / "anonymous.edf"
             original = self._create_source_edf(source)
             anonymous_id = generate_record_id()
-            deidentify_edf(source, output, anonymous_id)
+            with warnings.catch_warnings(record=True) as captured:
+                warnings.simplefilter("always")
+                deidentify_edf(source, output, anonymous_id)
+            self.assertFalse(
+                [warning for warning in captured if "Physical minimum" in str(warning.message) or "Physical maximum" in str(warning.message)]
+            )
 
             self.assertTrue(output.exists())
             reader = pyedflib.EdfReader(str(output))
@@ -147,23 +157,121 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(metadata["technical"]["number_of_channels"], 2)
             self.assertFalse(any(metadata["potential_identifiers_present"].values()))
 
+    def test_scrubbed_edf_is_warning_free_and_model_preprocessing_compatible(self) -> None:
+        """Scrubbing keeps digital samples and the model tensor within tolerance."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "long-range.edf", root / "scrubbed.edf"
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                self._create_source_edf(
+                    source,
+                    MODEL_CHANNELS,
+                    sample_count=4096,
+                    physical_min=-807.032967032967,
+                    physical_max=1037.948717948718,
+                )
+            with warnings.catch_warnings(record=True) as captured:
+                warnings.simplefilter("always")
+                deidentify_edf(source, output, generate_record_id())
+            self.assertFalse(
+                [
+                    warning
+                    for warning in captured
+                    if "Physical minimum" in str(warning.message)
+                    or "Physical maximum" in str(warning.message)
+                ]
+            )
+
+            direct_windows, direct_starts, _ = prepare_model_windows(
+                EEGPreprocessor(sampling_rate=256).preprocess(
+                    read_uniform_edf(source)[0]
+                ),
+                256,
+                list(MODEL_CHANNELS),
+            )
+            scrubbed_windows, scrubbed_starts, _ = prepare_model_windows(
+                EEGPreprocessor(sampling_rate=256).preprocess(
+                    read_uniform_edf(output)[0]
+                ),
+                256,
+                list(MODEL_CHANNELS),
+            )
+            self.assertEqual(direct_windows.shape, (7, 1024, 18))
+            self.assertEqual(direct_windows.dtype, np.float32)
+            np.testing.assert_array_equal(direct_starts, scrubbed_starts)
+            np.testing.assert_allclose(direct_windows, scrubbed_windows, rtol=1e-3, atol=1e-3)
+            direct_predictions = StubInferenceService().predict(direct_windows, direct_starts, "REC-COMPAT")
+            scrubbed_predictions = StubInferenceService().predict(scrubbed_windows, scrubbed_starts, "REC-COMPAT")
+            self.assertEqual(direct_predictions, scrubbed_predictions)
+
+    def test_scrubbing_expands_digital_bounds_without_clipping_samples(self) -> None:
+        header = {
+            "label": "FP1-F7",
+            "digital_min": -2,
+            "digital_max": 2,
+            "physical_min": -1.0,
+            "physical_max": 1.0,
+            "transducer": "sensitive device",
+            "prefilter": "private filter details",
+        }
+        samples = np.asarray([-7, -2, 0, 2, 9], dtype=np.int32)
+        scrubbed = scrub_signal_header(header, digital_samples=samples)
+        self.assertEqual((scrubbed["digital_min"], scrubbed["digital_max"]), (-7, 9))
+        self.assertEqual(scrubbed["transducer"], "")
+        self.assertEqual(scrubbed["prefilter"], "")
+
     def test_preprocessing_preserves_shape_and_clips_values(self) -> None:
         data = np.vstack((np.sin(np.linspace(0, 20, 512)), np.zeros(512)))
         processed = EEGPreprocessor(sampling_rate=256).preprocess(data)
         self.assertEqual(processed.shape, data.shape)
         self.assertLessEqual(np.abs(processed).max(), 5)
 
+    def test_vectorized_preprocessing_matches_channelwise_contract(self) -> None:
+        """The optimized multi-channel path must match the original filter order."""
+        processor = EEGPreprocessor(sampling_rate=256)
+        data = np.random.default_rng(7).normal(size=(3, 2048))
+        expected_bandpass = np.vstack([processor.bandpass_filter(channel) for channel in data])
+        expected_notch = np.vstack([processor.notch_filter(channel) for channel in expected_bandpass])
+        expected_normalized = np.vstack([processor.normalize(channel) for channel in expected_notch])
+        expected = processor.remove_artifacts(expected_normalized)
+
+        actual = processor.preprocess(data)
+
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+        self.assertEqual(actual.dtype, np.float64)
+
+    def test_model_contract_constants_are_unchanged(self) -> None:
+        """The reviewed model contract remains explicit in one place."""
+        from backend.app.eeg.model_input import (
+            MODEL_SAMPLING_RATE,
+            WINDOW_SAMPLES,
+            WINDOW_SECONDS,
+            WINDOW_STEP_SAMPLES,
+            WINDOW_STEP_SECONDS,
+        )
+
+        self.assertEqual(MODEL_SAMPLING_RATE, 256)
+        self.assertEqual(WINDOW_SECONDS, 4)
+        self.assertEqual(WINDOW_SAMPLES, 1024)
+        self.assertEqual(WINDOW_STEP_SECONDS, 2)
+        self.assertEqual(WINDOW_STEP_SAMPLES, 512)
+        self.assertEqual(len(MODEL_CHANNELS), 18)
+        self.assertEqual(MODEL_CHANNELS[:4], ("FP1-F7", "F7-T7", "T7-P7", "P7-O1"))
+        self.assertEqual(MODEL_CHANNELS[-2:], ("FZ-CZ", "CZ-PZ"))
+
     def test_model_windows_match_the_trained_input_contract(self) -> None:
         labels = list(MODEL_CHANNELS) + ["P7-T7", "T7-FT9", "FT9-FT10", "FT10-T8", "T8-P8"]
         signals = np.arange(23 * 2048, dtype=np.float64).reshape(23, 2048)
         windows, starts, discarded = prepare_model_windows(signals, 256, labels)
 
-        self.assertEqual(windows.shape, (2, 1024, 18))
+        self.assertEqual(windows.shape, (3, 1024, 18))
         self.assertEqual(windows.dtype, np.float32)
-        self.assertEqual(starts.tolist(), [0.0, 4.0])
+        self.assertEqual(starts.tolist(), [0.0, 2.0, 4.0])
         self.assertEqual(discarded, 0)
         self.assertEqual(windows[0, 0, 0], signals[0, 0])
-        self.assertEqual(windows[1, 0, 17], signals[17, 1024])
+        self.assertEqual(windows[1, 0, 17], signals[17, 512])
 
     def test_uniform_reader_reopens_edf(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -187,6 +295,31 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(service.model_name, "development-stub")
         self.assertEqual(service.model_version, "stub-0.1.0")
         self.assertTrue(all(0 <= item.probability <= 1 for item in first))
+        self.assertTrue(all(item.seizure_detected == score_crossed_threshold(item.probability, service.threshold) for item in first))
+
+    def test_alert_threshold_is_inclusive_for_stub_and_h5_scores(self) -> None:
+        """Both inference adapters flag exactly scores at or above the configured boundary."""
+
+        self.assertFalse(score_crossed_threshold(0.49, 0.5))
+        self.assertTrue(score_crossed_threshold(0.50, 0.5))
+        self.assertTrue(score_crossed_threshold(0.51, 0.5))
+
+        from backend.app.ml.h5_inference import H5InferenceService
+
+        service = H5InferenceService.__new__(H5InferenceService)
+        service.model = MagicMock()
+        service.model.predict.return_value = np.asarray([[0.49], [0.50], [0.51]], dtype=np.float32)
+        service.threshold = 0.5
+        service.score_type = "uncalibrated_probability"
+        service.calibration_method = None
+        service.temperature = None
+        predictions = service.predict(
+            np.zeros((3, 1024, 18), dtype=np.float32),
+            np.asarray([0.0, 2.0, 4.0], dtype=np.float32),
+            "REC-THRESHOLD",
+        )
+        self.assertEqual([item.seizure_detected for item in predictions], [False, True, True])
+        self.assertTrue(all(item.seizure_detected == score_crossed_threshold(item.probability, service.threshold) for item in predictions))
 
     def test_h5_runtime_fails_closed_without_a_reviewed_contract(self) -> None:
         from backend.app.ml.h5_inference import H5InferenceService, H5ModelError
@@ -236,6 +369,97 @@ class BackendTests(unittest.TestCase):
             with self.assertRaises(StorageError):
                 storage.materialize_archive("SES-CRYPTO", archive)
 
+    def test_upload_draft_encrypts_expires_and_finalizes_once(self) -> None:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SessionStorage(Path(directory) / "sessions", self.storage_key)
+            payload = b"PK\\x03\\x04private staged archive"
+            with Session(engine) as db:
+                draft = asyncio.run(
+                    create_upload_draft(
+                        db,
+                        storage,
+                        UploadFile(filename="recordings.zip", file=io.BytesIO(payload)),
+                        datetime.now(timezone.utc) + timedelta(minutes=30),
+                    )
+                )
+                encrypted_path = Path(draft.encrypted_path)
+                self.assertTrue(encrypted_path.exists())
+                self.assertNotIn(payload, encrypted_path.read_bytes())
+                self.assertIsNotNone(get_upload_draft(db, draft.draft_id))
+
+                session = finalize_upload_draft(db, storage, draft.draft_id, "metadata-scrub")
+
+                self.assertTrue(Path(session.original_path).exists())
+                self.assertIsNone(get_upload_draft(db, draft.draft_id))
+                self.assertFalse((storage.root / "_drafts" / draft.draft_id).exists())
+
+            with Session(engine) as db:
+                expiring = asyncio.run(
+                    create_upload_draft(
+                        db,
+                        storage,
+                        UploadFile(filename="expired.zip", file=io.BytesIO(payload)),
+                        datetime.now(timezone.utc) - timedelta(minutes=1),
+                    )
+                )
+                expiring_path = Path(expiring.encrypted_path)
+                cleanup_expired_drafts(db, storage)
+                self.assertIsNone(get_upload_draft(db, expiring.draft_id))
+                self.assertFalse(expiring_path.exists())
+
+    def test_signal_preview_returns_bounded_alert_intervals(self) -> None:
+        from backend.app.services.signal_service import build_signal_preview
+
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SessionStorage(Path(directory) / "sessions", self.storage_key)
+            source = Path(directory) / "retained.npz"
+            windows = np.zeros((2, 1024, 18), dtype=np.float32)
+            starts = np.asarray([0.0, 4.0], dtype=np.float32)
+            write_obfuscated_npz(source, windows, starts, np.asarray([0], dtype=np.int64))
+            encrypted = storage.store_encrypted_artifact("SES-SIGNAL", source, "REC-SIGNAL.npz")
+            with Session(engine) as db:
+                session = EEGSession(session_id="SES-SIGNAL", status=AnalysisStatus.COMPLETED)
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                record = EEGRecording(
+                    record_id="REC-SIGNAL",
+                    session_db_id=session.id,
+                    sequence_index=1,
+                    original_filename="private.edf",
+                    duration_seconds=20,
+                    status=RecordingStatus.INFERRED,
+                    retained_artifact_path=str(encrypted),
+                )
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+                db.add(Prediction(
+                    recording_db_id=record.id,
+                    window_index=0,
+                    model_name="development-stub",
+                    model_version="stub-0.1.0",
+                    probability=0.9,
+                    seizure_detected=True,
+                    start_seconds=0,
+                    end_seconds=4,
+                ))
+                db.commit()
+
+                with patch("backend.app.services.signal_service.ENABLE_SIGNAL_PREVIEW", True):
+                    payload = build_signal_preview(db, session, record, storage, 0, 10, 100)
+
+            self.assertEqual(payload["representation"], "signal-obfuscated")
+            self.assertEqual(len(payload["channels"]), 18)
+            self.assertEqual(payload["flagged_intervals"], [{"start_seconds": 0, "end_seconds": 4}])
+            self.assertLessEqual(len(payload["time_seconds"]), 100)
+
     def test_signal_obfuscation_is_keyed_lossy_and_model_compatible(self) -> None:
         windows = np.random.default_rng(42).normal(size=(2, 1024, 18)).astype(np.float32)
         first = obfuscate_signal(windows, b"a" * 32)
@@ -249,6 +473,37 @@ class BackendTests(unittest.TestCase):
         self.assertFalse(np.array_equal(first, rotated))
         self.assertFalse(np.array_equal(first, windows))
 
+    def test_privacy_profiles_are_ordered_and_canonical(self) -> None:
+        self.assertEqual(normalize_privacy_methods(), ("metadata-scrub",))
+        self.assertEqual(
+            normalize_privacy_methods('["signal-obfuscation", "metadata-scrub"]'),
+            ("metadata-scrub", "signal-obfuscation"),
+        )
+        self.assertEqual(
+            canonical_privacy_profile(("metadata-scrub", "signal-obfuscation")),
+            "metadata-scrub+signal-obfuscation",
+        )
+        self.assertEqual(
+            normalize_privacy_methods(legacy_method="signal-obfuscation"),
+            ("metadata-scrub", "signal-obfuscation"),
+        )
+        self.assertEqual(
+            methods_from_profile("cancellable-signal-projection"),
+            ("metadata-scrub", "signal-obfuscation"),
+        )
+        with self.assertRaises(ValueError):
+            normalize_privacy_methods("cancellable-signal-projection")
+
+    def test_model_alert_intervals_merge_adjacent_positive_windows(self) -> None:
+        predictions = [
+            WindowPrediction(2, 12, 16, 0.8, True),
+            WindowPrediction(0, 4, 8, 0.9, True),
+            WindowPrediction(1, 8, 12, 0.7, True),
+            WindowPrediction(3, 40, 44, 0.6, False),
+            WindowPrediction(4, 44, 48, 0.95, True),
+        ]
+        self.assertEqual(model_alert_intervals(predictions), [(4.0, 16.0), (44.0, 48.0)])
+
     def test_retention_uses_model_positive_windows_and_context_only(self) -> None:
         predictions = [
             WindowPrediction(0, 4, 8, 0.9, True),
@@ -256,22 +511,35 @@ class BackendTests(unittest.TestCase):
             WindowPrediction(2, 200, 204, 0.8, True),
         ]
         intervals = detected_intervals(predictions, 300, context_seconds=60)
-        self.assertEqual(intervals, [(0.0, 68.0), (140.0, 264.0)])
+        self.assertEqual(intervals, [(0.0, 8.0), (140.0, 204.0)])
         starts = np.asarray([0, 4, 8, 140, 200, 280], dtype=np.float32)
-        self.assertEqual(select_window_indices(starts, intervals).tolist(), [0, 1, 2, 3, 4])
+        self.assertEqual(select_window_indices(starts, intervals).tolist(), [0, 1, 3, 4])
+
+    def test_default_retention_context_is_bounded_to_ten_minutes(self) -> None:
+        from backend.app.core.config import SIGNAL_RETENTION_CONTEXT_SECONDS
+
+        self.assertEqual(SIGNAL_RETENTION_CONTEXT_SECONDS, 600)
+        prediction = WindowPrediction(0, 900, 904, 0.9, True)
+        self.assertEqual(detected_intervals([prediction], 2000), [(300.0, 904.0)])
 
     def test_metadata_retained_clip_is_scrubbed_and_relative(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.edf"
             scrubbed = Path(directory) / "scrubbed.edf"
             clip = Path(directory) / "clip.edf"
-            self._create_source_edf(source)
+            self._create_source_edf(source, MODEL_CHANNELS)
             deidentify_edf(source, scrubbed, generate_record_id())
-            write_scrubbed_edf_clip(scrubbed, clip, [(0, 2)])
+            with warnings.catch_warnings(record=True) as captured:
+                warnings.simplefilter("always")
+                write_scrubbed_edf_clip(scrubbed, clip, [(0, 2)])
+            self.assertFalse(
+                [warning for warning in captured if "Physical minimum" in str(warning.message) or "Physical maximum" in str(warning.message)]
+            )
             reader = pyedflib.EdfReader(str(clip))
             try:
                 self.assertEqual(reader.getStartdatetime().year, 1970)
                 self.assertEqual(reader.getPatientCode(), "")
+                self.assertEqual(reader.getSignalLabels(), list(MODEL_CHANNELS))
                 self.assertEqual(reader.readSignal(0, digital=True).size, 512)
                 self.assertEqual(reader.readAnnotations()[2].tolist(), [""])
             finally:
@@ -309,6 +577,8 @@ class BackendTests(unittest.TestCase):
         self.assertNotIn("/api/v1/deidentify", paths)
         self.assertNotIn("/api/v1/preprocess/{session_id}", paths)
         self.assertIn("/api/sessions/upload", paths)
+        self.assertIn("/api/uploads/drafts", paths)
+        self.assertIn("/api/uploads/drafts/{draft_id}/finalize", paths)
         self.assertIn("/api/recordings/{record_id}/prediction", paths)
         self.assertNotIn("patient_reference", str(schema))
 
@@ -405,6 +675,24 @@ Seizure End Time: 3036 seconds
         self.assertEqual(summary_annotations(summary)["chb01_03.edf"], [(2996.0, 3036.0)])
         self.assertEqual(sidecar_annotations(sidecar), [(2996.0, 3036.0)])
 
+    def test_optional_sidecars_are_internal_and_malformed_sidecars_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "optional-metadata.zip"
+            valid_sidecar = bytes.fromhex(
+                "005817fc23232074696d65207265736f6c7574696f6e3a2032353600"
+                "00ecffffffff010000ec0b0000b4008000ec0000002800840000"
+            )
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("recording_01.edf", b"edf")
+                archive.writestr("recording_01.edf.seizures", valid_sidecar)
+                archive.writestr("recording_02.edf", b"edf")
+                archive.writestr("recording_02.edf.seizures", b"\x01\x80")
+
+            annotations = SessionStorage(Path(directory) / "sessions", self.storage_key).read_reference_annotations(archive_path)
+
+        self.assertEqual(annotations["recording_01.edf"], ("chb-mit-sidecar", [(2996.0, 3036.0)]))
+        self.assertNotIn("recording_02.edf", annotations)
+
     def test_upload_schedules_background_pipeline_without_rq_job_id(self) -> None:
         from backend.app.api.sessions import upload_session
 
@@ -420,7 +708,8 @@ Seizure End Time: 3036 seconds
         with (
             patch("backend.app.api.sessions.create_session", new=AsyncMock(return_value=session)) as create,
             patch("backend.app.api.sessions.SessionStorage"),
-            patch("backend.app.api.sessions.process_session") as process,
+            patch("backend.app.api.sessions.processing_capacity.reserve", return_value=True),
+            patch("backend.app.api.sessions.processing_capacity.run_reserved") as process,
         ):
             payload = asyncio.run(upload_session(tasks, archive, "metadata-scrub"))
 
@@ -489,7 +778,7 @@ Seizure End Time: 3036 seconds
         )
         payload = public_record(record)
         self.assertEqual(payload["source_filename"], "recording_01.edf")
-        self.assertEqual(payload["reference_annotation"], {"source": "chb-mit-summary", "intervals": []})
+        self.assertNotIn("reference_annotation", payload)
         self.assertNotIn("Jane", str(payload))
 
     def test_direct_recording_response_includes_safe_session_context(self) -> None:
@@ -607,8 +896,13 @@ Seizure End Time: 3036 seconds
             "failed_recordings": 1,
             "percent": 100,
         })
-        self.assertEqual(payload["summary"], {"dataset_seizure_recordings": 1, "model_alert_recordings": 1})
+        self.assertEqual(payload["summary"], {"model_alert_recordings": 1})
+        self.assertEqual(payload["privacy_method"], "metadata-scrub")
+        self.assertEqual(payload["privacy_methods"], ["metadata-scrub"])
+        self.assertNotIn("reference_annotation", str(payload))
+        self.assertNotIn("dataset_seizure_recordings", str(payload))
         self.assertEqual(payload["recordings"][0]["model_alert_window_count"], 1)
+        self.assertEqual(payload["recordings"][0]["alert_intervals"], [{"start_seconds": 0.0, "end_seconds": 4.0}])
         self.assertEqual(flagged_counts, {completed.id: 1})
 
     def test_model_alert_is_independent_of_dataset_sidecar_reference(self) -> None:
@@ -643,9 +937,10 @@ Seizure End Time: 3036 seconds
             db.commit()
             payload = public_session(db, session)
 
-        self.assertIsNone(payload["summary"]["dataset_seizure_recordings"])
         self.assertEqual(payload["summary"]["model_alert_recordings"], 1)
         self.assertTrue(payload["recordings"][0]["model_alert"])
+        self.assertNotIn("reference_annotation", str(payload))
+        self.assertNotIn("dataset_seizure_recordings", str(payload))
         self.assertNotIn("retained_artifact_path", str(payload))
 
     def test_delete_session_removes_results_and_private_storage(self) -> None:
@@ -803,7 +1098,7 @@ Seizure End Time: 3036 seconds
                 db.add(
                     EEGSession(
                         session_id="SES-FULL",
-                        privacy_method="signal-obfuscation",
+                        privacy_method="metadata-scrub+signal-obfuscation",
                         original_filename="session.zip",
                         original_path=str(encrypted_archive),
                     )
@@ -823,7 +1118,7 @@ Seizure End Time: 3036 seconds
                 predictions = list_predictions(db, records[0].id)
                 explanations = list_explanations(db, [prediction.id for prediction in predictions])
                 self.assertEqual(session.status, AnalysisStatus.COMPLETED)
-                self.assertEqual(session.privacy_method, "signal-obfuscation")
+                self.assertEqual(session.privacy_method, "metadata-scrub+signal-obfuscation")
                 self.assertEqual(records[0].status, RecordingStatus.INFERRED)
                 self.assertEqual(len(predictions), 1)
                 self.assertEqual(len(explanations), 1)
@@ -836,6 +1131,59 @@ Seizure End Time: 3036 seconds
                 if retained_path:
                     self.assertTrue(Path(retained_path).exists())
                     self.assertEqual(Path(retained_path).parent.name, "retained")
+
+    def test_full_signal_preview_retains_complete_transformed_recording_only_when_enabled(self) -> None:
+        from backend.app.services.processing_service import process_session
+        from backend.app.services.signal_service import build_signal_preview
+
+        class PositiveStub:
+            model_name = "development-stub"
+            model_version = "stub-0.1.0"
+            threshold = 0.5
+            score_type = "development_score"
+            calibration_method = None
+
+            def predict(self, windows, window_starts, record_id):
+                return [
+                    WindowPrediction(index, float(start), float(start + 4), 0.9, True)
+                    for index, start in enumerate(window_starts.tolist())
+                ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "full-preview.edf"
+            self._create_source_edf(source, MODEL_CHANNELS, 2048)
+            archive = root / "session.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.write(source, source.name)
+
+            database = create_engine("sqlite://", connect_args={"check_same_thread": False})
+            self.addCleanup(database.dispose)
+            SQLModel.metadata.create_all(database)
+            storage = SessionStorage(root / "sessions", self.storage_key)
+            encrypted_archive = self._store_archive(storage, "SES-FULL-PREVIEW", archive)
+            with Session(database) as db:
+                db.add(EEGSession(session_id="SES-FULL-PREVIEW", original_filename="session.zip", original_path=str(encrypted_archive)))
+                db.commit()
+
+            with (
+                patch("backend.app.services.processing_service.engine", database),
+                patch("backend.app.services.processing_service.SessionStorage", return_value=storage),
+                patch("backend.app.services.processing_service.get_inference_service", return_value=PositiveStub()),
+                patch("backend.app.services.processing_service.ENABLE_FULL_SIGNAL_PREVIEW", True),
+            ):
+                process_session("SES-FULL-PREVIEW")
+
+            with Session(database) as db:
+                session = get_session_by_public_id(db, "SES-FULL-PREVIEW")
+                records = list_recordings_for_session(db, session.id)
+                self.assertEqual(len(records), 1)
+                self.assertIsNotNone(records[0].retained_artifact_path)
+                with patch("backend.app.services.signal_service.ENABLE_SIGNAL_PREVIEW", True), patch("backend.app.services.signal_service.ENABLE_FULL_SIGNAL_PREVIEW", True):
+                    payload = build_signal_preview(db, session, records[0], storage, 0, 8, 400)
+
+            self.assertEqual(len(payload["channels"]), 18)
+            self.assertGreaterEqual(payload["time_seconds"][-1], 7.0)
 
     def test_repository_lists_explanations(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})

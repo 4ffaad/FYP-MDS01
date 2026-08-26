@@ -51,6 +51,20 @@ Start PostgreSQL and FastAPI:
 docker compose up --build
 ```
 
+The Docker backend defaults to the H5 research runtime and builds for
+`linux/amd64`, which is compatible with the TensorFlow CPU wheel. On Apple
+Silicon this may use emulation and can be slower. To run the lightweight
+development stub instead:
+
+```bash
+MODEL_RUNTIME=stub INSTALL_RESEARCH=false docker compose up --build
+```
+
+The H5 service fails at startup until `backend/model/model-contract.json` has
+been verified and explicitly marked reviewed. The contract records the exact
+18-channel order, 256 Hz sampling, four-second windows, two-second step,
+preprocessing, threshold, output semantics, and artifact hash.
+
 Run the frontend in another terminal:
 
 ```bash
@@ -89,6 +103,24 @@ docker compose logs backend
 docker compose exec backend alembic -c backend/alembic.ini current
 ```
 
+## Verify and run the H5 artifact
+
+The host virtual environment may not have a compatible TensorFlow wheel on
+Apple Silicon or Python 3.13. Run verification inside the research-enabled
+Docker image instead:
+
+```bash
+docker compose build --no-cache
+docker compose run --rm backend python backend/scripts/verify_h5_model.py \
+  backend/model/best_seizure_model.h5
+```
+
+The verifier performs an actual model load and float32 smoke prediction. It
+does not mark the contract reviewed automatically. After independently
+reviewing the training preprocessing and threshold, set `reviewed` to `true`
+and restart the backend. If verification fails, use the stub explicitly and
+do not transpose or reshape the model input to force compatibility.
+
 Run tests from the repository root:
 
 ```bash
@@ -97,18 +129,65 @@ PYTHONPATH=. .venv/bin/python -m compileall -q backend
 cd frontend && npm run lint && npm run build && npm run test:e2e
 ```
 
+`npm run test:e2e` is the fast stub-based browser suite. To exercise the real
+Next.js → FastAPI → PostgreSQL workflow with a synthetic privacy-canary EDF:
+
+```bash
+cd frontend
+npm run test:e2e:real
+```
+
+This starts the disposable Compose project `mds01-security` on backend port
+`18000`, runs one real workflow, and removes only that project's test volumes.
+It requires Docker and the repository `.venv`. See
+[the security audit](security-audit.md) for scope and remaining deployment work.
+
+## Authentication modes
+
+Local Docker uses `APP_ENV=development` and `AUTH_MODE=local`. Its API and
+database ports bind to `127.0.0.1`, so they are available only from this
+computer.
+
+Before exposing the app to teammates, place it behind Cloudflare Access and
+configure the backend with:
+
+```dotenv
+APP_ENV=production
+AUTH_MODE=cloudflare
+CLOUDFLARE_ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
+CLOUDFLARE_ACCESS_AUD=your-access-application-audience
+```
+
+The team domain is a hostname only—do not include `https://` or a trailing
+slash. Cloudflare secrets and Access tokens must never use a `NEXT_PUBLIC_`
+frontend variable.
+
 ## How an upload is tested
 
-Use the Swagger page, or send a ZIP with curl:
+Use the Swagger page, or stage a ZIP with curl:
 
 ```bash
 curl -F 'archive=@recordings.zip' \
-  -F 'privacy_method=metadata-scrub' \
-  http://127.0.0.1:8000/api/sessions/upload
+  http://127.0.0.1:8000/api/uploads/drafts
 ```
 
-The response is `202` with a session ID. The frontend then polls the status
-endpoint while FastAPI's in-process `BackgroundTasks` runs the pipeline.
+The response is `201` with an opaque `draft_id`. Select a privacy method only
+after staging, then finalize the draft:
+
+```bash
+curl -X POST \
+  -F 'privacy_methods=["metadata-scrub"]' \
+  http://127.0.0.1:8000/api/uploads/drafts/UPL-.../finalize
+```
+
+Finalization returns `202` with a session ID. The frontend then polls the
+session while FastAPI's in-process `BackgroundTasks` runs the pipeline. The
+older `POST /api/sessions/upload` remains available for compatibility and
+accepts either the legacy `privacy_method` field or the new ordered
+`privacy_methods` field. Use
+`["metadata-scrub", "signal-obfuscation"]` to apply both. Metadata scrub and
+encrypted storage are always enabled; omitting signal obfuscation means no
+additional signal transformation.
 
 ```mermaid
 sequenceDiagram
@@ -117,7 +196,10 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant Task as BackgroundTasks
 
-    UI->>API: POST /api/sessions/upload
+    UI->>API: POST /api/uploads/drafts
+    API->>DB: Save encrypted draft metadata
+    API-->>UI: 201 draft_id
+    UI->>API: POST /api/uploads/drafts/{id}/finalize
     API->>DB: Save queued session
     API-->>UI: 202 session_id
     API->>Task: process_session(session_id)
@@ -142,5 +224,10 @@ workers become necessary.
   sure the backend is running on port 8000.
 - Migration errors: inspect `docker compose logs backend`; the container runs
   `alembic upgrade head` before starting FastAPI.
-- Waveform endpoint returns `404`: this is intentional. Results expose a score
-  timeline, not raw EEG samples, because EEG can retain biometric information.
+- Waveform endpoint returns `404`: this is expected unless both
+  `ENABLE_SIGNAL_PREVIEW=true` in the backend and
+  `NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW=true` in the frontend. Even when enabled,
+  only retained model-positive transformed data can be viewed. A complete
+  transformed recording requires both full-preview flags and must remain a
+  local-development setting: `ENABLE_FULL_SIGNAL_PREVIEW=true` and
+  `NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW=true`.

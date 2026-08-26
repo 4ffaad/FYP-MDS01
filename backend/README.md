@@ -1,58 +1,82 @@
 # MDS01 backend
 
-The backend accepts an EEG ZIP archive, creates a session, and schedules the
-EEG pipeline with FastAPI `BackgroundTasks`. Each EDF passes through
-validation, de-identification, preprocessing, development inference, and
-explanation artifact generation.
+FastAPI backend for the MDS01 EEG research workflow. Routes stay thin;
+services own processing, repositories own database access, and PostgreSQL
+stores safe result metadata. Long-running prototype work runs through
+FastAPI `BackgroundTasks`.
 
-## Local commands
+## Run
 
-From the repository root:
+Run these commands from the repository root:
 
 ```bash
 cp .env.example .env
-# Set MDS01_STORAGE_KEY and MDS01_TEMPLATE_KEY to different `openssl rand -base64 32` values.
 docker compose up --build
-PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v
 ```
 
-The API documentation is available at `http://127.0.0.1:8000/docs`.
+Use the deterministic development runtime when the reviewed H5 runtime is not
+needed:
 
-## Storage
+```bash
+MODEL_RUNTIME=stub INSTALL_RESEARCH=false docker compose up --build
+```
 
-The upload archive is AES-256-GCM encrypted while the job runs. Original,
-extracted, de-identified, processed, and explanation files are removed when
-processing ends. If the model flags windows, only an encrypted, private clip
-containing those windows plus the configured context is retained. PostgreSQL
-retains safe session metadata, predictions, and explanation JSON. Waveform
-serving is disabled; the frontend shows a score timeline instead.
+The API and OpenAPI UI are at <http://127.0.0.1:8000> and
+<http://127.0.0.1:8000/docs>. Full setup instructions are in
+[`docs/setup.md`](../docs/setup.md).
 
-## Privacy modes and research tools
+## Current API
 
-- `metadata-scrub`: EDF header and free-text annotation scrubbing while
-  preserving waveform values as the baseline.
-- `signal-obfuscation`: the same scrubbing plus a keyed, lossy EEG
-  transformation. Its transformed windows feed both the detector and the
-  offline identity attacker for research-only comparison.
+```text
+POST /api/sessions/upload
+POST /api/uploads/drafts
+GET  /api/uploads/drafts/{draft_id}
+POST /api/uploads/drafts/{draft_id}/finalize
+DELETE /api/uploads/drafts/{draft_id}
+GET  /api/sessions
+GET  /api/sessions/{session_id}
+GET  /api/sessions/{session_id}/status
+GET  /api/sessions/{session_id}/recordings
+GET  /api/recordings/{record_id}
+GET  /api/recordings/{record_id}/prediction
+GET  /api/recordings/{record_id}/explanation
+GET  /api/recordings/{record_id}/signal
+```
 
-The endpoint stack does not need `requirements-research.txt`; it uses the
-deterministic stub. The optional H5 runtime remains blocked until a compatible
-artifact and manually reviewed model contract are supplied.
+The draft flow encrypts an EEG ZIP before privacy selection. Finalization
+creates a session and queues background processing. The public API does not
+return patient references, original filenames, filesystem paths, or source
+files.
 
-## Model status
+## EEG processing boundary
 
-The backend currently uses `development-stub` version `stub-0.1.0`. It creates
-deterministic non-clinical predictions and explanations so the background
-pipeline can be tested. The unintegrated model artifact is stored at
-`backend/model/best_seizure_model.h5` and requires contract verification before
-use.
+The reviewed model-input contract is 256 Hz, the configured 18 bipolar
+channels, four-second windows with a two-second stride, and `(N, 1024, 18)`
+`float32` input. The H5 adapter validates its artifact and contract at
+startup. The explicit `development-stub` fallback is research data, not a
+clinical prediction.
 
-## Project design
+`metadata-scrub` is always applied. `signal-obfuscation` is an optional,
+lossy research profile. Neither encryption nor signal transformation proves
+anonymity. See [`docs/backend.md`](../docs/backend.md) and
+[`docs/privacy-research.md`](../docs/privacy-research.md) for the full
+processing and retention contracts.
 
-See the repository [design system](../DESIGN.md) for the shared interface and
-privacy presentation rules.
+## Tests
 
-For beginner-friendly instructions and Mermaid diagrams, see the [setup
-guide](../docs/setup.md) and [backend internals](../docs/backend.md). The
-frontend has its own [internal guide](../docs/frontend.md).
-The privacy and calibration boundary is documented in the [research note](../docs/privacy-research.md).
+```bash
+PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v
+PYTHONPATH=. .venv/bin/python -m compileall -q backend
+```
+
+Research-only evaluation and SHAP commands are documented in
+[`docs/setup.md`](../docs/setup.md). Generated reports and model backgrounds
+are ignored by Git.
+
+## Video privacy status
+
+Patient-video privacy is a separate planned subsystem. Its contract is
+[`_bmad-output/specs/spec-patient-video-deidentification/SPEC.md`](../_bmad-output/specs/spec-patient-video-deidentification/SPEC.md).
+It will use `video → privacy pipeline(s) → output` and will not invoke EEG,
+H5, action analysis, or clinical inference. Do not place patient videos under
+this repository; keep them in a private external directory.

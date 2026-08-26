@@ -92,6 +92,18 @@ class EEGSession(SQLModel, table=True):
     completed_at: datetime | None = None
 
 
+class UploadDraft(SQLModel, table=True):
+    """Encrypted, short-lived upload waiting for a privacy selection."""
+
+    __tablename__ = "upload_drafts"
+
+    id: int | None = Field(default=None, primary_key=True)
+    draft_id: str = Field(index=True, unique=True, max_length=64)
+    encrypted_path: str = Field(max_length=1024)
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+
+
 class EEGRecording(SQLModel, table=True):
     """Database metadata for one EDF file extracted from a session archive."""
 

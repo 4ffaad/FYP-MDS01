@@ -10,6 +10,7 @@ from backend.app.database.models.eeg import (
     ProcessingStage,
     ProcessingStatus,
     RecordingStatus,
+    UploadDraft,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "ProcessingStage",
     "ProcessingStatus",
     "RecordingStatus",
+    "UploadDraft",
 ]

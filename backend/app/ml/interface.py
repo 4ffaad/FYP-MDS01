@@ -8,6 +8,25 @@ from typing import Protocol
 import numpy as np
 
 
+def score_crossed_threshold(score: float, threshold: float) -> bool:
+    """Return whether a model score meets the inclusive alert threshold.
+
+    Parameters
+    ----------
+    score : float
+        The exact score persisted for or returned by a model window.
+    threshold : float
+        The configured alert boundary.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``score`` is greater than or equal to ``threshold``.
+    """
+
+    return float(score) >= float(threshold)
+
+
 @dataclass(frozen=True)
 class WindowPrediction:
     """Serializable model output for one fixed-duration EEG window."""

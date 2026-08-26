@@ -6,6 +6,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 
+from backend.app.core.config import ENABLE_FULL_SIGNAL_PREVIEW, ENABLE_SIGNAL_PREVIEW, FULL_SIGNAL_PREVIEW_MAX_SECONDS
 from backend.app.database.db import get_session
 from backend.app.database.models.eeg import EEGRecording
 from backend.app.database.repository import (
@@ -13,9 +14,13 @@ from backend.app.database.repository import (
     get_session_by_database_id,
     list_flagged_window_counts,
     list_explanations,
+    list_model_metadata,
     list_predictions,
 )
 from backend.app.services.session_service import public_record
+from backend.app.services.signal_service import SignalPreviewUnavailable, build_signal_preview
+from backend.app.services.storage_service import SessionStorage
+from backend.app.privacy.retention import model_alert_intervals
 
 
 router = APIRouter(prefix="/api", tags=["recordings"])
@@ -69,7 +74,9 @@ def get_recording(record_id: str, db: Session = Depends(get_session)) -> dict:
     record = _get_record(db, record_id)
     session = get_session_by_database_id(db, record.session_db_id)
     alert_count = list_flagged_window_counts(db, [record.id] if record.id is not None else []).get(record.id or 0, 0)
-    return public_record(record, session, alert_count)
+    metadata = list_model_metadata(db, [record.id] if record.id is not None else []).get(record.id or 0)
+    intervals = model_alert_intervals(list_predictions(db, record.id))
+    return public_record(record, session, alert_count, metadata, intervals)
 
 
 @router.get("/recordings/{record_id}/prediction")
@@ -94,6 +101,8 @@ def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
     first = predictions[0] if predictions else None
     score_type = first.score_type if first else None
     calibrated = any(item.calibrated_probability is not None for item in predictions)
+    highest = max(predictions, key=lambda item: item.probability, default=None)
+    intervals = model_alert_intervals(predictions)
     return {
         "record_id": record.record_id,
         "model": (
@@ -116,6 +125,19 @@ def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
                 if predictions else 0.0
             ),
             "peak_window_score": max((item.probability for item in predictions), default=0.0),
+            "highest_window": (
+                {
+                    "start_seconds": highest.start_seconds,
+                    "end_seconds": highest.end_seconds,
+                    "score": highest.probability,
+                }
+                if highest is not None
+                else None
+            ),
+            "alert_intervals": [
+                {"start_seconds": start, "end_seconds": end}
+                for start, end in intervals
+            ],
             "aggregation_unit": "window",
             "recording_probability_available": calibrated,
         },
@@ -178,7 +200,7 @@ def get_explanation(record_id: str, db: Session = Depends(get_session)) -> dict:
 def get_signal(
     record_id: str,
     start_seconds: float = Query(0, ge=0),
-    duration_seconds: float = Query(10, gt=0, le=60),
+    duration_seconds: float = Query(10, gt=0, le=7200),
     max_points: int = Query(2000, gt=0, le=10000),
     db: Session = Depends(get_session),
 ) -> dict:
@@ -191,16 +213,45 @@ def get_signal(
     start_seconds : float
         Start time within the recording, defaulting to zero.
     duration_seconds : float
-        Requested duration, limited to sixty seconds.
+        Requested duration, limited to 660 seconds for a bounded alert clip.
     max_points : int
         Maximum number of samples returned per channel.
     db : sqlmodel.Session
         Request-scoped database session.
 
+    Returns
+    -------
+    dict
+        Bounded retained de-identified or obfuscated signal data with model
+        alert intervals when local preview is enabled.
+
     Raises
     ------
     fastapi.HTTPException
-        Always raised with HTTP 404. Waveform data is not served by the
-        privacy-first prototype.
+        Raised with HTTP 404 when preview is disabled or no retained positive
+        artifact is available.
     """
-    raise HTTPException(status_code=404, detail="Waveform access is disabled for this privacy-first prototype.")
+    if not ENABLE_SIGNAL_PREVIEW:
+        raise HTTPException(
+            status_code=404,
+            detail="Waveform access is disabled for this privacy-first prototype.",
+        )
+    max_duration = FULL_SIGNAL_PREVIEW_MAX_SECONDS if ENABLE_FULL_SIGNAL_PREVIEW else 660.0
+    if duration_seconds > max_duration:
+        raise HTTPException(status_code=422, detail="The requested signal range is too large.")
+    record = _get_record(db, record_id)
+    session = get_session_by_database_id(db, record.session_db_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Recording session was not found.")
+    try:
+        return build_signal_preview(
+            db,
+            session,
+            record,
+            SessionStorage(),
+            start_seconds,
+            duration_seconds,
+            max_points,
+        )
+    except (SignalPreviewUnavailable, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

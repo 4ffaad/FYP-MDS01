@@ -8,3 +8,4 @@ sqlmodel
 psycopg[binary]
 alembic
 cryptography
+PyJWT[crypto]>=2.10,<3

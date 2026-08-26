@@ -1,14 +1,15 @@
 """EDF de-identification utilities.
 
-The source EDF is never modified in place.  A new EDF is written with the
-    same digital samples and technical signal headers, while patient-identifying
-    header fields are cleared. The generated recording identifier stays in the
-    database and is never written into the EDF.
+The source EDF is never modified in place. A new EDF is written with the same
+digital samples, required channel labels, and sampling frequencies, while
+identifying and free-text header fields are cleared. The generated recording
+identifier stays in the database and is never written into the EDF.
 """
 
 from datetime import datetime
+import math
 from pathlib import Path
-import uuid
+import secrets
 
 import pyedflib
 
@@ -27,7 +28,7 @@ def _contains_identifier(value: str) -> bool:
 
 def generate_record_id() -> str:
     """Return a random identifier for one EEG recording, unrelated to PII."""
-    return f"REC-{uuid.uuid4().hex[:8].upper()}"
+    return f"REC-{secrets.token_hex(16).upper()}"
 
 
 def inspect_metadata(edf_path: str) -> dict:
@@ -67,13 +68,115 @@ def inspect_metadata(edf_path: str) -> dict:
         reader.close()
 
 
+def _safe_physical_bounds(header: dict) -> tuple[float, float]:
+    """Return EDF-serializable bounds that still contain source bounds."""
+
+    try:
+        source_min = float(header["physical_min"])
+        source_max = float(header["physical_max"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("EDF signal header has invalid physical bounds.") from exc
+    if not math.isfinite(source_min) or not math.isfinite(source_max) or source_min >= source_max:
+        raise ValueError("EDF signal header has invalid physical bounds.")
+
+    # EDF stores these fields in eight-character slots. Round outward so the
+    # digital samples remain valid under a nearby linear calibration.
+    for decimals in range(6, -1, -1):
+        scale = 10**decimals
+        physical_min = float(f"{math.floor(source_min * scale) / scale:.{decimals}f}")
+        physical_max = float(f"{math.ceil(source_max * scale) / scale:.{decimals}f}")
+        if (
+            physical_min < physical_max
+            and physical_min <= source_min
+            and physical_max >= source_max
+            and len(str(physical_min)) <= 8
+            and len(str(physical_max)) <= 8
+        ):
+            return physical_min, physical_max
+    raise ValueError("EDF physical bounds cannot be represented safely.")
+
+
+def scrub_signal_header(
+    header: dict,
+    label: str | None = None,
+    digital_samples=None,
+) -> dict:
+    """Return one signal header with scrubbed text and safe calibration ranges.
+
+    When samples extend beyond the source digital range, the range is widened
+    before writing. The source linear calibration is retained, so the digital
+    samples are not clipped by the EDF writer.
+    """
+
+    scrubbed = dict(header)
+    if label is not None:
+        scrubbed["label"] = label
+    scrubbed["transducer"] = ""
+    scrubbed["prefilter"] = ""
+
+    try:
+        digital_min = int(header["digital_min"])
+        digital_max = int(header["digital_max"])
+        physical_min = float(header["physical_min"])
+        physical_max = float(header["physical_max"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("EDF signal header has invalid calibration fields.") from exc
+    if digital_min >= digital_max or physical_min >= physical_max:
+        raise ValueError("EDF signal header has invalid calibration fields.")
+
+    if digital_samples is not None:
+        if len(digital_samples):
+            actual_min = int(digital_samples.min())
+            actual_max = int(digital_samples.max())
+            expanded_min = min(digital_min, actual_min)
+            expanded_max = max(digital_max, actual_max)
+            if (expanded_min, expanded_max) != (digital_min, digital_max):
+                slope = (physical_max - physical_min) / (digital_max - digital_min)
+                intercept = physical_min - digital_min * slope
+                digital_min, digital_max = expanded_min, expanded_max
+                physical_min = intercept + digital_min * slope
+                physical_max = intercept + digital_max * slope
+
+    if len(str(digital_min)) > 8 or len(str(digital_max)) > 8:
+        raise ValueError("EDF digital bounds cannot be represented safely.")
+    scrubbed["digital_min"] = digital_min
+    scrubbed["digital_max"] = digital_max
+    scrubbed["physical_min"], scrubbed["physical_max"] = _safe_physical_bounds(
+        {"physical_min": physical_min, "physical_max": physical_max}
+    )
+    return scrubbed
+
+
+def _verify_scrubbed_edf(edf_path: Path) -> None:
+    """Reopen a scrubbed EDF and reject identifiers or free-text leakage."""
+
+    reader = pyedflib.EdfReader(str(edf_path))
+    try:
+        signal_headers = reader.getSignalHeaders()
+        if any(
+            _contains_identifier(str(header.get("transducer") or ""))
+            or _contains_identifier(str(header.get("prefilter") or ""))
+            for header in signal_headers
+        ):
+            raise ValueError("Scrubbed EDF contains signal-header text.")
+        _onsets, _durations, descriptions = reader.readAnnotations()
+        if any(str(description).strip() for description in descriptions):
+            raise ValueError("Scrubbed EDF contains annotation descriptions.")
+    finally:
+        reader.close()
+    metadata = inspect_metadata(edf_path)
+    if any(metadata["potential_identifiers_present"].values()):
+        raise ValueError("Scrubbed EDF contains identifying metadata.")
+
+
 def deidentify_edf(input_path: str | Path, output_path: str | Path, record_id: str) -> Path:
     """
     Write a metadata-scrubbed copy of an EDF while preserving EEG data exactly.
 
     Digital samples are copied rather than calibrated physical values.  This
     avoids a second analogue-to-digital conversion and preserves the source
-    signal values, labels, sample frequencies, units and filters.
+    signal values, labels and sample frequencies. Privacy-sensitive transducer
+    and prefilter text is cleared rather than copied.
     Relative annotation timing is preserved, while the identifying calendar
     start date is normalized to a fixed neutral date.
 
@@ -94,34 +197,22 @@ def deidentify_edf(input_path: str | Path, output_path: str | Path, record_id: s
     reader = pyedflib.EdfReader(str(source))
     writer = None
     try:
-        signal_headers = reader.getSignalHeaders()
         digital_signals = [
             reader.readSignal(channel, digital=True)
             for channel in range(reader.signals_in_file)
         ]
-        # Some real-world EDFs (including individual CHB-MIT records) contain
-        # samples outside their declared digital range.  EdfWriter correctly
-        # clamps those values unless the range is expanded.  Expand only when
-        # needed and adjust the physical range with the same calibration slope,
-        # preserving both the original digital samples and physical amplitudes.
-        for header, samples in zip(signal_headers, digital_signals):
-            original_digital_min = header["digital_min"]
-            original_digital_max = header["digital_max"]
-            actual_digital_min = min(original_digital_min, int(samples.min()))
-            actual_digital_max = max(original_digital_max, int(samples.max()))
-            if (actual_digital_min, actual_digital_max) != (
-                original_digital_min,
-                original_digital_max,
-            ):
-                slope = (
-                    (header["physical_max"] - header["physical_min"])
-                    / (original_digital_max - original_digital_min)
-                )
-                intercept = header["physical_min"] - original_digital_min * slope
-                header["digital_min"] = actual_digital_min
-                header["digital_max"] = actual_digital_max
-                header["physical_min"] = intercept + actual_digital_min * slope
-                header["physical_max"] = intercept + actual_digital_max * slope
+        signal_headers = [
+            scrub_signal_header(
+                header,
+                str(header.get("label", "")).strip(),
+                digital_signals[index],
+            )
+            for index, header in enumerate(reader.getSignalHeaders())
+        ]
+        # Physical ranges were normalized by scrub_signal_header so pyedflib
+        # can encode them in EDF+'s fixed-width fields without truncation.
+        # Digital samples remain unchanged; only the serialized calibration
+        # metadata is made safe for the scrubbed processing artifact.
         annotations = reader.readAnnotations()
 
         # Free-text EDF fields can carry patient, operator, or device details.
@@ -161,4 +252,9 @@ def deidentify_edf(input_path: str | Path, output_path: str | Path, record_id: s
             writer.close()
         reader.close()
 
+    try:
+        _verify_scrubbed_edf(destination)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
     return destination

@@ -1,0 +1,45 @@
+{
+  "model_path": "backend/model/best_seizure_model.h5",
+  "artifact_sha256": "3833cfe90b72184ba6bfbf846cc7fd2cccad77cd526b474859c023149d08de11",
+  "model_name": "SeizureDetector",
+  "model_version": "h5-3833cfe9",
+  "input_shape": [
+    1024,
+    18
+  ],
+  "output_shape": [
+    1
+  ],
+  "input_dtype": "float32",
+  "output_dtype": "float32",
+  "last_layer_activation": "sigmoid",
+  "output_semantics": "seizure-probability",
+  "threshold": 0.5,
+  "score_type": "uncalibrated_probability",
+  "calibration_method": null,
+  "training_preprocessing": "256 Hz; exact 18 bipolar channels; 0.5-100 Hz band-pass; 60 Hz notch; per-channel z-score; clip to +/-5.",
+  "channel_order": [
+    "FP1-F7",
+    "F7-T7",
+    "T7-P7",
+    "P7-O1",
+    "FP1-F3",
+    "F3-C3",
+    "C3-P3",
+    "P3-O1",
+    "FP2-F4",
+    "F4-C4",
+    "C4-P4",
+    "P4-O2",
+    "FP2-F8",
+    "F8-T8",
+    "T8-P8",
+    "P8-O2",
+    "FZ-CZ",
+    "CZ-PZ"
+  ],
+  "sampling_rate": 256,
+  "window_seconds": 4,
+  "window_stride_seconds": 2,
+  "reviewed": true
+}

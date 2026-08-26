@@ -4,9 +4,9 @@ services:
     environment:
       POSTGRES_DB: seizureai
       POSTGRES_USER: seizureai
-      POSTGRES_PASSWORD: seizureai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-seizureai}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -16,27 +16,60 @@ services:
       retries: 10
 
   backend:
+    image: mds01-backend:local
+    platform: linux/amd64
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        INSTALL_RESEARCH: ${INSTALL_RESEARCH:-true}
     environment:
-      DATABASE_URL: postgresql+psycopg://seizureai:seizureai@postgres:5432/seizureai
+      DATABASE_URL: postgresql+psycopg://seizureai:${POSTGRES_PASSWORD:-seizureai}@postgres:5432/seizureai
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
-      MODEL_RUNTIME: stub
+      MODEL_RUNTIME: ${MODEL_RUNTIME:-h5}
       STORAGE_DIR: /app/backend/storage
       MDS01_STORAGE_KEY: ${MDS01_STORAGE_KEY:-}
       MDS01_TEMPLATE_KEY: ${MDS01_TEMPLATE_KEY:-}
-      SIGNAL_RETENTION_CONTEXT_SECONDS: ${SIGNAL_RETENTION_CONTEXT_SECONDS:-60}
+      SIGNAL_RETENTION_CONTEXT_SECONDS: ${SIGNAL_RETENTION_CONTEXT_SECONDS:-600}
+      UPLOAD_DRAFT_TTL_SECONDS: ${UPLOAD_DRAFT_TTL_SECONDS:-1800}
+      ENABLE_SIGNAL_PREVIEW: ${ENABLE_SIGNAL_PREVIEW:-false}
+      ENABLE_FULL_SIGNAL_PREVIEW: ${ENABLE_FULL_SIGNAL_PREVIEW:-false}
+      FULL_SIGNAL_PREVIEW_MAX_SECONDS: ${FULL_SIGNAL_PREVIEW_MAX_SECONDS:-7200}
+      ENABLE_SHAP_EXPLANATIONS: ${ENABLE_SHAP_EXPLANATIONS:-false}
+      SHAP_METADATA_BACKGROUND_PATH: ${SHAP_METADATA_BACKGROUND_PATH:-/app/backend/model/shap-background-metadata.npy}
+      SHAP_OBFUSCATED_BACKGROUND_PATH: ${SHAP_OBFUSCATED_BACKGROUND_PATH:-/app/backend/model/shap-background-obfuscated.npy}
+      SHAP_MAX_WINDOWS: ${SHAP_MAX_WINDOWS:-3}
+      SHAP_TIME_BINS: ${SHAP_TIME_BINS:-32}
+      APP_ENV: ${APP_ENV:-development}
+      AUTH_MODE: ${AUTH_MODE:-local}
+      CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${CLOUDFLARE_ACCESS_TEAM_DOMAIN:-}
+      CLOUDFLARE_ACCESS_AUD: ${CLOUDFLARE_ACCESS_AUD:-}
+      MAX_CONCURRENT_ANALYSES: ${MAX_CONCURRENT_ANALYSES:-1}
+      MDS01_MAX_ARCHIVE_TOTAL_BYTES: ${MDS01_MAX_ARCHIVE_TOTAL_BYTES:-2147483648}
+      MDS01_MAX_ZIP_COMPRESSION_RATIO: ${MDS01_MAX_ZIP_COMPRESSION_RATIO:-100}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - backend_storage:/app/backend/storage
     depends_on:
       postgres:
         condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
     command: >-
       sh -c "alembic -c backend/alembic.ini upgrade head &&
-      uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
+      uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+      --no-server-header"
+
+  storage-init:
+    image: alpine:3.22
+    user: "0:0"
+    command: >-
+      sh -c "chown -R 999:999 /app/backend/storage &&
+      find /app/backend/storage -type d -exec chmod 700 {} + &&
+      find /app/backend/storage -type f -exec chmod 600 {} +"
+    volumes:
+      - backend_storage:/app/backend/storage
 
 volumes:
   postgres_data:

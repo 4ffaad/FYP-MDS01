@@ -8,13 +8,47 @@ from pathlib import Path
 import numpy as np
 import pyedflib
 
+from backend.app.eeg.model_input import MODEL_CHANNELS
+from backend.app.core.config import SIGNAL_RETENTION_CONTEXT_SECONDS
 from backend.app.ml.interface import WindowPrediction
+from backend.app.privacy.deidentify import scrub_signal_header
+
+
+def model_alert_intervals(predictions: list) -> list[tuple[float, float]]:
+    """Merge exact model-positive windows without retention context.
+
+    Parameters
+    ----------
+    predictions : list[WindowPrediction]
+        Window-level outputs for one recording.
+
+    Returns
+    -------
+    list[tuple[float, float]]
+        Sorted, non-overlapping source-time intervals that crossed the model
+        threshold.
+    """
+
+    ranges = [
+        (float(prediction.start_seconds), float(prediction.end_seconds))
+        for prediction in predictions
+        if prediction.seizure_detected
+    ]
+    merged: list[list[float]] = []
+    for start, end in sorted(ranges):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
 
 
 def detected_intervals(
     predictions: list[WindowPrediction],
     duration_seconds: float,
-    context_seconds: float = 60.0,
+    context_seconds: float | None = None,
 ) -> list[tuple[float, float]]:
     """Return merged recording ranges around model-positive windows.
 
@@ -24,8 +58,9 @@ def detected_intervals(
         Window-level model outputs for one recording.
     duration_seconds : float
         Full recording duration used to clamp the ranges.
-    context_seconds : float
-        Seconds added before and after each positive window.
+    context_seconds : float or None
+        Seconds added before each positive window. ``None`` uses the
+        configured local retention bound, which defaults to ten minutes.
 
     Returns
     -------
@@ -34,10 +69,11 @@ def detected_intervals(
         model-positive.
     """
 
+    context = SIGNAL_RETENTION_CONTEXT_SECONDS if context_seconds is None else context_seconds
     ranges = [
         (
-            max(0.0, prediction.start_seconds - context_seconds),
-            min(duration_seconds, prediction.end_seconds + context_seconds),
+            max(0.0, prediction.start_seconds - context),
+            min(duration_seconds, prediction.end_seconds),
         )
         for prediction in predictions
         if prediction.seizure_detected
@@ -125,9 +161,8 @@ def write_scrubbed_edf_clip(
 ) -> Path:
     """Write selected ranges from a metadata-scrubbed EDF as a new EDF.
 
-    The source is expected to have already been metadata-scrubbed. Signal
-    samples and channel labels are preserved, while the output timeline is
-    compacted and all annotation descriptions remain blank.
+    The source may be the private extracted EDF. The output is always written
+    with scrubbed metadata, preserved model channels, and a compacted timeline.
 
     Parameters
     ----------
@@ -156,12 +191,20 @@ def write_scrubbed_edf_clip(
     destination.parent.mkdir(parents=True, exist_ok=True)
     writer = None
     try:
-        frequencies = source.getSampleFrequencies()
+        source_labels = [label.strip() for label in source.getSignalLabels()]
+        label_to_index = {label: index for index, label in enumerate(source_labels)}
+        missing_channels = [label for label in MODEL_CHANNELS if label not in label_to_index]
+        if missing_channels:
+            raise ValueError("Retained EDF is missing required model channels.")
+        channel_indexes = [label_to_index[label] for label in MODEL_CHANNELS]
+        frequencies = source.getSampleFrequencies()[channel_indexes]
         if len(set(frequencies.tolist())) != 1:
             raise ValueError("Retained EDF requires uniform channel sampling rates.")
         frequency = float(frequencies[0])
-        sample_count = int(source.getNSamples()[0])
-        samples_by_channel = [source.readSignal(channel, digital=True) for channel in range(source.signals_in_file)]
+        sample_counts = source.getNSamples()[channel_indexes]
+        if len(set(sample_counts.tolist())) != 1:
+            raise ValueError("Retained EDF requires uniform channel sample counts.")
+        sample_count = int(sample_counts[0])
         slices: list[tuple[int, int, float, float]] = []
         for begin, end in intervals:
             start_index = max(0, min(sample_count, round(begin * frequency)))
@@ -172,13 +215,26 @@ def write_scrubbed_edf_clip(
             raise ValueError("Retained intervals do not overlap the EDF.")
 
         selected_samples = [
-            np.concatenate([samples[start:end] for start, end, _, _ in slices])
-            for samples in samples_by_channel
+            np.concatenate([
+                source.readSignal(channel, start=start, n=end - start, digital=True)
+                for start, end, _, _ in slices
+            ])
+            for channel in channel_indexes
         ]
-        signal_headers = source.getSignalHeaders()
+        # Reuse the same safe calibration logic as the initial scrub so the
+        # retained display clip cannot reintroduce EDF truncation warnings.
+        signal_headers = []
+        for index, channel in enumerate(channel_indexes):
+            header = source.getSignalHeader(channel)
+            scrubbed_header = scrub_signal_header(
+                header,
+                MODEL_CHANNELS[index],
+                selected_samples[index],
+            )
+            signal_headers.append(scrubbed_header)
         writer = pyedflib.EdfWriter(
             str(destination),
-            source.signals_in_file,
+            len(MODEL_CHANNELS),
             file_type=source.filetype,
         )
         writer.setHeader({

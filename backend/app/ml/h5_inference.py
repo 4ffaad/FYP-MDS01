@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from pathlib import Path
 
 import numpy as np
 
-from backend.app.ml.interface import WindowPrediction
+from backend.app.eeg.model_input import (
+    MODEL_CHANNELS,
+    MODEL_SAMPLING_RATE,
+    WINDOW_SECONDS,
+    WINDOW_STEP_SECONDS,
+)
+from backend.app.ml.h5_compat import h5_custom_objects
+from backend.app.ml.interface import WindowPrediction, score_crossed_threshold
 
 
 class H5ModelError(RuntimeError):
@@ -33,18 +41,45 @@ class H5InferenceService:
             raise H5ModelError("The H5 model contract has not been manually reviewed.")
         if contract.get("input_shape") != [1024, 18]:
             raise H5ModelError("The reviewed H5 model contract is not compatible with (N, 1024, 18).")
+        if contract.get("input_dtype", "float32") != "float32":
+            raise H5ModelError("The reviewed H5 model must accept float32 inputs.")
+        if contract.get("channel_order") not in (None, list(MODEL_CHANNELS)):
+            raise H5ModelError("The reviewed H5 model channel order differs from the EDF contract.")
+        if contract.get("sampling_rate", MODEL_SAMPLING_RATE) != MODEL_SAMPLING_RATE:
+            raise H5ModelError("The reviewed H5 model sampling rate differs from the EDF contract.")
+        if contract.get("window_seconds", WINDOW_SECONDS) != WINDOW_SECONDS:
+            raise H5ModelError("The reviewed H5 model window length differs from the EDF contract.")
+        if float(contract.get("window_stride_seconds", WINDOW_STEP_SECONDS)) != WINDOW_STEP_SECONDS:
+            raise H5ModelError("The reviewed H5 model window stride differs from the training contract.")
         if contract.get("output_semantics") != "seizure-probability":
             raise H5ModelError("The reviewed H5 model output must be seizure-probability.")
+        expected_sha256 = contract.get("artifact_sha256")
+        if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
+            raise H5ModelError("The reviewed H5 model contract must include its artifact SHA-256.")
+        if _sha256_file(model_path) != expected_sha256:
+            raise H5ModelError("The H5 artifact does not match the reviewed contract hash.")
         if not isinstance(contract.get("training_preprocessing"), str) or not contract["training_preprocessing"].strip():
             raise H5ModelError("The reviewed H5 model must document its training-time preprocessing.")
         threshold = contract.get("threshold")
         if not isinstance(threshold, (int, float)) or not 0 <= threshold <= 1:
             raise H5ModelError("The reviewed H5 model requires a probability threshold in [0, 1].")
-        self.model = tf.keras.models.load_model(model_path, compile=False)
+        self.model = tf.keras.models.load_model(
+            model_path,
+            compile=False,
+            custom_objects=h5_custom_objects(tf),
+        )
         input_shape = tuple(self.model.input_shape)
         output_shape = tuple(self.model.output_shape)
-        if input_shape[1:] != (1024, 18) or output_shape[1:] != (1,):
+        input_dtype = str(getattr(self.model.inputs[0], "dtype", "unknown"))
+        output_dtype = str(getattr(self.model.outputs[0], "dtype", "unknown"))
+        if (
+            input_shape[1:] != (1024, 18)
+            or output_shape[1:] != (1,)
+            or input_dtype != "float32"
+        ):
             raise H5ModelError("The H5 model shape differs from its reviewed contract.")
+        if output_dtype not in {"float32", "float64"}:
+            raise H5ModelError("The H5 model output dtype is not supported.")
         self.model_name = str(contract.get("model_name", model_path.stem))
         self.model_version = str(contract.get("model_version", "reviewed-h5"))
         self.threshold = float(threshold)
@@ -69,10 +104,18 @@ class H5InferenceService:
     ) -> list[WindowPrediction]:
         """Return thresholded seizure probabilities for private model windows."""
 
-        if windows.ndim != 3 or windows.shape[1:] != (1024, 18):
+        if (
+            windows.ndim != 3
+            or windows.shape[1:] != (1024, 18)
+            or windows.dtype != np.float32
+        ):
             raise ValueError("Model input must have shape (N, 1024, 18).")
         probabilities = np.asarray(self.model.predict(windows, verbose=0)).reshape(-1)
-        if len(probabilities) != len(window_starts) or np.any((probabilities < 0) | (probabilities > 1)):
+        if (
+            len(probabilities) != len(window_starts)
+            or not np.isfinite(probabilities).all()
+            or np.any((probabilities < 0) | (probabilities > 1))
+        ):
             raise H5ModelError("The H5 model did not return one probability per input window.")
         predictions: list[WindowPrediction] = []
         for index, (start, raw_score) in enumerate(zip(window_starts, probabilities)):
@@ -89,7 +132,7 @@ class H5InferenceService:
                     start_seconds=float(start),
                     end_seconds=float(start + 4),
                     probability=score,
-                    seizure_detected=bool(score >= self.threshold),
+                    seizure_detected=score_crossed_threshold(score, self.threshold),
                     score_type=self.score_type,
                     calibration_method=self.calibration_method,
                     raw_score=float(raw_score),
@@ -97,3 +140,16 @@ class H5InferenceService:
                 )
             )
         return predictions
+
+
+def _sha256_file(path: Path) -> str:
+    """Return a file digest so a reviewed H5 contract cannot authorize a replacement artifact."""
+
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise H5ModelError("The reviewed H5 artifact is not readable.") from exc
+    return digest.hexdigest()

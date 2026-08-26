@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from sqlalchemy import delete, select
 from sqlmodel import Session
 
 from backend.app.database.db import engine
@@ -23,15 +24,26 @@ from backend.app.database.models.eeg import (
 )
 from backend.app.database.repository import (
     get_session_by_public_id,
-    list_predictions,
+    list_predictions_for_processing,
     list_recordings_for_session,
 )
-from backend.app.core.config import SIGNAL_RETENTION_CONTEXT_SECONDS, TEMPLATE_KEY_ENV
-from backend.app.eeg.model_input import preprocess_edf_to_npz
+from backend.app.core.config import (
+    ENABLE_FULL_SIGNAL_PREVIEW,
+    ENABLE_SHAP_EXPLANATIONS,
+    SHAP_METADATA_BACKGROUND_PATH,
+    SHAP_OBFUSCATED_BACKGROUND_PATH,
+    SHAP_MAX_WINDOWS,
+    SHAP_TIME_BINS,
+    SIGNAL_RETENTION_CONTEXT_SECONDS,
+    TEMPLATE_KEY_ENV,
+)
+from backend.app.eeg.model_input import preprocess_edf
 from backend.app.ml.interface import InferenceService, WindowPrediction
 from backend.app.ml.model_loader import get_inference_service
+from backend.app.ml.shap_explanation import ShapExplanationError, build_shap_explanations
 from backend.app.privacy.crypto import read_base64_key
 from backend.app.privacy.deidentify import deidentify_edf, generate_record_id
+from backend.app.privacy.methods import SIGNAL_OBFUSCATION, methods_from_profile
 from backend.app.privacy.retention import (
     detected_intervals,
     select_window_indices,
@@ -39,7 +51,7 @@ from backend.app.privacy.retention import (
     write_scrubbed_edf_clip,
 )
 from backend.app.privacy.signal_projection import obfuscate_signal
-from backend.app.services.explanation_service import build_stub_explanation
+from backend.app.services.explanation_service import build_score_summary
 from backend.app.services.storage_service import SessionStorage
 from backend.app.services.validation_service import ValidationError, validate_edf
 
@@ -67,6 +79,16 @@ def _safe_error(exc: Exception) -> str:
     if isinstance(exc, (ValidationError, ValueError, RuntimeError)):
         return str(exc)[:500]
     return "Processing failed unexpectedly."
+
+
+def _shap_background_for_profile(privacy_profile: str) -> Path:
+    """Return the SHAP background matching the final model-input profile."""
+
+    return (
+        SHAP_OBFUSCATED_BACKGROUND_PATH
+        if SIGNAL_OBFUSCATION in methods_from_profile(privacy_profile)
+        else SHAP_METADATA_BACKGROUND_PATH
+    )
 
 
 def _set_session_status(db: Session, session: EEGSession, status: AnalysisStatus, stage: str | None = None) -> None:
@@ -150,6 +172,19 @@ def _finish_attempt(db: Session, attempt: ProcessingAttempt, status: ProcessingS
     db.commit()
 
 
+def _fail_attempt(db: Session, attempt: ProcessingAttempt, error: str) -> None:
+    """Rollback a broken stage transaction and persist its safe failure state."""
+
+    attempt_id = attempt.id
+    db.rollback()
+    if attempt_id is None:
+        return
+    persisted_attempt = db.get(ProcessingAttempt, attempt_id)
+    if persisted_attempt is None:
+        return
+    _finish_attempt(db, persisted_attempt, ProcessingStatus.FAILED, error)
+
+
 def _mark_session_failed(db: Session, session_id: str, error: str) -> None:
     """Rollback a failed transaction and persist a safe terminal status.
 
@@ -178,6 +213,18 @@ def _mark_session_failed(db: Session, session_id: str, error: str) -> None:
     failed_session.completed_at = _now()
     db.add(failed_session)
     db.commit()
+
+
+def _remove_record_outputs(db: Session, recording_db_id: int) -> None:
+    """Remove predictions and explanations produced by a failed recording."""
+
+    prediction_ids = select(Prediction.id).where(
+        Prediction.recording_db_id == recording_db_id
+    )
+    db.exec(
+        delete(Explanation).where(Explanation.prediction_db_id.in_(prediction_ids))
+    )
+    db.exec(delete(Prediction).where(Prediction.recording_db_id == recording_db_id))
 
 
 def process_session(session_id: str) -> None:
@@ -220,13 +267,8 @@ def process_session(session_id: str) -> None:
             except Exception as exc:
                 error = _safe_error(exc)
                 if validation_attempt is not None:
-                    _finish_attempt(db, validation_attempt, ProcessingStatus.FAILED, error)
-                session.status = AnalysisStatus.FAILED
-                session.current_stage = "validation"
-                session.error_message = error
-                session.completed_at = _now()
-                db.add(session)
-                db.commit()
+                    _fail_attempt(db, validation_attempt, error)
+                _mark_session_failed(db, session_id, error)
                 return
 
             any_errors = False
@@ -254,12 +296,18 @@ def process_session(session_id: str) -> None:
                     _process_record(db, session, record, storage, inference)
                 except Exception as exc:
                     any_errors = True
-                    if record.retained_artifact_path:
-                        storage.delete_retained_artifact(Path(record.retained_artifact_path))
-                        record.retained_artifact_path = None
-                    record.status = RecordingStatus.FAILED
-                    record.error_message = _safe_error(exc)
-                    db.add(record)
+                    record_db_id = record.id
+                    db.rollback()
+                    failed_record = db.get(EEGRecording, record_db_id) if record_db_id else None
+                    if failed_record is None:
+                        continue
+                    if failed_record.retained_artifact_path:
+                        storage.delete_retained_artifact(Path(failed_record.retained_artifact_path))
+                    _remove_record_outputs(db, record_db_id)
+                    failed_record.retained_artifact_path = None
+                    failed_record.status = RecordingStatus.FAILED
+                    failed_record.error_message = _safe_error(exc)
+                    db.add(failed_record)
                     db.commit()
 
             session.status = AnalysisStatus.COMPLETED_WITH_ERRORS if any_errors else AnalysisStatus.COMPLETED
@@ -330,7 +378,7 @@ def _process_record(
 
     _set_session_status(db, session, AnalysisStatus.DEIDENTIFYING, "deidentification")
     deid_attempt = _begin_attempt(db, session, ProcessingStage.DEIDENTIFICATION, record)
-    deid_path = storage.deidentified_path(session.session_id, record.record_id)
+    deid_path = storage.directory(session.session_id, "deidentified") / f"{record.record_id}.edf"
     try:
         deidentify_edf(record.extracted_path or "", deid_path, record.record_id)
         record.deidentified_path = str(deid_path)
@@ -339,35 +387,27 @@ def _process_record(
         db.commit()
         _finish_attempt(db, deid_attempt, ProcessingStatus.SUCCEEDED)
     except Exception as exc:
-        _finish_attempt(db, deid_attempt, ProcessingStatus.FAILED, _safe_error(exc))
+        _fail_attempt(db, deid_attempt, _safe_error(exc))
         raise
 
     _set_session_status(db, session, AnalysisStatus.PREPROCESSING, "preprocessing")
     prep_attempt = _begin_attempt(db, session, ProcessingStage.PREPROCESSING, record)
-    processed_path = storage.processed_path(session.session_id, record.record_id)
     try:
-        output_path, _details = preprocess_edf_to_npz(
-            deid_path,
-            record.record_id,
-            output_path=processed_path,
-        )
-        record.preprocessed_path = str(output_path)
+        windows, starts, _details = preprocess_edf(str(deid_path))
+        record.preprocessed_path = None
         record.status = RecordingStatus.PROCESSED
         db.add(record)
         db.commit()
         _finish_attempt(db, prep_attempt, ProcessingStatus.SUCCEEDED)
     except Exception as exc:
-        _finish_attempt(db, prep_attempt, ProcessingStatus.FAILED, _safe_error(exc))
+        _fail_attempt(db, prep_attempt, _safe_error(exc))
         raise
 
     _set_session_status(db, session, AnalysisStatus.INFERENCE, "inference")
     inference_attempt = _begin_attempt(db, session, ProcessingStage.INFERENCE, record)
     try:
-        with np.load(processed_path) as payload:
-            windows = payload["model_windows"]
-            starts = payload["window_start_seconds"]
         model_windows = windows
-        if session.privacy_method == "signal-obfuscation":
+        if SIGNAL_OBFUSCATION in methods_from_profile(session.privacy_method):
             model_windows = obfuscate_signal(windows, read_base64_key(TEMPLATE_KEY_ENV))
         predictions = inference.predict(model_windows, starts, record.record_id)
         for prediction in predictions:
@@ -391,15 +431,32 @@ def _process_record(
         db.commit()
         _finish_attempt(db, inference_attempt, ProcessingStatus.SUCCEEDED)
     except Exception as exc:
-        _finish_attempt(db, inference_attempt, ProcessingStatus.FAILED, _safe_error(exc))
+        _fail_attempt(db, inference_attempt, _safe_error(exc))
         raise
 
     _set_session_status(db, session, AnalysisStatus.EXPLAINING, "explainability")
     explanation_attempt = _begin_attempt(db, session, ProcessingStage.EXPLAINABILITY, record)
+    retained_artifact_path: str | None = None
     try:
-        stored_predictions = list_predictions(db, record.id)
+        stored_predictions = list_predictions_for_processing(db, record.id)
+        shap_by_window: dict[int, dict] = {}
+        if ENABLE_SHAP_EXPLANATIONS and hasattr(inference, "model"):
+            try:
+                shap_by_window = build_shap_explanations(
+                    model=inference.model,
+                    windows=model_windows,
+                    predictions=predictions,
+                    background_path=_shap_background_for_profile(session.privacy_method),
+                    threshold=inference.threshold,
+                    max_windows=SHAP_MAX_WINDOWS,
+                    time_bins=SHAP_TIME_BINS,
+                )
+            except ShapExplanationError:
+                # Attribution is optional research output. A failed explainer
+                # must never discard valid model predictions or retained clips.
+                shap_by_window = {}
         for stored in stored_predictions:
-            payload = build_stub_explanation(
+            payload = build_score_summary(
                 record_id=record.record_id,
                 prediction=WindowPrediction(
                     window_index=stored.window_index,
@@ -412,32 +469,43 @@ def _process_record(
                     raw_score=stored.raw_score,
                     calibrated_probability=stored.calibrated_probability,
                 ),
+                model_name=stored.model_name,
+                model_version=stored.model_version,
+                threshold=stored.threshold,
             )
+            attribution = shap_by_window.get(stored.window_index)
+            if attribution is not None:
+                payload["method"] = "shap-gradient"
+                payload["research_attribution"] = attribution
             db.add(
                 Explanation(
                     prediction_db_id=stored.id,
-                    method="development-stub",
+                    method=payload["method"],
                     explanation_path="",
                     explanation_data=json.dumps(payload),
                     is_clinical=False,
                 )
             )
         db.commit()
-        record.retained_artifact_path = _retain_positive_artifact(
+        retained_artifact_path = _retain_positive_artifact(
             session=session,
             record=record,
             storage=storage,
-            deidentified_path=deid_path,
+            source_path=deid_path,
             model_windows=model_windows,
             window_starts=starts,
             predictions=predictions,
         )
+        record.retained_artifact_path = retained_artifact_path
         record.status = RecordingStatus.INFERRED
         db.add(record)
         db.commit()
         _finish_attempt(db, explanation_attempt, ProcessingStatus.SUCCEEDED)
     except Exception as exc:
-        _finish_attempt(db, explanation_attempt, ProcessingStatus.FAILED, _safe_error(exc))
+        db.rollback()
+        if retained_artifact_path:
+            storage.delete_retained_artifact(Path(retained_artifact_path))
+        _fail_attempt(db, explanation_attempt, _safe_error(exc))
         raise
 
 
@@ -446,7 +514,7 @@ def _retain_positive_artifact(
     session: EEGSession,
     record: EEGRecording,
     storage: SessionStorage,
-    deidentified_path: Path,
+    source_path: Path,
     model_windows: np.ndarray,
     window_starts: np.ndarray,
     predictions: list[WindowPrediction],
@@ -461,8 +529,8 @@ def _retain_positive_artifact(
         Recording whose model output was generated.
     storage : SessionStorage
         Private storage service for temporary and retained artifacts.
-    deidentified_path : pathlib.Path
-        Full metadata-scrubbed EDF used during processing.
+    source_path : pathlib.Path
+        Private extracted EDF used only to create a scrubbed positive clip.
     model_windows : numpy.ndarray
         Model input after the selected privacy transformation.
     window_starts : numpy.ndarray
@@ -476,21 +544,22 @@ def _retain_positive_artifact(
         Internal encrypted artifact path when a model alert exists.
     """
 
-    intervals = detected_intervals(
+    alert_intervals = detected_intervals(
         predictions,
         record.duration_seconds or 0.0,
         SIGNAL_RETENTION_CONTEXT_SECONDS,
     )
-    if not intervals:
+    if not alert_intervals:
         return None
+    intervals = [(0.0, record.duration_seconds or 0.0)] if ENABLE_FULL_SIGNAL_PREVIEW else alert_intervals
 
     temporary_dir = storage.directory(session.session_id, "work")
-    if session.privacy_method == "metadata-scrub":
+    if SIGNAL_OBFUSCATION not in methods_from_profile(session.privacy_method):
         temporary_path = temporary_dir / f"{record.record_id}.retained.edf"
-        write_scrubbed_edf_clip(deidentified_path, temporary_path, intervals)
+        write_scrubbed_edf_clip(source_path, temporary_path, intervals)
         return str(storage.store_encrypted_artifact(session.session_id, temporary_path, f"{record.record_id}.edf"))
 
-    indexes = select_window_indices(window_starts, intervals)
+    indexes = np.arange(len(window_starts), dtype=np.int64) if ENABLE_FULL_SIGNAL_PREVIEW else select_window_indices(window_starts, intervals)
     if not len(indexes):
         return None
     temporary_path = temporary_dir / f"{record.record_id}.retained.npz"

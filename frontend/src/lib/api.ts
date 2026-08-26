@@ -4,22 +4,48 @@ import type {
   DisplayStatus,
   Recording,
   RecordingStatus,
-  ReferenceAnnotation,
   Session,
   SessionProgress,
   SessionSummary,
   SessionStatus,
   PrivacyMethod,
+  ResearchAttribution,
+  SignalPreview,
+  UploadDraft,
 } from "./types";
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
-const USE_STUB = process.env.NEXT_PUBLIC_USE_API_STUB !== "false";
+const API_HOSTNAME = new URL(API_BASE_URL).hostname;
+const INCLUDE_ACCESS_COOKIES = API_HOSTNAME !== "localhost" && API_HOSTNAME !== "127.0.0.1";
+const REQUEST_CREDENTIALS: RequestCredentials = INCLUDE_ACCESS_COOKIES ? "include" : "same-origin";
+const USE_STUB = process.env.NEXT_PUBLIC_USE_API_STUB === "true";
+export const ENABLE_SIGNAL_PREVIEW = process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW === "true";
+export const ENABLE_FULL_SIGNAL_PREVIEW = ENABLE_SIGNAL_PREVIEW && process.env.NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW === "true";
 const JOBS_KEY = "mds01.jobs.v1";
+const DRAFTS_KEY = "mds01.upload-drafts.v1";
+/** Exact channel order required by the backend model contract. */
+export const PRIVACY_SIGNAL_CHANNELS = ["FP1-F7", "F7-T7", "T7-P7", "P7-O1", "FP1-F3", "F3-C3", "C3-P3", "P3-O1", "FP2-F4", "F4-C4", "C4-P4", "P4-O2", "FP2-F8", "F8-T8", "T8-P8", "P8-O2", "FZ-CZ", "CZ-PZ"] as const;
 
 export const PRIVACY_METHODS: PrivacyMethod[] = [
-  { id: "metadata-scrub", label: "Metadata scrub", description: "Removes identifying EDF metadata while preserving waveform values as the baseline method." },
-  { id: "signal-obfuscation", label: "Signal obfuscation", description: "Uses a keyed, lossy EEG transformation before detection and privacy evaluation; it is experimental risk reduction, not an anonymity guarantee." },
+  { id: "metadata-scrub", label: "Metadata scrub", description: "Required baseline. Removes identifying EDF metadata while preserving waveform values.", previewTitle: "Waveform preserved", previewDescription: "The waveform stays the same. Identifying EDF header fields are removed before analysis.", required: true },
+  { id: "signal-obfuscation", label: "Signal obfuscation", description: "Optional keyed signal transformation. It reduces detail before model scoring and privacy evaluation.", previewTitle: "Signal detail reduced", previewDescription: "The transformed signal is sent to both model scoring and privacy evaluation. This is experimental risk reduction, not guaranteed anonymity." },
 ];
+
+/** Return the ordered methods represented by a user-facing selection. */
+export function normalizePrivacySelection(selection: string | string[]): string[] {
+  const values = Array.isArray(selection) ? selection : [selection];
+  const obfuscation = values.some((value) => value === "signal-obfuscation" || value === "metadata-scrub+signal-obfuscation");
+  return obfuscation ? ["metadata-scrub", "signal-obfuscation"] : ["metadata-scrub"];
+}
+
+/** Describe the canonical profile stored by the backend. */
+export function privacyProfileForSelection(selection: string | string[]): PrivacyMethod {
+  const methods = normalizePrivacySelection(selection);
+  if (methods.includes("signal-obfuscation")) {
+    return { id: "metadata-scrub+signal-obfuscation", label: "Metadata scrub + signal obfuscation", description: "The required metadata baseline is combined with the optional signal transformation." };
+  }
+  return PRIVACY_METHODS[0];
+}
 
 export class ApiError extends Error {
   status: number;
@@ -37,6 +63,8 @@ type StubJob = {
   errorMessage?: string;
 };
 
+type StubDraft = UploadDraft & { fileSize: number };
+
 function readStubJobs(): StubJob[] {
   if (typeof window === "undefined") return [];
   try { const raw = window.localStorage.getItem(JOBS_KEY); return raw ? (JSON.parse(raw) as StubJob[]) : []; } catch { return []; }
@@ -44,20 +72,33 @@ function readStubJobs(): StubJob[] {
 
 function writeStubJobs(jobs: StubJob[]): void { window.localStorage.setItem(JOBS_KEY, JSON.stringify(jobs)); }
 
+function readStubDrafts(): StubDraft[] {
+  if (typeof window === "undefined") return [];
+  try { const raw = window.localStorage.getItem(DRAFTS_KEY); return raw ? (JSON.parse(raw) as StubDraft[]) : []; } catch { return []; }
+}
+
+function writeStubDrafts(drafts: StubDraft[]): void { window.localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts)); }
+
 function methodForId(methodId: string | undefined): PrivacyMethod {
-  return PRIVACY_METHODS.find((item) => item.id === methodId) ?? { id: "server-configured", label: "Backend configuration", description: "Privacy configuration supplied by the analysis service." };
+  if (methodId?.includes("signal-obfuscation")) return privacyProfileForSelection(["signal-obfuscation"]);
+  return PRIVACY_METHODS.find((item) => item.id === methodId) ?? PRIVACY_METHODS[0];
+}
+
+function methodsForProfile(profile: string | undefined, methods?: string[]): PrivacyMethod[] {
+  return normalizePrivacySelection(methods ?? profile ?? "metadata-scrub").map((id) => PRIVACY_METHODS.find((item) => item.id === id) ?? PRIVACY_METHODS[0]);
 }
 
 type BackendSession = {
   session_id: string;
   privacy_method: string;
+  privacy_methods?: string[];
   status: string;
   current_stage: string | null;
   created_at: string;
   completed_at: string | null;
   error_message?: string | null;
   progress: { total_recordings: number; finished_recordings: number; completed_recordings: number; failed_recordings: number; percent: number };
-  summary: { dataset_seizure_recordings: number | null; model_alert_recordings: number };
+  summary: { model_alert_recordings: number };
   recordings: BackendRecording[];
 };
 
@@ -69,38 +110,63 @@ type BackendRecording = {
   duration_seconds: number | null;
   sampling_rate: number | null;
   channel_count: number | null;
-  reference_annotation: {
-    source: string;
-    intervals: Array<{ start_seconds: number; end_seconds: number }>;
-  } | null;
   error_message?: string | null;
   model_alert_window_count?: number;
   model_alert?: boolean;
+  alert_intervals?: Array<{ start_seconds: number; end_seconds: number }>;
+  model_name?: string | null;
+  model_version?: string | null;
+  score_type?: string | null;
   session_id?: string;
   session_created_at?: string;
   privacy_method?: string;
+  privacy_methods?: string[];
 };
 
 type BackendPredictionResponse = {
   model: { name: string; version: string; threshold: number; score_type: string; calibrated: boolean; calibration_method: string | null } | null;
-  summary?: { window_count: number; flagged_window_count: number; flagged_window_fraction: number; peak_window_score: number; aggregation_unit: string; recording_probability_available: boolean };
-  predictions: Array<{ start_seconds: number; end_seconds: number; score?: number; probability: number; calibrated_probability?: number | null; score_type?: string; seizure_detected: boolean }>;
+  summary?: { window_count: number; flagged_window_count: number; flagged_window_fraction: number; peak_window_score: number; highest_window?: { start_seconds: number; end_seconds: number; score: number } | null; alert_intervals?: Array<{ start_seconds: number; end_seconds: number }>; aggregation_unit: string; recording_probability_available: boolean };
+  predictions: Array<{ start_seconds: number; end_seconds: number; score?: number; probability: number; raw_score?: number | null; calibrated_probability?: number | null; score_type?: string; seizure_detected: boolean }>;
 };
-
-function referenceAnnotationFromBackend(annotation: BackendRecording["reference_annotation"]): ReferenceAnnotation | null {
-  if (!annotation) return null;
-  return {
-    source: annotation.source,
-    intervals: annotation.intervals.map((interval) => ({
-      startSeconds: interval.start_seconds,
-      endSeconds: interval.end_seconds,
-    })),
-  };
-}
 
 type BackendExplanationResponse = {
   explanations: Array<{ is_clinical: boolean; data: unknown }>;
 };
+
+function parseResearchAttribution(data: unknown): ResearchAttribution | null {
+  if (!data || typeof data !== "object") return null;
+  const value = data as Record<string, unknown>;
+  if (value.method !== "shap-gradient" || typeof value.window_index !== "number" || typeof value.score !== "number" || typeof value.threshold !== "number") return null;
+  if (!Array.isArray(value.top_channels) || !value.top_channels.every((item) => typeof item === "string")) return null;
+  if (!Array.isArray(value.channel_scores) || !Array.isArray(value.time_bins)) return null;
+  const channelScores = value.channel_scores.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const channel = item as Record<string, unknown>;
+    return typeof channel.label === "string" && typeof channel.mean_absolute_attribution === "number"
+      ? [{ label: channel.label, meanAbsoluteAttribution: channel.mean_absolute_attribution }]
+      : [];
+  });
+  const timeBins = value.time_bins.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const bin = item as Record<string, unknown>;
+    return typeof bin.start_seconds === "number" && typeof bin.end_seconds === "number" && Array.isArray(bin.channel_scores) && bin.channel_scores.every((score) => typeof score === "number")
+      ? [{ startSeconds: bin.start_seconds, endSeconds: bin.end_seconds, channelScores: bin.channel_scores as number[] }]
+      : [];
+  });
+  if (channelScores.length !== 18 || !timeBins.length) return null;
+  return {
+    method: "shap-gradient",
+    windowIndex: value.window_index,
+    windowStartSeconds: typeof value.window_start_seconds === "number" ? value.window_start_seconds : 0,
+    windowEndSeconds: typeof value.window_end_seconds === "number" ? value.window_end_seconds : 0,
+    score: value.score,
+    threshold: value.threshold,
+    topChannels: value.top_channels,
+    channelScores,
+    timeBins,
+    note: typeof value.note === "string" ? value.note : "Research attribution is not a clinical explanation.",
+  };
+}
 
 function publicSessionStatus(status: string): SessionStatus {
   if (status === "completed" || status === "completed_with_errors") return status;
@@ -126,13 +192,17 @@ function recordingFromBackend(recording: BackendRecording, session?: BackendSess
     durationSeconds: recording.duration_seconds,
     samplingRate: recording.sampling_rate,
     channelCount: recording.channel_count,
-    referenceAnnotation: referenceAnnotationFromBackend(recording.reference_annotation),
     modelAlertWindowCount: recording.model_alert_window_count ?? 0,
     modelAlert: recording.model_alert ?? (recording.model_alert_window_count ?? 0) > 0,
+    alertIntervals: (recording.alert_intervals ?? []).map((interval) => ({ startSeconds: interval.start_seconds, endSeconds: interval.end_seconds })),
+    modelName: recording.model_name ?? undefined,
+    modelVersion: recording.model_version ?? undefined,
+    scoreType: recording.score_type ?? undefined,
     errorMessage: recording.error_message ?? undefined,
     sessionId: recording.session_id ?? session?.session_id,
     sessionCreatedAt: recording.session_created_at ?? session?.created_at,
     privacyMethod: recording.privacy_method ? methodForId(recording.privacy_method) : session ? methodForId(session.privacy_method) : undefined,
+    privacyMethods: methodsForProfile(recording.privacy_method ?? session?.privacy_method, recording.privacy_methods ?? session?.privacy_methods),
   };
 }
 
@@ -140,6 +210,7 @@ function sessionFromBackend(session: BackendSession): Session {
   return {
     sessionId: session.session_id,
     privacyMethod: methodForId(session.privacy_method),
+    privacyMethods: methodsForProfile(session.privacy_method, session.privacy_methods),
     status: publicSessionStatus(session.status),
     currentStage: session.current_stage,
     createdAt: session.created_at,
@@ -163,16 +234,17 @@ function progressFromBackend(progress: BackendSession["progress"]): SessionProgr
 
 function summaryFromBackend(summary: BackendSession["summary"]): SessionSummary {
   return {
-    datasetSeizureRecordings: summary.dataset_seizure_recordings,
     modelAlertRecordings: summary.model_alert_recordings,
   };
 }
 
 function stubSessionFromJob(job: StubJob): Session {
   const status: SessionStatus = job.status === "complete" ? "completed" : job.status === "failed" ? "failed" : job.status === "processing" ? "preprocessing" : "queued";
+  const modelAlertWindowCount = status === "completed" ? createStubResult(job).flaggedWindowCount : 0;
   return {
     sessionId: job.jobId,
     privacyMethod: job.privacyMethod,
+    privacyMethods: methodsForProfile(job.privacyMethod.id),
     status,
     currentStage: status === "queued" || status === "completed" || status === "failed" ? null : "processing",
     createdAt: job.submittedAt,
@@ -186,9 +258,10 @@ function stubSessionFromJob(job: StubJob): Session {
       durationSeconds: null,
       samplingRate: null,
       channelCount: null,
-      referenceAnnotation: null,
-      modelAlertWindowCount: 0,
-      modelAlert: false,
+      modelAlertWindowCount,
+      modelAlert: modelAlertWindowCount > 0,
+      alertIntervals: status === "completed" ? createStubResult(job).alertIntervals : [],
+      scoreType: "development_score",
       errorMessage: job.errorMessage,
       sessionId: job.jobId,
       sessionCreatedAt: job.submittedAt,
@@ -201,7 +274,7 @@ function stubSessionFromJob(job: StubJob): Session {
       failedRecordings: status === "failed" ? 1 : 0,
       percent: status === "completed" || status === "failed" ? 100 : 0,
     },
-    summary: { datasetSeizureRecordings: null, modelAlertRecordings: 0 },
+    summary: { modelAlertRecordings: 0 },
   };
 }
 
@@ -219,30 +292,61 @@ function seededNumber(seed: string, offset: number): number {
   return ((value + offset * 37) % 100) / 100;
 }
 
+function mergeAlertIntervals(predictions: Array<{ start_seconds?: number; end_seconds?: number; startSeconds?: number; endSeconds?: number; seizure_detected?: boolean; seizureDetected?: boolean }>): Array<{ start_seconds: number; end_seconds: number }> {
+  const ranges = predictions
+    .filter((prediction) => prediction.seizure_detected ?? prediction.seizureDetected)
+    .map((prediction) => ({
+      start_seconds: prediction.start_seconds ?? prediction.startSeconds ?? 0,
+      end_seconds: prediction.end_seconds ?? prediction.endSeconds ?? 0,
+    }))
+    .sort((left, right) => left.start_seconds - right.start_seconds);
+  const merged: Array<{ start_seconds: number; end_seconds: number }> = [];
+  for (const range of ranges) {
+    if (range.end_seconds <= range.start_seconds) continue;
+    const previous = merged.at(-1);
+    if (previous && range.start_seconds <= previous.end_seconds) previous.end_seconds = Math.max(previous.end_seconds, range.end_seconds);
+    else merged.push({ ...range });
+  }
+  return merged;
+}
+
+function predictionScore(prediction: BackendPredictionResponse["predictions"][number]): number {
+  return prediction.score ?? prediction.probability;
+}
+
+function findHighestWindow(predictions: BackendPredictionResponse["predictions"]): { startSeconds: number; endSeconds: number; score: number } | null {
+  const highest = predictions.reduce<(typeof predictions)[number] | null>((current, item) => (!current || predictionScore(item) > predictionScore(current) ? item : current), null);
+  return highest ? { startSeconds: highest.start_seconds, endSeconds: highest.end_seconds, score: predictionScore(highest) } : null;
+}
+
 function createStubResult(job: StubJob): AnalysisResult {
-  const predictionWindows = Array.from({ length: 15 }, (_, index) => {
-    const probability = seededNumber(job.jobId, index + 80);
-    return { startSeconds: index * 4, endSeconds: index * 4 + 4, probability, seizureDetected: probability >= 0.5 };
+  const predictionWindows = Array.from({ length: 29 }, (_, index) => {
+    const score = seededNumber(job.jobId, index + 80);
+    return { startSeconds: index * 2, endSeconds: index * 2 + 4, score, rawScore: null, calibratedProbability: null, threshold: 0.5, seizureDetected: score >= 0.5 };
   });
-  const strongest = predictionWindows.reduce((current, item) => item.probability > current.probability ? item : current);
+  const strongest = predictionWindows.reduce((current, item) => item.score > current.score ? item : current);
+  const alertIntervals = mergeAlertIntervals(predictionWindows);
   return {
     recordId: job.jobId,
     sessionId: job.jobId,
     recordingLabel: job.recordingLabel,
     submittedAt: job.submittedAt,
     prediction: strongest.seizureDetected ? "seizure" : "no-seizure",
-    peakWindowScore: strongest.probability,
+    peakWindowScore: strongest.score,
     threshold: 0.5,
     windowCount: predictionWindows.length,
     flaggedWindowCount: predictionWindows.filter((item) => item.seizureDetected).length,
     flaggedWindowFraction: predictionWindows.filter((item) => item.seizureDetected).length / predictionWindows.length,
     privacyMethod: job.privacyMethod,
+    privacyMethods: methodsForProfile(job.privacyMethod.id),
     recordingDurationSeconds: 60,
+    alertIntervals: alertIntervals.map((interval) => ({ startSeconds: interval.start_seconds, endSeconds: interval.end_seconds })),
+    highestWindow: { startSeconds: strongest.startSeconds, endSeconds: strongest.endSeconds, score: strongest.score },
     predictionWindows,
-    referenceAnnotation: null,
     scoreType: "development_score",
     calibrationMethod: null,
-    explanationSummary: "The timeline shows the deterministic development-stub score for each prediction window. It is not attention or a clinical explanation.",
+    explanationSummary: "Each point is the score for one four-second window. Amber windows crossed the displayed threshold; the timeline does not explain why the model produced a score.",
+    researchAttributions: [],
     modelName: "development-stub",
     modelVersion: "stub-0.1.0",
     nonClinical: true,
@@ -292,24 +396,67 @@ export async function getRecording(recordId: string, signal?: AbortSignal): Prom
   return recordingFromBackend(await getJson<BackendRecording>(`/api/recordings/${encodeURIComponent(recordId)}`, signal));
 }
 
-export async function submitAnalysis(file: File, privacyMethodId: string, onProgress: (progress: number) => void, signal?: AbortSignal): Promise<{ sessionId: string }> {
+export async function stageUpload(file: File, onProgress: (progress: number) => void, signal?: AbortSignal): Promise<UploadDraft> {
   if (USE_STUB) {
     for (const progress of [18, 42, 68, 100]) {
       await wait(160);
       if (signal?.aborted) throw new DOMException("Upload aborted.", "AbortError");
       onProgress(progress);
     }
-    const method = PRIVACY_METHODS.find((item) => item.id === privacyMethodId) ?? PRIVACY_METHODS[0];
+    const now = new Date();
+    const draft: StubDraft = { draftId: `UPL-${Date.now().toString(36).toUpperCase()}`, status: "staged", createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 30 * 60 * 1000).toISOString(), fileSize: file.size };
+    writeStubDrafts([draft, ...readStubDrafts()]);
+    return draft;
+  }
+  const formData = new FormData();
+  formData.append("archive", file);
+  const response = await uploadJson<{ draft_id: string; status: "staged"; created_at: string; expires_at: string }>("/api/uploads/drafts", formData, onProgress, signal);
+  return { draftId: response.draft_id, status: response.status, createdAt: response.created_at, expiresAt: response.expires_at };
+}
+
+export async function getUploadDraft(draftId: string, signal?: AbortSignal): Promise<UploadDraft> {
+  if (USE_STUB) {
+    await wait(100);
+    const draft = readStubDrafts().find((item) => item.draftId === draftId);
+    if (!draft || new Date(draft.expiresAt).getTime() <= Date.now()) throw new ApiError("This upload draft has expired.", 404);
+    return draft;
+  }
+  const response = await getJson<{ draft_id: string; status: "staged"; created_at: string; expires_at: string }>(`/api/uploads/drafts/${encodeURIComponent(draftId)}`, signal);
+  return { draftId: response.draft_id, status: response.status, createdAt: response.created_at, expiresAt: response.expires_at };
+}
+
+export async function finalizeUploadDraft(draftId: string, privacySelection: string | string[], signal?: AbortSignal): Promise<{ sessionId: string }> {
+  const methodIds = normalizePrivacySelection(privacySelection);
+  if (USE_STUB) {
+    await wait(160);
+    if (signal?.aborted) throw new DOMException("Request aborted.", "AbortError");
+    const draft = readStubDrafts().find((item) => item.draftId === draftId);
+    if (!draft) throw new ApiError("This upload draft could not be found.", 404);
+    const method = privacyProfileForSelection(methodIds);
     const jobNumber = readStubJobs().length + 1;
     const job: StubJob = { jobId: `MDS-${Date.now().toString(36).toUpperCase()}`, recordingLabel: `Recording ${String(jobNumber).padStart(2, "0")}`, submittedAt: new Date().toISOString(), status: "queued", privacyMethod: method };
+    writeStubDrafts(readStubDrafts().filter((item) => item.draftId !== draftId));
     writeStubJobs([job, ...readStubJobs()]);
     return { sessionId: job.jobId };
   }
   const formData = new FormData();
-  formData.append("archive", file);
-  formData.append("privacy_method", privacyMethodId);
-  const response = await uploadJson<{ session_id: string }>("/api/sessions/upload", formData, onProgress, signal);
+  formData.append("privacy_methods", JSON.stringify(methodIds));
+  const response = await postFormJson<{ session_id: string; status: string }>(`/api/uploads/drafts/${encodeURIComponent(draftId)}/finalize`, formData, signal);
   return { sessionId: response.session_id };
+}
+
+export async function deleteUploadDraft(draftId: string, signal?: AbortSignal): Promise<void> {
+  if (USE_STUB) {
+    writeStubDrafts(readStubDrafts().filter((item) => item.draftId !== draftId));
+    return;
+  }
+  await requestWithoutBody(`/api/uploads/drafts/${encodeURIComponent(draftId)}`, "DELETE", signal);
+}
+
+/** Backwards-compatible one-call upload for existing callers. */
+export async function submitAnalysis(file: File, privacyMethodId: string | string[], onProgress: (progress: number) => void, signal?: AbortSignal): Promise<{ sessionId: string }> {
+  const draft = await stageUpload(file, onProgress, signal);
+  return finalizeUploadDraft(draft.draftId, privacyMethodId, signal);
 }
 
 export async function getResult(recordId: string, signal?: AbortSignal): Promise<AnalysisResult> {
@@ -332,15 +479,23 @@ export async function getResult(recordId: string, signal?: AbortSignal): Promise
     window_count: predictions.length,
     flagged_window_count: predictions.filter((item) => item.seizure_detected).length,
     flagged_window_fraction: predictions.length ? predictions.filter((item) => item.seizure_detected).length / predictions.length : 0,
-    peak_window_score: Math.max(...predictions.map((item) => item.probability), 0),
+    peak_window_score: Math.max(...predictions.map(predictionScore), 0),
+    highest_window: findHighestWindow(predictions),
+    alert_intervals: mergeAlertIntervals(predictions),
+    aggregation_unit: "window",
+    recording_probability_available: false,
   };
-  const strongest = predictions.reduce((current, item) => item.probability > current.probability ? item : current, predictions[0] ?? { probability: 0, seizure_detected: false, start_seconds: 0, end_seconds: 0 });
+  const researchAttributions = explanationPayload.explanations
+    .filter((item) => !item.is_clinical)
+    .map((item) => parseResearchAttribution(item.data))
+    .filter((item): item is ResearchAttribution => item !== null);
+  const highestWindow = predictionSummary.highest_window;
   return {
     recordId,
     sessionId: record.sessionId ?? "unknown-session",
     recordingLabel: record.displayName,
     submittedAt: record.sessionCreatedAt ?? new Date().toISOString(),
-    prediction: strongest.seizure_detected ? "seizure" : "no-seizure",
+    prediction: predictionSummary.flagged_window_count > 0 ? "seizure" : "no-seizure",
     peakWindowScore: predictionSummary.peak_window_score,
     threshold: predictionPayload.model?.threshold ?? 0.5,
     windowCount: predictionSummary.window_count,
@@ -349,24 +504,65 @@ export async function getResult(recordId: string, signal?: AbortSignal): Promise
     scoreType: predictionPayload.model?.score_type ?? predictions[0]?.score_type ?? "development_score",
     calibrationMethod: predictionPayload.model?.calibration_method ?? null,
     privacyMethod: record.privacyMethod ?? methodForId(undefined),
+    privacyMethods: record.privacyMethods ?? [record.privacyMethod ?? methodForId(undefined)],
     recordingDurationSeconds: record.durationSeconds ?? predictions.at(-1)?.end_seconds ?? 0,
+    alertIntervals: (predictionSummary.alert_intervals ?? mergeAlertIntervals(predictions)).map((interval) => ({ startSeconds: interval.start_seconds, endSeconds: interval.end_seconds })),
+    highestWindow: highestWindow
+      ? { startSeconds: "start_seconds" in highestWindow ? highestWindow.start_seconds : highestWindow.startSeconds, endSeconds: "end_seconds" in highestWindow ? highestWindow.end_seconds : highestWindow.endSeconds, score: highestWindow.score }
+      : findHighestWindow(predictions),
     predictionWindows: predictions.map((prediction) => ({
       startSeconds: prediction.start_seconds,
       endSeconds: prediction.end_seconds,
-      probability: prediction.calibrated_probability ?? prediction.score ?? prediction.probability,
-      scoreType: prediction.score_type,
+      score: predictionScore(prediction),
+      rawScore: prediction.raw_score ?? null,
+      calibratedProbability: prediction.calibrated_probability ?? null,
+      threshold: predictionPayload.model?.threshold ?? 0.5,
+      scoreType: prediction.score_type ?? predictionPayload.model?.score_type,
       seizureDetected: prediction.seizure_detected,
     })),
-    referenceAnnotation: record.referenceAnnotation,
-    explanationSummary: explanationPayload.explanations.length > 0 ? "The timeline shows the model score for each prediction window. It is not attention, causal reasoning, or a clinical explanation." : "No explanation artifact was returned for this recording.",
+    explanationSummary: explanationPayload.explanations.length > 0 ? "Each point is the score for one four-second window. Highlighted windows crossed the displayed threshold; the timeline does not explain why the model produced a score." : "No explanation artifact was returned for this recording.",
+    researchAttributions,
     modelName: predictionPayload.model?.name ?? "backend-model",
     modelVersion: predictionPayload.model?.version ?? "unknown",
     nonClinical: explanationPayload.explanations.every((item) => !item.is_clinical),
   };
 }
 
+export async function getSignalPreview(recordId: string, startSeconds: number, durationSeconds: number, maxPoints: number, signal?: AbortSignal): Promise<SignalPreview> {
+  if (USE_STUB) {
+    await wait(120);
+    if (signal?.aborted) throw new DOMException("Request aborted.", "AbortError");
+    const result = await getResult(recordId, signal);
+    if (result.flaggedWindowCount === 0) throw new ApiError("No model-positive signal is available for this recording.", 404);
+    const points = Math.min(maxPoints, 480);
+    const timeSeconds = Array.from({ length: points }, (_, index) => startSeconds + (durationSeconds * index) / Math.max(1, points - 1));
+    const channels = PRIVACY_SIGNAL_CHANNELS.map((label, channelIndex) => ({
+      label,
+      samples: timeSeconds.map((time, index) => {
+        const relativeTime = time - startSeconds;
+        const phase = channelIndex * 0.37;
+        const baseline =
+          Math.sin(relativeTime * Math.PI * 2 * (7.2 + channelIndex * 0.04) + phase) * 0.17 +
+          Math.sin(relativeTime * Math.PI * 2 * 13.4 + phase * 0.7) * 0.07 +
+          Math.sin(relativeTime * Math.PI * 2 * 31 + channelIndex) * 0.025 +
+          Math.sin((index + 1) * (channelIndex + 3) * 1.618) * 0.035;
+        const flagged = result.alertIntervals.some((interval) => time >= interval.startSeconds && time <= interval.endSeconds);
+        const pulsePosition = (relativeTime * 4.5 + channelIndex * 0.11) % 1;
+        const transient = flagged
+          ? Math.exp(-(((pulsePosition - 0.18) / 0.055) ** 2)) * 0.2 - Math.exp(-(((pulsePosition - 0.28) / 0.08) ** 2)) * 0.11
+          : 0;
+        return baseline + transient;
+      }),
+    }));
+    return { recordId, representation: result.privacyMethods.some((method) => method.id === "signal-obfuscation") ? "signal-obfuscated" : "metadata-scrubbed", samplingRate: 256, channels, timeSeconds, segments: [{ sourceStartSeconds: startSeconds, sourceEndSeconds: startSeconds + durationSeconds }], flaggedIntervals: result.alertIntervals.filter((window) => window.endSeconds > startSeconds && window.startSeconds < startSeconds + durationSeconds).map((window) => ({ startSeconds: Math.max(startSeconds, window.startSeconds), endSeconds: Math.min(startSeconds + durationSeconds, window.endSeconds) })) };
+  }
+  const query = new URLSearchParams({ start_seconds: String(startSeconds), duration_seconds: String(durationSeconds), max_points: String(maxPoints) });
+  const response = await getJson<{ record_id: string; representation: "metadata-scrubbed" | "signal-obfuscated"; sampling_rate: number; channels: Array<{ label: string; samples: number[] }>; time_seconds: number[]; segments: Array<{ source_start_seconds: number; source_end_seconds: number }>; flagged_intervals: Array<{ start_seconds: number; end_seconds: number }> }>(`/api/recordings/${encodeURIComponent(recordId)}/signal?${query.toString()}`, signal);
+  return { recordId: response.record_id, representation: response.representation, samplingRate: response.sampling_rate, channels: response.channels, timeSeconds: response.time_seconds, segments: response.segments.map((segment) => ({ sourceStartSeconds: segment.source_start_seconds, sourceEndSeconds: segment.source_end_seconds })), flaggedIntervals: response.flagged_intervals.map((interval) => ({ startSeconds: interval.start_seconds, endSeconds: interval.end_seconds })) };
+}
+
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, { signal, headers: { Accept: "application/json" }, credentials: "omit", cache: "no-store" });
+  const response = await fetch(`${API_BASE_URL}${path}`, { signal, headers: { Accept: "application/json" }, credentials: REQUEST_CREDENTIALS, cache: "no-store" });
   if (!response.ok) throw await readError(response);
   return (await response.json()) as T;
 }
@@ -376,9 +572,21 @@ async function requestWithoutBody(path: string, method: string, signal?: AbortSi
     method,
     signal,
     headers: { Accept: "application/json" },
-    credentials: "omit",
+    credentials: REQUEST_CREDENTIALS,
   });
   if (!response.ok) throw await readError(response);
+}
+
+async function postFormJson<T>(path: string, body: FormData, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    body,
+    signal,
+    headers: { Accept: "application/json" },
+    credentials: REQUEST_CREDENTIALS,
+  });
+  if (!response.ok) throw await readError(response);
+  return (await response.json()) as T;
 }
 
 async function readError(response: Response): Promise<ApiError> {
@@ -391,6 +599,7 @@ function uploadJson<T>(path: string, body: FormData, onProgress: (progress: numb
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("POST", `${API_BASE_URL}${path}`);
+    request.withCredentials = INCLUDE_ACCESS_COOKIES;
     request.responseType = "json";
     request.setRequestHeader("Accept", "application/json");
     request.upload.addEventListener("progress", (event) => { if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100)); });

@@ -31,6 +31,8 @@ _ENCRYPTED_MAGIC = b"MDS01GCM1"
 _NONCE_BYTES = 12
 _TAG_BYTES = 16
 _MAX_ANNOTATION_MEMBER_BYTES = 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = int(os.getenv("MDS01_MAX_ARCHIVE_TOTAL_BYTES", str(2 * 1024**3)))
+MAX_ZIP_COMPRESSION_RATIO = float(os.getenv("MDS01_MAX_ZIP_COMPRESSION_RATIO", "100"))
 
 
 class SessionStorage:
@@ -68,7 +70,33 @@ class SessionStorage:
 
         path = self.root / session_id
         path.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.root, 0o700)
+        os.chmod(path, 0o700)
         return path
+
+    @staticmethod
+    def _safe_token(value: str, prefix: str) -> str:
+        """Validate one opaque storage token without accepting a path."""
+
+        if not value.startswith(prefix) or Path(value).name != value:
+            raise StorageError("Storage identifier is invalid.")
+        return value
+
+    def draft_dir(self, draft_id: str) -> Path:
+        """Create and return the private directory for one staged upload."""
+
+        safe_id = self._safe_token(draft_id, "UPL-")
+        path = self.root / "_drafts" / safe_id
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.root, 0o700)
+        os.chmod(path.parent, 0o700)
+        os.chmod(path, 0o700)
+        return path
+
+    def draft_path(self, draft_id: str) -> Path:
+        """Return the encrypted archive path for one staged upload."""
+
+        return self.draft_dir(draft_id) / "upload.zip.enc"
 
     def directory(self, session_id: str, name: str) -> Path:
         """Create and return one approved artifact directory.
@@ -96,6 +124,7 @@ class SessionStorage:
             raise StorageError("Unknown session storage area.")
         path = self.session_dir(session_id) / name
         path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
         return path
 
     async def save_upload(self, session_id: str, upload: UploadFile) -> Path:
@@ -122,22 +151,52 @@ class SessionStorage:
         if not upload.filename:
             raise StorageError("Uploaded archive has no filename.")
         destination = self.directory(session_id, "original") / "upload.zip.enc"
+        return await self._encrypt_upload(upload, destination)
+
+    async def save_draft_upload(self, draft_id: str, upload: UploadFile) -> Path:
+        """Encrypt a ZIP into short-lived private draft storage."""
+
+        return await self._encrypt_upload(upload, self.draft_path(draft_id))
+
+    async def _encrypt_upload(self, upload: UploadFile, destination: Path) -> Path:
+        """Stream one upload through AES-GCM into an owner-only file."""
+
         total = 0
         nonce = secrets.token_bytes(_NONCE_BYTES)
         encryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce)).encryptor()
-        with destination.open("wb") as output:
-            output.write(_ENCRYPTED_MAGIC)
-            output.write(nonce)
-            while chunk := await upload.read(1024 * 1024):
-                total += len(chunk)
-                if total > MAX_UPLOAD_BYTES:
-                    destination.unlink(missing_ok=True)
-                    raise StorageError("Uploaded archive exceeds the size limit.")
-                output.write(encryptor.update(chunk))
-            output.write(encryptor.finalize())
-            output.write(encryptor.tag)
+        try:
+            with destination.open("wb") as output:
+                output.write(_ENCRYPTED_MAGIC)
+                output.write(nonce)
+                while chunk := await upload.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > MAX_UPLOAD_BYTES:
+                        raise StorageError("Uploaded archive exceeds the size limit.")
+                    output.write(encryptor.update(chunk))
+                output.write(encryptor.finalize())
+                output.write(encryptor.tag)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
         os.chmod(destination, 0o600)
         return destination
+
+    def promote_draft(self, draft_id: str, session_id: str) -> Path:
+        """Copy an encrypted draft into a session, retaining rollback safety."""
+
+        source = self.draft_path(draft_id)
+        if not source.exists():
+            raise StorageError("Upload draft was not found.")
+        destination = self.directory(session_id, "original") / "upload.zip.enc"
+        shutil.copy2(source, destination)
+        os.chmod(destination, 0o600)
+        return destination
+
+    def delete_draft(self, draft_id: str) -> None:
+        """Delete one staged archive and its private directory."""
+
+        safe_id = self._safe_token(draft_id, "UPL-")
+        shutil.rmtree(self.root / "_drafts" / safe_id, ignore_errors=True)
 
     def _key(self) -> bytes:
         """Return the injected test key or the required runtime storage key."""
@@ -151,6 +210,19 @@ class SessionStorage:
         """Decrypt one private ZIP into a short-lived, owner-only work path."""
 
         destination = self.directory(session_id, "work") / "upload.zip"
+        return self._materialize_encrypted(encrypted_path, destination)
+
+    def materialize_retained_artifact(self, session_id: str, encrypted_path: Path, name: str) -> Path:
+        """Decrypt one retained artifact into temporary private work storage."""
+
+        if Path(name).name != name or not name:
+            raise StorageError("Retained artifact name is invalid.")
+        destination = self.directory(session_id, "work") / name
+        return self._materialize_encrypted(encrypted_path, destination)
+
+    def _materialize_encrypted(self, encrypted_path: Path, destination: Path) -> Path:
+        """Decrypt one AES-GCM file and remove the plaintext on failure."""
+
         try:
             size = encrypted_path.stat().st_size
             minimum_size = len(_ENCRYPTED_MAGIC) + _NONCE_BYTES + _TAG_BYTES
@@ -326,6 +398,13 @@ class SessionStorage:
                 raise StorageError("ZIP archive does not contain EDF files.")
             if len(members) > MAX_EDF_FILES_PER_ARCHIVE:
                 raise StorageError("ZIP archive contains too many EDF files.")
+            if sum(member.file_size for member, _ in members) > MAX_ARCHIVE_TOTAL_BYTES:
+                raise StorageError("ZIP archive exceeds the cumulative total size limit.")
+            if any(
+                member.file_size / max(member.compress_size, 1) > MAX_ZIP_COMPRESSION_RATIO
+                for member, _ in members
+            ):
+                raise StorageError("Archive member exceeds the safe compression ratio.")
 
             outputs: list[Path] = []
             used_names: set[str] = set()
@@ -344,44 +423,9 @@ class SessionStorage:
                 used_names.add(destination.name)
                 with archive.open(member) as source, destination.open("wb") as output:
                     shutil.copyfileobj(source, output)
+                os.chmod(destination, 0o600)
                 outputs.append(destination)
             return outputs
-
-    def deidentified_path(self, session_id: str, record_id: str) -> Path:
-        """Return the private destination for a de-identified EDF.
-
-        Parameters
-        ----------
-        session_id : str
-            Opaque session identifier.
-        record_id : str
-            Opaque recording identifier.
-
-        Returns
-        -------
-        pathlib.Path
-            Internal de-identified EDF path.
-        """
-
-        return self.directory(session_id, "deidentified") / f"{record_id}.edf"
-
-    def processed_path(self, session_id: str, record_id: str) -> Path:
-        """Return the private destination for a processed NPZ artifact.
-
-        Parameters
-        ----------
-        session_id : str
-            Opaque session identifier.
-        record_id : str
-            Opaque recording identifier.
-
-        Returns
-        -------
-        pathlib.Path
-            Internal processed-artifact path.
-        """
-
-        return self.directory(session_id, "processed") / f"{record_id}.npz"
 
     def cleanup_session(self, session_id: str, *, keep_retained: bool = False) -> None:
         """Delete transient session files after processing.
@@ -434,3 +478,9 @@ class SessionStorage:
         """
 
         shutil.rmtree(self.root / session_id, ignore_errors=True)
+
+    def cleanup_expired_drafts(self, draft_ids: list[str]) -> None:
+        """Remove expired staged upload directories."""
+
+        for draft_id in draft_ids:
+            self.delete_draft(draft_id)

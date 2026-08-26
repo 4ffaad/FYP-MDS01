@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import BackgroundTasks, APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from sqlmodel import Session
 
-from backend.app.core.config import SUPPORTED_PRIVACY_METHODS
+from backend.app.privacy.methods import canonical_privacy_profile, normalize_privacy_methods
 from backend.app.database.db import get_session
 from backend.app.services.session_service import (
     create_session,
@@ -14,7 +14,7 @@ from backend.app.services.session_service import (
     public_session_list,
     delete_session,
 )
-from backend.app.services.processing_service import process_session
+from backend.app.services.processing_capacity import processing_capacity
 from backend.app.services.storage_service import SessionStorage, StorageError
 
 
@@ -26,6 +26,7 @@ async def upload_session(
     background_tasks: BackgroundTasks,
     archive: UploadFile = File(...),
     privacy_method: str = Form("metadata-scrub"),
+    privacy_methods: str | None = Form(None),
     db: Session = Depends(get_session),
 ) -> dict:
     """Accept a ZIP archive, create a session, and schedule background work.
@@ -56,24 +57,33 @@ async def upload_session(
 
     if not archive.filename or not archive.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Upload one ZIP archive containing EDF files.")
-    privacy_method = privacy_method.strip()
-    if privacy_method not in SUPPORTED_PRIVACY_METHODS:
-        raise HTTPException(
-            status_code=400,
-            detail="privacy_method must be metadata-scrub or signal-obfuscation.",
+    try:
+        selected_methods = normalize_privacy_methods(
+            privacy_methods if isinstance(privacy_methods, str) else None,
+            privacy_method,
         )
+        privacy_profile = canonical_privacy_profile(selected_methods)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not processing_capacity.reserve():
+        raise HTTPException(status_code=503, detail="The analysis service is at capacity. Try again later.")
 
     try:
         session = await create_session(
             db,
             SessionStorage(),
             archive,
-            privacy_method,
+            privacy_profile,
         )
     except StorageError as exc:
+        processing_capacity.release()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception:
+        processing_capacity.release()
+        raise
 
-    background_tasks.add_task(process_session, session.session_id)
+    background_tasks.add_task(processing_capacity.run_reserved, session.session_id)
     return {
         "session_id": session.session_id,
         "status": session.status.value,

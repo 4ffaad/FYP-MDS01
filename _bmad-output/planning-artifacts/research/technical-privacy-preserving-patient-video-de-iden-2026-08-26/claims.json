@@ -1,0 +1,13 @@
+[
+  {"claim":"Video anonymisation requires contextual identifiability assessment; blurring/masking and audio treatment are candidate measures, not a universal guarantee.","class":"privacy-guidance","pub_date":"2026-08"},
+  {"claim":"Face obfuscation can affect video action-recognition utility.","class":"patterns","pub_date":"2021-06"},
+  {"claim":"Skeleton trajectories can carry re-identification and sensitive-attribute leakage.","class":"privacy-attack-evidence","pub_date":"2021-11"},
+  {"claim":"Body proportions and motion style are privacy-relevant skeleton cues.","class":"privacy-attack-evidence","pub_date":"2025-10"},
+  {"claim":"Learned anonymization can optimize action utility against privacy tasks.","class":"landscape","pub_date":"2022-06"},
+  {"claim":"Temporal/video-level privacy attacks matter beyond frame-level handling.","class":"patterns","pub_date":"2023-10"},
+  {"claim":"MediaPipe Pose Landmarker supports video-mode frame inference with timestamps.","class":"version-compatibility","pub_date":"2026-07"},
+  {"claim":"MediaPipe Face Detector supports video-mode frame inference with timestamps.","class":"version-compatibility","pub_date":"2026-08"},
+  {"claim":"MMPose supports configurable image/video inference through a unified inferencer.","class":"version-compatibility","pub_date":"2026-08"},
+  {"claim":"FFmpeg supports explicit stream selection and metadata mapping controls.","class":"version-compatibility","pub_date":"2026-07"},
+  {"claim":"Learned face anonymizers require task-specific training and evaluation.","class":"implementation-risk","pub_date":"2018-09"}
+]

@@ -2,7 +2,10 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  fullyParallel: true,
+  // A single Next.js development server compiles routes on demand. Running
+  // every browser flow concurrently makes timing assertions flaky.
+  fullyParallel: false,
+  workers: 1,
   reporter: "html",
   use: {
     baseURL: "http://127.0.0.1:3001",

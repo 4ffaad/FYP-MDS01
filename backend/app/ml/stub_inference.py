@@ -6,7 +6,7 @@ import hashlib
 import numpy as np
 
 from backend.app.core.config import MODEL_NAME, MODEL_THRESHOLD, MODEL_VERSION
-from backend.app.ml.interface import WindowPrediction
+from backend.app.ml.interface import WindowPrediction, score_crossed_threshold
 
 
 def _stable_probability(value: str) -> float:
@@ -69,7 +69,7 @@ class StubInferenceService:
                     start_seconds=float(start),
                     end_seconds=float(start + 4),
                     probability=probability,
-                    seizure_detected=probability >= self.threshold,
+                    seizure_detected=score_crossed_threshold(probability, self.threshold),
                     score_type=self.score_type,
                 )
             )

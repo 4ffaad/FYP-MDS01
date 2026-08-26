@@ -58,10 +58,9 @@ class EEGPreprocessor:
         if data.ndim == 1:
             return filtfilt(b, a, data)
 
-        return np.array([
-            filtfilt(b, a, channel)
-            for channel in data
-        ])
+        # Filter all channels in one SciPy call. The axis and filter
+        # parameters are unchanged; this only removes Python-loop overhead.
+        return filtfilt(b, a, data, axis=-1)
 
     def notch_filter(self, data, Q=30):
         """Remove configured power-line interference, normally 60 Hz."""
@@ -76,10 +75,7 @@ class EEGPreprocessor:
         if data.ndim == 1:
             return filtfilt(b, a, data)
 
-        return np.array([
-            filtfilt(b, a, channel)
-            for channel in data
-        ])
+        return filtfilt(b, a, data, axis=-1)
 
     def normalize(self, data):
         """Apply z-score normalization independently to each channel."""
@@ -89,11 +85,9 @@ class EEGPreprocessor:
                 data - np.mean(data)
             ) / (np.std(data) + 1e-8)
 
-        return np.array([
-            (channel - np.mean(channel))
-            / (np.std(channel) + 1e-8)
-            for channel in data
-        ])
+        mean = np.mean(data, axis=-1, keepdims=True)
+        standard_deviation = np.std(data, axis=-1, keepdims=True)
+        return (data - mean) / (standard_deviation + 1e-8)
 
     def remove_artifacts(self, data, threshold=5):
         """Clip extreme normalized values to the configured threshold."""

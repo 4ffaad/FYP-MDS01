@@ -1,5 +1,6 @@
 import { Icon } from "./Icon";
 import type { DisplayStatus } from "@/lib/types";
+import { Badge } from "@/components/ui/badge";
 
 const statusConfig: Record<DisplayStatus, { label: string; icon: "clock" | "spinner" | "check" | "alert"; className: string }> = {
   queued: { label: "Queued", icon: "clock", className: "border-rule-strong bg-surface-muted text-ink-muted" },
@@ -12,9 +13,9 @@ const statusConfig: Record<DisplayStatus, { label: string; icon: "clock" | "spin
 export function StatusBadge({ status }: { status: DisplayStatus }) {
  const config = statusConfig[status];
  return (
-   <span className={`inline-flex min-h-7 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${config.className}`} role="status" aria-label={`Status: ${config.label}`}>
+   <Badge variant="outline" className={`min-h-7 rounded-full px-2.5 py-1 text-xs font-semibold ${config.className}`} aria-label={`Status: ${config.label}`}>
       <Icon name={config.icon} className={`size-3.5 ${status === "processing" ? "animate-spin" : ""}`} />
      <span>{config.label}</span>
-   </span>
+   </Badge>
  );
 }

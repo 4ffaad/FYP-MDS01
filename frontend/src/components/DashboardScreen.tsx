@@ -1,13 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { deleteSession, getSessions, toDisplayStatus } from "@/lib/api";
 import type { DisplayStatus, Session } from "@/lib/types";
 import { Icon } from "./Icon";
 import { SessionGroup } from "./SessionRecordings";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
 const ACTIVE_SESSION_STATUSES = new Set(["queued", "validating", "deidentifying", "preprocessing", "inference", "explaining"]);
+const POLL_INTERVAL_MS = 4000;
 
 /** Render session cards and live processing state. */
 export function DashboardScreen() {
@@ -15,28 +18,35 @@ export function DashboardScreen() {
   const [filter, setFilter] = useState<"all" | DisplayStatus>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const latestRequest = useRef(0);
+  const deletedSessionIds = useRef(new Set<string>());
 
   /** Fetch sessions and preserve abort behavior when the page is left. */
   const refresh = useCallback(async (signal?: AbortSignal) => {
+    const requestNumber = ++latestRequest.current;
     try {
       const nextSessions = await getSessions(signal);
-      setSessions(nextSessions);
+      if (signal?.aborted || requestNumber !== latestRequest.current) return;
+      setSessions(nextSessions.filter((session) => !deletedSessionIds.current.has(session.sessionId)));
       setError(null);
     } catch (refreshError) {
       if (refreshError instanceof DOMException && refreshError.name === "AbortError") return;
+      if (requestNumber !== latestRequest.current) return;
       setError(refreshError instanceof Error ? refreshError.message : "The dashboard could not be loaded.");
     } finally {
-      setLoading(false);
+      if (!signal?.aborted && requestNumber === latestRequest.current) setLoading(false);
     }
   }, []);
 
   const removeSession = useCallback(async (sessionId: string) => {
-    if (!window.confirm("Delete this analysis session and its results? This cannot be undone.")) return;
     try {
       await deleteSession(sessionId);
+      deletedSessionIds.current.add(sessionId);
+      latestRequest.current += 1;
       setSessions((current) => current.filter((session) => session.sessionId !== sessionId));
     } catch (deleteError: unknown) {
       setError(deleteError instanceof Error ? deleteError.message : "The session could not be deleted.");
+      throw deleteError;
     }
   }, []);
 
@@ -50,8 +60,14 @@ export function DashboardScreen() {
   useEffect(() => {
     if (!hasActiveSessions) return;
     const controller = new AbortController();
-    const timer = window.setInterval(() => void refresh(controller.signal), 2000);
-    return () => { controller.abort(); window.clearInterval(timer); };
+    let timer: number | undefined;
+    let stopped = false;
+    const poll = async () => {
+      if (!document.hidden) await refresh(controller.signal);
+      if (!stopped && !controller.signal.aborted) timer = window.setTimeout(() => void poll(), POLL_INTERVAL_MS);
+    };
+    timer = window.setTimeout(() => void poll(), POLL_INTERVAL_MS);
+    return () => { stopped = true; controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
   }, [hasActiveSessions, refresh]);
 
   const visibleSessions = useMemo(
@@ -65,15 +81,14 @@ export function DashboardScreen() {
       <div className="animate-enter-up">
         <div className="flex flex-col justify-between gap-6 border-b border-rule pb-7 sm:flex-row sm:items-end">
           <div>
-            <p className="eyebrow">Workspace</p>
-            <h1 className="mt-3 text-[clamp(2rem,4vw,3.15rem)] font-semibold leading-[1.06] tracking-[-0.05em] text-ink">Analysis dashboard</h1>
+            <h1 className="text-[clamp(2rem,4vw,3.15rem)] font-semibold leading-[1.06] tracking-[-0.04em] text-ink">Analysis dashboard</h1>
             <p className="mt-4 max-w-xl text-[0.94rem] leading-6 text-ink-muted">Every upload is one session. Its recordings stay together so status, timing, and results are easy to follow.</p>
           </div>
-          <Link className="button-primary shrink-0" href="/upload"><Icon name="upload" className="size-4" />New analysis</Link>
+          <Button asChild className="button-primary h-auto shrink-0 border-0"><Link href="/upload"><Icon name="upload" className="size-4" />New analysis</Link></Button>
         </div>
 
         <div className="flex flex-col justify-between gap-4 border-b border-rule py-5 sm:flex-row sm:items-center">
-          <div className="flex items-center gap-3 text-sm text-ink-muted"><span className="font-semibold text-ink">{sessions.length}</span> {sessions.length === 1 ? "session" : "sessions"}<span className="text-ink-faint">·</span><span>{recordingCount} {recordingCount === 1 ? "recording" : "recordings"}</span>{hasActiveSessions && <span className="inline-flex items-center gap-1.5 text-xs text-ink-faint"><span className="size-1.5 rounded-full bg-teal" aria-hidden="true" />Updates automatically</span>}</div>
+          <div className="flex items-center gap-3 text-sm text-ink-muted"><span className="font-semibold text-ink">{sessions.length}</span> {sessions.length === 1 ? "session" : "sessions"}<span className="text-rule-strong">·</span><span>{recordingCount} {recordingCount === 1 ? "recording" : "recordings"}</span>{hasActiveSessions && <span className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-muted"><span className="size-1.5 rounded-full bg-teal" aria-hidden="true" />Updates automatically</span>}</div>
           <label className="flex items-center gap-2 text-xs text-ink-muted" htmlFor="status-filter"><span>Filter</span><select className="min-h-9 rounded-md border border-rule-strong bg-surface px-3 text-xs font-semibold text-ink outline-none transition focus:border-teal" id="status-filter" value={filter} onChange={(event) => setFilter(event.target.value as "all" | DisplayStatus)}><option value="all">All statuses</option><option value="queued">Queued</option><option value="processing">Processing</option><option value="complete">Complete</option><option value="partial">Partial · review</option><option value="failed">Needs review</option></select></label>
         </div>
 
@@ -90,5 +105,5 @@ function LoadingRows() {
 }
 
 function EmptyDashboard({ filtered }: { filtered: boolean }) {
-  return <div className="mt-8 panel px-6 py-14 text-center"><div className="mx-auto grid size-10 place-items-center rounded-md bg-teal-soft text-teal"><Icon name={filtered ? "list" : "upload"} className="size-5" /></div><h2 className="mt-5 text-lg font-bold tracking-[-0.02em]">{filtered ? "No sessions match this filter." : "No analyses submitted yet."}</h2><p className="mx-auto mt-2 max-w-md text-sm leading-6 text-ink-muted">{filtered ? "Choose another status to see more sessions." : "Start with an EEG recording. Its session and recording results will appear here."}</p>{!filtered && <Link className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-teal-dark underline decoration-teal/40 underline-offset-4 hover:decoration-teal" href="/upload">Submit an EEG recording <Icon name="arrow" className="size-4" /></Link>}</div>;
+  return <Card className="mt-8 panel px-6 py-14 text-center"><div className="mx-auto grid size-10 place-items-center rounded-md bg-teal-soft text-teal"><Icon name={filtered ? "list" : "upload"} className="size-5" /></div><h2 className="mt-5 text-lg font-bold tracking-[-0.02em]">{filtered ? "No sessions match this filter." : "No analyses submitted yet."}</h2><p className="mx-auto mt-2 max-w-md text-sm leading-6 text-ink-muted">{filtered ? "Choose another status to see more sessions." : "Start with an EEG recording. Its session and recording results will appear here."}</p>{!filtered && <Link className="mt-6 inline-flex self-center items-center gap-2 text-sm font-bold text-teal-dark underline decoration-teal/40 underline-offset-4 hover:decoration-teal" href="/upload">Submit an EEG recording <Icon name="arrow" className="size-4" /></Link>}</Card>;
 }

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from backend.app.eeg.edf_io import read_uniform_edf
-from backend.app.privacy.deidentify import inspect_metadata
+import pyedflib
 
 
 class ValidationError(ValueError):
@@ -18,8 +17,8 @@ def validate_edf(path: Path) -> dict:
     Parameters
     ----------
     path : pathlib.Path
-        EDF file to inspect. The function reads signal data and metadata but
-        does not expose patient-identifying values.
+        EDF file to inspect. Only technical headers and sample counts are read;
+        patient-identifying values are neither returned nor logged.
 
     Returns
     -------
@@ -32,21 +31,29 @@ def validate_edf(path: Path) -> dict:
         Raised when the EDF cannot be read or contains unusable signal data.
     """
 
+    reader = None
     try:
-        signals, sampling_rate, labels = read_uniform_edf(path)
-        metadata = inspect_metadata(path)
+        reader = pyedflib.EdfReader(str(path))
+        labels = reader.getSignalLabels()
+        frequencies = reader.getSampleFrequencies()
+        sample_counts = reader.getNSamples()
+        if not labels or not len(frequencies) or not len(sample_counts):
+            raise ValidationError("EDF file does not contain EEG signal data.")
+        if len(set(frequencies.tolist())) != 1 or len(set(sample_counts.tolist())) != 1:
+            raise ValidationError("EDF channels must use one sampling rate and sample count.")
+        sampling_rate = int(frequencies[0])
+        if sampling_rate <= 0 or int(sample_counts[0]) <= 0:
+            raise ValidationError("EDF sampling information is invalid.")
+        return {
+            "duration_seconds": float(reader.getFileDuration()),
+            "sampling_rate": sampling_rate,
+            "channel_count": len(labels),
+            "channel_labels": labels,
+        }
+    except ValidationError:
+        raise
     except Exception as exc:
         raise ValidationError("EDF file is unreadable or malformed.") from exc
-
-    if signals.size == 0 or not labels:
-        raise ValidationError("EDF file does not contain EEG signal data.")
-    if sampling_rate <= 0:
-        raise ValidationError("EDF sampling rate is invalid.")
-
-    technical = metadata["technical"]
-    return {
-        "duration_seconds": float(technical["duration_seconds"]),
-        "sampling_rate": int(sampling_rate),
-        "channel_count": len(labels),
-        "channel_labels": labels,
-    }
+    finally:
+        if reader is not None:
+            reader.close()

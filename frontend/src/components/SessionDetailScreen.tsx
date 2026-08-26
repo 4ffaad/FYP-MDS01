@@ -9,8 +9,10 @@ import type { Session } from "@/lib/types";
 import { Icon } from "./Icon";
 import { DeleteSessionButton, SessionRecordings } from "./SessionRecordings";
 import { StatusBadge } from "./StatusBadge";
+import { Progress } from "@/components/ui/progress";
 
 const ACTIVE_SESSION_STATUSES = new Set(["queued", "validating", "deidentifying", "preprocessing", "inference", "explaining"]);
+const POLL_INTERVAL_MS = 4000;
 
 /** Render one session’s timestamp, processing summary, and complete recording list. */
 export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
@@ -19,12 +21,12 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
   const [error, setError] = useState<string | null>(null);
 
   const removeSession = async (id: string) => {
-    if (!window.confirm("Delete this analysis session and its results? This cannot be undone.")) return;
     try {
       await deleteSession(id);
       router.push("/dashboard");
     } catch (deleteError: unknown) {
       setError(deleteError instanceof Error ? deleteError.message : "The session could not be deleted.");
+      throw deleteError;
     }
   };
 
@@ -33,23 +35,26 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
     let mounted = true;
     let timer: number | undefined;
     const load = async () => {
+      if (document.hidden) {
+        timer = window.setTimeout(() => void load(), POLL_INTERVAL_MS);
+        return;
+      }
+      let shouldPoll = false;
       try {
         const nextSession = await getSession(sessionId, controller.signal);
         if (!mounted) return;
         setSession(nextSession);
         setError(null);
-        if (ACTIVE_SESSION_STATUSES.has(nextSession.status) && timer === undefined) timer = window.setInterval(() => void load(), 2000);
-        if (!ACTIVE_SESSION_STATUSES.has(nextSession.status) && timer !== undefined) {
-          window.clearInterval(timer);
-          timer = undefined;
-        }
+        shouldPoll = ACTIVE_SESSION_STATUSES.has(nextSession.status);
       } catch (loadError: unknown) {
         if (loadError instanceof DOMException && loadError.name === "AbortError") return;
         if (mounted) setError(loadError instanceof Error ? loadError.message : "The session could not be loaded.");
+      } finally {
+        if (mounted && shouldPoll && !controller.signal.aborted) timer = window.setTimeout(() => void load(), POLL_INTERVAL_MS);
       }
     };
     void load();
-    return () => { mounted = false; controller.abort(); if (timer !== undefined) window.clearInterval(timer); };
+    return () => { mounted = false; controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
   }, [sessionId]);
 
   if (error) return <SessionError message={error} />;
@@ -57,11 +62,15 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
 
  const failedCount = session.recordings.filter((recording) => recording.status === "failed").length;
  const completedCount = session.recordings.filter((recording) => recording.status === "inferred").length;
- const annotatedCount = session.recordings.filter((recording) => (recording.referenceAnnotation?.intervals.length ?? 0) > 0).length;
- const labelledCount = session.recordings.filter((recording) => recording.referenceAnnotation !== null).length;
- const datasetFindingsReady = !ACTIVE_SESSION_STATUSES.has(session.status) && session.progress.finishedRecordings >= session.progress.totalRecordings;
- const visibleDatasetCount = datasetFindingsReady && labelledCount > 0 ? annotatedCount : null;
-  const visibleModelFlagCount = datasetFindingsReady ? session.summary.modelAlertRecordings : null;
+ const completedRecordings = session.recordings.filter((recording) => recording.status === "inferred");
+ const alertRecordings = completedRecordings.filter((recording) => recording.modelAlertWindowCount > 0);
+ const development = completedRecordings.some((recording) => recording.scoreType === "development_score");
+ const calibrated = completedRecordings.some((recording) => recording.scoreType === "calibrated_probability");
+ const alertLabel = development ? "development flags" : calibrated ? "model alerts" : "research flags";
+ const alertToneClass = development || !calibrated ? "border-amber/30 bg-amber-soft font-semibold text-amber" : "border-red/20 bg-red-soft font-semibold text-red";
+ const analysisReady = !ACTIVE_SESSION_STATUSES.has(session.status) && session.progress.finishedRecordings >= session.progress.totalRecordings;
+ const visibleModelFlagCount = analysisReady ? alertRecordings.length : null;
+ const alertTimes = alertRecordings.flatMap((recording) => recording.alertIntervals.map((interval) => formatOffset(interval.startSeconds) + "-" + formatOffset(interval.endSeconds)));
 
  return (
    <div className="page-frame">
@@ -71,21 +80,21 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
         <section className="mt-5 panel overflow-hidden" aria-labelledby="session-heading">
           <div className="flex flex-col justify-between gap-5 px-5 py-6 sm:flex-row sm:items-start sm:px-7">
             <div>
-              <p className="eyebrow">Analysis session</p>
-              <h1 id="session-heading" className="mt-2 font-mono text-2xl font-semibold tracking-[-0.04em] text-ink">{session.sessionId}</h1>
+              <h1 id="session-heading" className="text-2xl font-semibold tracking-[-0.035em] text-ink">Analysis session</h1>
+              <p className="mt-2 font-mono text-sm text-ink-muted">{session.sessionId}</p>
               <p className="mt-3 text-sm text-ink-muted">Submitted {formatSubmittedAt(session.createdAt)} <span className="mx-1 text-rule-strong">·</span> {session.privacyMethod.label}</p>
+              {analysisReady && alertTimes.length > 0 && <p className="mt-2 text-xs text-ink-muted">Alert times: <span className="font-mono text-ink">{alertTimes.slice(0, 6).join(", ")}{alertTimes.length > 6 ? ` +${alertTimes.length - 6} more` : ""}</span></p>}
             </div>
             <div className="flex flex-wrap items-center gap-4"><StatusBadge status={toDisplayStatus(session.status)} /><DeleteSessionButton session={session} onDelete={removeSession} /></div>
           </div>
-          <div className="grid border-t border-rule bg-surface-soft sm:grid-cols-5">
+         <div className="grid border-t border-rule bg-surface-soft sm:grid-cols-4">
             <Summary label="Recordings" value={String(session.recordings.length)} />
             <Summary label="Completed" value={String(completedCount)} />
             <Summary label="Needs review" value={String(failedCount)} />
-            <Summary label="Model alerts" value={visibleModelFlagCount === null ? "—" : String(visibleModelFlagCount)} />
-            <Summary label="Research references" value={visibleDatasetCount === null ? "—" : String(visibleDatasetCount)} />
+            <Summary label={development ? "Development flags" : calibrated ? "Model alerts" : "Research flags"} value={visibleModelFlagCount === null ? "—" : String(visibleModelFlagCount)} />
          </div>
          <ProgressSummary session={session} />
-          <p className={`border-t px-5 py-3 text-xs leading-5 sm:px-7 ${visibleModelFlagCount !== null && visibleModelFlagCount > 0 ? "border-red/20 bg-red-soft font-semibold text-red" : "border-rule text-ink-muted"}`}>{!datasetFindingsReady ? "Model alerts and research reference labels will be summarized after all recordings finish processing." : visibleModelFlagCount !== null && visibleModelFlagCount > 0 ? `${visibleModelFlagCount} recording${visibleModelFlagCount === 1 ? "" : "s"} contain model-alert windows.` : "No model-alert windows were detected."} Research dataset annotations, when available, are secondary labels and do not determine the model alert.</p>
+          <p className={`border-t px-5 py-3 text-xs leading-5 sm:px-7 ${visibleModelFlagCount !== null && visibleModelFlagCount > 0 ? alertToneClass : "border-rule text-ink-muted"}`}>{!analysisReady ? "Results will be summarized after all recordings finish processing." : visibleModelFlagCount !== null && visibleModelFlagCount > 0 ? `${visibleModelFlagCount} recording${visibleModelFlagCount === 1 ? "" : "s"} contain ${alertLabel}.` : `No ${alertLabel} were found.`}</p>
           {session.currentStage && <p className="border-t border-rule px-5 py-3 text-xs text-ink-muted sm:px-7">Current stage: <span className="font-semibold text-ink">{session.currentStage}</span></p>}
         </section>
 
@@ -99,7 +108,7 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
 }
 
 function Summary({ label, value }: { label: string; value: string }) {
-  return <div className="border-b border-rule px-5 py-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0"><p className="text-[0.68rem] font-bold uppercase tracking-[0.12em] text-ink-faint">{label}</p><p className="mt-1 font-mono text-xl font-semibold text-ink">{value}</p></div>;
+  return <div className="border-b border-rule px-5 py-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0"><p className="text-xs font-bold uppercase tracking-[0.1em] text-ink-muted">{label}</p><p className="mt-1 font-mono text-xl font-semibold text-ink">{value}</p></div>;
 }
 
 function ProgressSummary({ session }: { session: Session }) {
@@ -107,7 +116,13 @@ function ProgressSummary({ session }: { session: Session }) {
   const label = progress.totalRecordings === 0
     ? "Preparing recording list"
     : `${progress.finishedRecordings} of ${progress.totalRecordings} recordings processed`;
-  return <div className="border-t border-rule px-5 py-4 sm:px-7"><div className="flex items-center justify-between gap-4 text-xs"><span className="font-semibold text-ink">Processing progress</span><span className="font-mono text-ink-muted">{progress.percent}%</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-surface-muted" role="progressbar" aria-label="Session processing progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent}><div className="h-full rounded-full bg-teal transition-[width] duration-500" style={{ width: `${progress.percent}%` }} /></div><p className="mt-2 text-xs text-ink-muted">{label}{progress.failedRecordings > 0 && ` · ${progress.failedRecordings} need review`}</p></div>;
+  return <div className="border-t border-rule px-5 py-4 sm:px-7"><div className="flex items-center justify-between gap-4 text-xs"><span className="font-semibold text-ink">Processing progress</span><span className="font-mono text-ink-muted">{progress.percent}%</span></div><Progress value={progress.percent} className="mt-2 h-2 bg-surface-muted [&_[data-slot=progress-indicator]]:rounded-full [&_[data-slot=progress-indicator]]:bg-teal" aria-label="Session processing progress" /><p className="mt-2 text-xs text-ink-muted">{label}{progress.failedRecordings > 0 && ` · ${progress.failedRecordings} need review`}</p></div>;
+}
+
+/** Format a recording-relative time offset for alert summaries. */
+function formatOffset(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
 function SessionError({ message }: { message: string }) {

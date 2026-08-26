@@ -1,10 +1,9 @@
-"""Create model-ready seizure-inference windows from de-identified EDF data."""
+"""Create model-ready seizure-inference windows from private EDF data."""
 
 from pathlib import Path
 
 import numpy as np
 
-from backend.app.core.config import ensure_runtime_directories, STORAGE_DIR
 from backend.app.eeg.edf_io import read_uniform_edf
 from backend.app.eeg.preprocessing import EEGPreprocessor
 
@@ -19,6 +18,8 @@ MODEL_CHANNELS = (
 MODEL_SAMPLING_RATE = 256
 WINDOW_SECONDS = 4
 WINDOW_SAMPLES = MODEL_SAMPLING_RATE * WINDOW_SECONDS
+WINDOW_STEP_SECONDS = 2
+WINDOW_STEP_SAMPLES = MODEL_SAMPLING_RATE * WINDOW_STEP_SECONDS
 
 
 def prepare_model_windows(
@@ -31,8 +32,10 @@ def prepare_model_windows(
     Parameters use the preprocessing convention ``(channels, samples)``.
     The returned ``model_windows`` has the model convention
     ``(windows, time_steps, channels)`` and dtype ``float32``. Each row is a
-    batch item of four seconds: ``(1024, 18)``. Partial trailing windows are
-    not sent to inference and their sample count is returned separately.
+    batch item of four seconds: ``(1024, 18)``. Windows start every two
+    seconds to match the training notebook's 50% overlap. Partial trailing
+    windows are not sent to inference and their sample count is returned
+    separately.
     """
     if sampling_rate != MODEL_SAMPLING_RATE:
         raise ValueError(
@@ -48,52 +51,41 @@ def prepare_model_windows(
         )
 
     selected = processed_signals[[label_to_index[label] for label in MODEL_CHANNELS]]
-    window_count = selected.shape[1] // WINDOW_SAMPLES
-    if window_count == 0:
-        raise ValueError("EDF is shorter than one required 4-second model window.")
+    if WINDOW_STEP_SAMPLES <= 0 or WINDOW_STEP_SAMPLES > WINDOW_SAMPLES:
+        raise ValueError("Model window stride must be positive and no larger than the window.")
 
-    usable_samples = window_count * WINDOW_SAMPLES
-    discarded_tail_samples = selected.shape[1] - usable_samples
-    # channels × samples -> channels × windows × time -> windows × time × channels
-    windows = selected[:, :usable_samples].reshape(
-        len(MODEL_CHANNELS), window_count, WINDOW_SAMPLES
-    ).transpose(1, 2, 0).astype(np.float32, copy=False)
+    if selected.shape[1] < WINDOW_SAMPLES:
+        raise ValueError("EDF is shorter than one required 4-second model window.")
+    window_count = 1 + (selected.shape[1] - WINDOW_SAMPLES) // WINDOW_STEP_SAMPLES
+
+    starts = np.arange(window_count, dtype=np.int64) * WINDOW_STEP_SAMPLES
+    # channels × samples -> windows × channels × time -> windows × time × channels
+    windows = np.stack(
+        [selected[:, start : start + WINDOW_SAMPLES] for start in starts],
+        axis=0,
+    ).transpose(0, 2, 1).astype(np.float32, copy=False)
+    last_end = int(starts[-1] + WINDOW_SAMPLES)
+    discarded_tail_samples = selected.shape[1] - last_end
     window_start_seconds = (
-        np.arange(window_count, dtype=np.float32) * WINDOW_SECONDS
+        starts.astype(np.float32) / MODEL_SAMPLING_RATE
     )
     return windows, window_start_seconds, discarded_tail_samples
 
 
-def preprocess_edf_to_npz(
-    edf_path: str | Path,
-    record_id: str,
-    output_path: str | Path | None = None,
-) -> tuple[Path, dict]:
-    """Apply the project pipeline and save the trained model's input tensor.
+def preprocess_edf(edf_path: str | Path) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Read an EDF once and return its model-ready tensor in memory.
 
-    The output name comes from ``record_id``, never a client filename. Its NPZ
-    arrays are ``model_windows`` (N × 1024 × 18 float32),
-    ``window_start_seconds``, ``sampling_rate`` and ``channel_labels``. A model
-    can pass all N windows to ``model.predict`` in one batch, or one window as
-    ``model_windows[index:index + 1]``.
+    The returned arrays are ``model_windows`` (N × 1024 × 18 float32) and
+    ``window_start_seconds``. Keeping them in memory avoids writing a large
+    transient NPZ only to reopen it in the next pipeline stage.
     """
-    ensure_runtime_directories()
     signals, sampling_rate, channel_labels = read_uniform_edf(edf_path)
     processed = EEGPreprocessor(sampling_rate=sampling_rate).preprocess(signals)
     model_windows, window_start_seconds, discarded_tail_samples = prepare_model_windows(
         processed, sampling_rate, channel_labels
     )
 
-    output_path = Path(output_path) if output_path is not None else STORAGE_DIR / "processed" / f"{record_id}.npz"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        output_path,
-        model_windows=model_windows,
-        window_start_seconds=window_start_seconds,
-        sampling_rate=sampling_rate,
-        channel_labels=np.asarray(MODEL_CHANNELS),
-    )
-    return output_path, {
+    return model_windows, window_start_seconds, {
         "sampling_rate": sampling_rate,
         "source_channel_count": len(channel_labels),
         "original_shape": list(signals.shape),
@@ -101,6 +93,8 @@ def preprocess_edf_to_npz(
         "model_input_shape": list(model_windows.shape),
         "model_window_count": int(model_windows.shape[0]),
         "model_window_seconds": WINDOW_SECONDS,
+        "model_window_step_seconds": WINDOW_STEP_SECONDS,
+        "model_window_overlap": "50%",
         "model_channel_count": len(MODEL_CHANNELS),
         "discarded_tail_samples": discarded_tail_samples,
         "preprocessing": {

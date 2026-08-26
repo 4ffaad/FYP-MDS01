@@ -4,16 +4,36 @@ export interface PrivacyMethod {
   id: string;
   label: string;
   description: string;
+  previewTitle?: string;
+  previewDescription?: string;
+  required?: boolean;
+}
+
+export interface UploadDraft {
+  draftId: string;
+  status: "staged";
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface SignalPreviewChannel {
+  label: string;
+  samples: number[];
+}
+
+export interface SignalPreview {
+  recordId: string;
+  representation: "metadata-scrubbed" | "signal-obfuscated";
+  samplingRate: number;
+  channels: SignalPreviewChannel[];
+  timeSeconds: number[];
+  segments: Array<{ sourceStartSeconds: number; sourceEndSeconds: number }>;
+  flaggedIntervals: TimeInterval[];
 }
 
 export interface TimeInterval {
   startSeconds: number;
   endSeconds: number;
-}
-
-export interface ReferenceAnnotation {
-  source: string;
-  intervals: TimeInterval[];
 }
 
 export type RecordingStatus = "uploaded" | "validating" | "deidentified" | "processing" | "processed" | "inferred" | "failed";
@@ -27,12 +47,16 @@ export interface Recording {
   samplingRate: number | null;
   channelCount: number | null;
   errorMessage?: string;
-  referenceAnnotation: ReferenceAnnotation | null;
   modelAlertWindowCount: number;
   modelAlert: boolean;
+  alertIntervals: TimeInterval[];
+  modelName?: string;
+  modelVersion?: string;
+  scoreType?: string;
   sessionId?: string;
   sessionCreatedAt?: string;
   privacyMethod?: PrivacyMethod;
+  privacyMethods?: PrivacyMethod[];
 }
 
 export type SessionStatus = "queued" | "validating" | "deidentifying" | "preprocessing" | "inference" | "explaining" | "completed" | "completed_with_errors" | "failed";
@@ -40,6 +64,7 @@ export type SessionStatus = "queued" | "validating" | "deidentifying" | "preproc
 export interface Session {
   sessionId: string;
   privacyMethod: PrivacyMethod;
+  privacyMethods: PrivacyMethod[];
   status: SessionStatus;
   currentStage: string | null;
   createdAt: string;
@@ -59,16 +84,34 @@ export interface SessionProgress {
 }
 
 export interface SessionSummary {
-  datasetSeizureRecordings: number | null;
   modelAlertRecordings: number;
 }
 
 export type PredictionLabel = "seizure" | "no-seizure" | "review";
 
 export interface PredictionWindow extends TimeInterval {
-  probability: number;
+  /** The exact score used for thresholding and display. */
+  score: number;
+  /** Raw model output, shown only in technical details when available. */
+  rawScore: number | null;
+  /** Calibrated probability, present only for a reviewed calibrated model. */
+  calibratedProbability: number | null;
   seizureDetected: boolean;
+  threshold: number;
   scoreType?: string;
+}
+
+export interface ResearchAttribution {
+  method: "shap-gradient";
+  windowIndex: number;
+  windowStartSeconds: number;
+  windowEndSeconds: number;
+  score: number;
+  threshold: number;
+  topChannels: string[];
+  channelScores: Array<{ label: string; meanAbsoluteAttribution: number }>;
+  timeBins: Array<{ startSeconds: number; endSeconds: number; channelScores: number[] }>;
+  note: string;
 }
 
 export interface AnalysisResult {
@@ -85,10 +128,13 @@ export interface AnalysisResult {
   flaggedWindowCount: number;
   flaggedWindowFraction: number;
   privacyMethod: PrivacyMethod;
+  privacyMethods: PrivacyMethod[];
   recordingDurationSeconds: number;
+  alertIntervals: TimeInterval[];
+  highestWindow: TimeInterval & { score: number } | null;
   predictionWindows: PredictionWindow[];
-  referenceAnnotation: ReferenceAnnotation | null;
   explanationSummary: string;
+  researchAttributions: ResearchAttribution[];
   modelName: string;
   modelVersion: string;
   nonClinical: boolean;
