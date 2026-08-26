@@ -16,12 +16,25 @@ from backend.app.database.models.eeg import (
     RecordingStatus,
     UploadDraft,
 )
+from backend.app.database.models.video import VideoPrivacyJob
 
 
 def get_upload_draft(db: Session, draft_id: str) -> UploadDraft | None:
     """Find one staged upload by its opaque draft identifier."""
 
     return db.exec(select(UploadDraft).where(UploadDraft.draft_id == draft_id)).first()
+
+
+def get_video_job(db: Session, job_id: str) -> VideoPrivacyJob | None:
+    """Find a video job by its opaque public identifier."""
+
+    return db.exec(select(VideoPrivacyJob).where(VideoPrivacyJob.job_id == job_id)).first()
+
+
+def list_video_jobs(db: Session) -> list[VideoPrivacyJob]:
+    """Return video jobs in newest-first order."""
+
+    return list(db.exec(select(VideoPrivacyJob).order_by(VideoPrivacyJob.created_at.desc())).all())
 
 
 def list_expired_upload_drafts(db: Session, now: datetime) -> list[UploadDraft]:

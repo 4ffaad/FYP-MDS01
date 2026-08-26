@@ -12,6 +12,9 @@ import type {
   ResearchAttribution,
   SignalPreview,
   UploadDraft,
+  VideoPrivacyJob,
+  VideoPrivacyProfile,
+  VideoPrivacyStage,
 } from "./types";
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
@@ -23,6 +26,7 @@ export const ENABLE_SIGNAL_PREVIEW = process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVI
 export const ENABLE_FULL_SIGNAL_PREVIEW = ENABLE_SIGNAL_PREVIEW && process.env.NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW === "true";
 const JOBS_KEY = "mds01.jobs.v1";
 const DRAFTS_KEY = "mds01.upload-drafts.v1";
+const VIDEO_JOBS_KEY = "mds01.video-privacy.v1";
 /** Exact channel order required by the backend model contract. */
 export const PRIVACY_SIGNAL_CHANNELS = ["FP1-F7", "F7-T7", "T7-P7", "P7-O1", "FP1-F3", "F3-C3", "C3-P3", "P3-O1", "FP2-F4", "F4-C4", "C4-P4", "P4-O2", "FP2-F8", "F8-T8", "T8-P8", "P8-O2", "FZ-CZ", "CZ-PZ"] as const;
 
@@ -64,6 +68,127 @@ type StubJob = {
 };
 
 type StubDraft = UploadDraft & { fileSize: number };
+
+type StubVideoJob = { job: VideoPrivacyJob; submittedAt: string };
+
+type BackendVideoJob = {
+  job_id: string;
+  label: string;
+  profile: VideoPrivacyProfile;
+  profile_label: string;
+  profile_description: string;
+  status: VideoPrivacyJob["status"];
+  current_stage: string | null;
+  stages: VideoPrivacyStage[];
+  quality_flags: string[];
+  output_usable: boolean;
+  requires_acknowledgement: boolean;
+  acknowledged: boolean;
+  preview_available: boolean;
+  preview_url: string | null;
+  download_available: boolean;
+  download_url: string | null;
+  retention_expires_at: string | null;
+  duration_seconds: number | null;
+  fps: number | null;
+  width: number | null;
+  height: number | null;
+  created_at: string;
+  completed_at: string | null;
+  error: string | null;
+  research_only: boolean;
+  anonymity_not_guaranteed: boolean;
+};
+
+function readStubVideoJobs(): StubVideoJob[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(VIDEO_JOBS_KEY);
+    return raw ? (JSON.parse(raw) as StubVideoJob[]) : [];
+  } catch { return []; }
+}
+
+function writeStubVideoJobs(jobs: StubVideoJob[]): void {
+  window.localStorage.setItem(VIDEO_JOBS_KEY, JSON.stringify(jobs));
+}
+
+function videoJobFromBackend(job: BackendVideoJob): VideoPrivacyJob {
+  return {
+    jobId: job.job_id,
+    label: job.label,
+    profile: job.profile,
+    profileLabel: job.profile_label,
+    profileDescription: job.profile_description,
+    status: job.status,
+    currentStage: job.current_stage,
+    stages: job.stages,
+    qualityFlags: job.quality_flags,
+    outputUsable: job.output_usable,
+    requiresAcknowledgement: job.requires_acknowledgement,
+    acknowledged: job.acknowledged,
+    previewAvailable: job.preview_available,
+    previewUrl: job.preview_url ? `${API_BASE_URL}${job.preview_url}` : null,
+    downloadAvailable: job.download_available,
+    downloadUrl: job.download_url ? `${API_BASE_URL}${job.download_url}` : null,
+    retentionExpiresAt: job.retention_expires_at,
+    durationSeconds: job.duration_seconds,
+    fps: job.fps,
+    width: job.width,
+    height: job.height,
+    createdAt: job.created_at,
+    completedAt: job.completed_at,
+    error: job.error,
+    researchOnly: job.research_only,
+    anonymityNotGuaranteed: job.anonymity_not_guaranteed,
+  };
+}
+
+function advanceStubVideoJob(stored: StubVideoJob): StubVideoJob {
+  const elapsed = Date.now() - new Date(stored.submittedAt).getTime();
+  const job = stored.job;
+  if (job.status === "failed" || job.status === "expired") return stored;
+  if (elapsed >= 2600) {
+    const ready = { ...job, status: "ready" as const, currentStage: "cleanup", stages: job.stages.map((stage) => ({ ...stage, status: "complete" as const })), previewAvailable: true, downloadAvailable: true, downloadUrl: "data:video/mp4;base64,c3R1Yg==", completedAt: job.completedAt ?? new Date().toISOString() };
+    return { ...stored, job: ready };
+  }
+  if (elapsed >= 900) {
+    const processing = { ...job, status: "processing" as const, currentStage: "privacy-transform", stages: job.stages.map((stage, index) => ({ ...stage, status: index === 0 ? "complete" as const : index === 1 ? "active" as const : "pending" as const })) };
+    return { ...stored, job: processing };
+  }
+  return stored;
+}
+
+function stubVideoJob(profile: VideoPrivacyProfile): VideoPrivacyJob {
+  const now = new Date().toISOString();
+  return {
+    jobId: `VID-${Date.now().toString(36).toUpperCase()}`,
+    label: "Video upload 01",
+    profile,
+    profileLabel: profile === "face-redacted" ? "Face redaction" : "Pose-only",
+    profileDescription: profile === "face-redacted" ? "Blur detected faces while keeping the surrounding scene visible." : "Replace the scene with pose landmarks on a non-identifying background.",
+    status: "queued",
+    currentStage: "preflight",
+    stages: ["preflight", "privacy-transform", "output-validation", "cleanup"].map((id) => ({ id: id as VideoPrivacyStage["id"], status: "pending" as const })),
+    qualityFlags: [],
+    outputUsable: true,
+    requiresAcknowledgement: false,
+    acknowledged: false,
+    previewAvailable: false,
+    previewUrl: null,
+    downloadAvailable: false,
+    downloadUrl: null,
+    retentionExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    durationSeconds: 42,
+    fps: 30,
+    width: 1280,
+    height: 720,
+    createdAt: now,
+    completedAt: null,
+    error: null,
+    researchOnly: true,
+    anonymityNotGuaranteed: true,
+  };
+}
 
 function readStubJobs(): StubJob[] {
   if (typeof window === "undefined") return [];
@@ -365,6 +490,65 @@ export async function getSessions(signal?: AbortSignal): Promise<Session[]> {
   }
   const sessions = await getJson<BackendSession[]>("/api/sessions", signal);
   return sessions.map(sessionFromBackend);
+}
+
+/** Return the backend asset URL for a protected video response. */
+export function videoPrivacyAssetUrl(path: string | null): string | null {
+  return path ? (path.startsWith("http") ? path : `${API_BASE_URL}${path}`) : null;
+}
+
+/** Create one standalone video privacy job. */
+export async function submitVideoPrivacy(
+  file: File,
+  profile: VideoPrivacyProfile,
+  onProgress: (progress: number) => void,
+  signal?: AbortSignal,
+): Promise<VideoPrivacyJob> {
+  if (USE_STUB) {
+    for (const progress of [22, 56, 100]) {
+      await wait(120);
+      if (signal?.aborted) throw new DOMException("Upload aborted.", "AbortError");
+      onProgress(progress);
+    }
+    const job = stubVideoJob(profile);
+    writeStubVideoJobs([{ job, submittedAt: job.createdAt }, ...readStubVideoJobs()]);
+    return job;
+  }
+  const formData = new FormData();
+  formData.append("video", file);
+  formData.append("profile", profile);
+  const response = await uploadJson<{ job: BackendVideoJob }>("/api/video-privacy/jobs", formData, onProgress, signal);
+  return videoJobFromBackend(response.job);
+}
+
+/** Read one video privacy job and advance the local stub when enabled. */
+export async function getVideoPrivacyJob(jobId: string, signal?: AbortSignal): Promise<VideoPrivacyJob> {
+  if (USE_STUB) {
+    await wait(120);
+    if (signal?.aborted) throw new DOMException("Request aborted.", "AbortError");
+    const jobs = readStubVideoJobs().map(advanceStubVideoJob);
+    writeStubVideoJobs(jobs);
+    const match = jobs.find((item) => item.job.jobId === jobId)?.job;
+    if (!match) throw new ApiError("This video privacy job could not be found.", 404);
+    return match;
+  }
+  const response = await getJson<{ job: BackendVideoJob }>(`/api/video-privacy/jobs/${encodeURIComponent(jobId)}`, signal);
+  return videoJobFromBackend(response.job);
+}
+
+/** Acknowledge a usable quality caveat before downloading the output. */
+export async function acknowledgeVideoPrivacyJob(jobId: string, signal?: AbortSignal): Promise<VideoPrivacyJob> {
+  if (USE_STUB) {
+    const jobs = readStubVideoJobs();
+    const match = jobs.find((item) => item.job.jobId === jobId);
+    if (!match) throw new ApiError("This video privacy job could not be found.", 404);
+    if (match.job.status !== "needs_review" || !match.job.outputUsable) throw new ApiError("This output does not require acknowledgement.", 409);
+    const job = { ...match.job, acknowledged: true, requiresAcknowledgement: false, downloadAvailable: true };
+    writeStubVideoJobs(jobs.map((item) => item.job.jobId === jobId ? { ...item, job } : item));
+    return job;
+  }
+  const response = await postFormJson<{ job: BackendVideoJob }>(`/api/video-privacy/jobs/${encodeURIComponent(jobId)}/acknowledge`, new FormData(), signal);
+  return videoJobFromBackend(response.job);
 }
 
 export async function getSession(sessionId: string, signal?: AbortSignal): Promise<Session> {

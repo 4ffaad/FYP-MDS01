@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import {
   NavigationMenu,
   NavigationMenuItem,
@@ -15,6 +16,8 @@ import { NavLink } from "./NavLink";
 /** Provide the shared MDS01 workspace chrome and persistent privacy boundary. */
 export function AppShell({ children }: { children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const pathname = usePathname();
+  const isVideoPrivacy = pathname.startsWith("/video-privacy");
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -36,7 +39,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             aria-label="MDS01 dashboard"
             onClick={() => setMenuOpen(false)}
           >
-            <Mds01Logo />
+            <Mds01Logo compact={isVideoPrivacy} />
           </Link>
 
           <NavigationMenu
@@ -55,6 +58,12 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <NavLink href="/dashboard">
                   <Icon name="list" className="size-4" />
                   Dashboard
+                </NavLink>
+              </NavigationMenuItem>
+              <NavigationMenuItem>
+                <NavLink href="/video-privacy">
+                  <Icon name="shield" className="size-4" />
+                  Video Privacy
                 </NavLink>
               </NavigationMenuItem>
             </NavigationMenuList>
@@ -96,6 +105,10 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Icon name="list" className="size-4" />
               Dashboard
             </NavLink>
+            <NavLink href="/video-privacy" onNavigate={() => setMenuOpen(false)}>
+              <Icon name="shield" className="size-4" />
+              Video Privacy
+            </NavLink>
           </nav>
         </div>
       </header>
@@ -110,7 +123,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
           <div className="flex gap-3 sm:justify-self-end sm:text-right">
             <Icon name="info" className="mt-0.5 size-4 shrink-0 text-amber sm:order-2" />
-            <p><span className="font-semibold text-ink">MDS01 Project Group.</span> Research prototype; model output is not a diagnosis.</p>
+            <p><span className="font-semibold text-ink">MDS01 Project Group.</span> {isVideoPrivacy ? "Research privacy transform; anonymity is not guaranteed." : "Research prototype; model output is not a diagnosis."}</p>
           </div>
         </div>
       </footer>

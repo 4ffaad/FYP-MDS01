@@ -28,6 +28,9 @@ CORS_ORIGINS = tuple(
     if origin.strip()
 )
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
+MAX_VIDEO_UPLOAD_BYTES = int(os.getenv("MAX_VIDEO_UPLOAD_BYTES", str(512 * 1024 * 1024)))
+VIDEO_RETENTION_SECONDS = int(os.getenv("VIDEO_RETENTION_SECONDS", str(24 * 60 * 60)))
+VIDEO_MAX_DURATION_SECONDS = int(os.getenv("VIDEO_MAX_DURATION_SECONDS", "3600"))
 MAX_ARCHIVE_MEMBER_BYTES = int(
     os.getenv("MAX_ARCHIVE_MEMBER_BYTES", str(2 * 1024 * 1024 * 1024))
 )

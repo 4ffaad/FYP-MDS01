@@ -12,6 +12,11 @@ from backend.app.database.models.eeg import (
     RecordingStatus,
     UploadDraft,
 )
+from backend.app.database.models.video import (
+    VideoPrivacyJob,
+    VideoPrivacyProfile,
+    VideoPrivacyStatus,
+)
 
 __all__ = [
     "AnalysisStatus",
@@ -24,4 +29,7 @@ __all__ = [
     "ProcessingStatus",
     "RecordingStatus",
     "UploadDraft",
+    "VideoPrivacyJob",
+    "VideoPrivacyProfile",
+    "VideoPrivacyStatus",
 ]

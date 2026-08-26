@@ -7,6 +7,7 @@ from sqlalchemy import engine_from_config, pool
 
 from backend.app.core.config import DATABASE_URL
 from backend.app.database.models import eeg  # noqa: F401
+from backend.app.database.models import video  # noqa: F401
 from sqlmodel import SQLModel
 
 

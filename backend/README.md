@@ -41,6 +41,12 @@ GET  /api/recordings/{record_id}
 GET  /api/recordings/{record_id}/prediction
 GET  /api/recordings/{record_id}/explanation
 GET  /api/recordings/{record_id}/signal
+POST /api/video-privacy/jobs
+GET  /api/video-privacy/jobs
+GET  /api/video-privacy/jobs/{job_id}
+POST /api/video-privacy/jobs/{job_id}/acknowledge
+GET  /api/video-privacy/jobs/{job_id}/preview
+GET  /api/video-privacy/jobs/{job_id}/download
 ```
 
 The draft flow encrypts an EEG ZIP before privacy selection. Finalization
@@ -73,10 +79,16 @@ Research-only evaluation and SHAP commands are documented in
 [`docs/setup.md`](../docs/setup.md). Generated reports and model backgrounds
 are ignored by Git.
 
-## Video privacy status
+## Video privacy boundary
 
-Patient-video privacy is a separate planned subsystem. Its contract is
-[`_bmad-output/specs/spec-patient-video-deidentification/SPEC.md`](../_bmad-output/specs/spec-patient-video-deidentification/SPEC.md).
-It will use `video → privacy pipeline(s) → output` and will not invoke EEG,
-H5, action analysis, or clinical inference. Do not place patient videos under
-this repository; keep them in a private external directory.
+Video privacy is a separate flow: `video → selected privacy transform →
+protected output`. It does not invoke EEG, H5, action analysis, or clinical
+inference. The two v1 profiles are `face-redacted` and `pose-only`. OpenCV and
+MediaPipe are required by the container for the processor; a missing runtime
+fails closed. Audio is removed, the transformed output is validated, and
+only encrypted output/preview artifacts remain under the opaque job boundary.
+
+The public API returns generated labels, quality flags, retention policy, and
+safe status only. It never returns client filenames, paths, patient
+references, or source media. Do not place patient videos under this
+repository; keep them in a private external directory.

@@ -141,3 +141,40 @@ export interface AnalysisResult {
 }
 
 export interface ApiErrorPayload { detail?: string; }
+
+export type VideoPrivacyProfile = "face-redacted" | "pose-only";
+export type VideoPrivacyStatus = "queued" | "preflight" | "processing" | "validating" | "ready" | "needs_review" | "failed" | "expired";
+
+export interface VideoPrivacyStage {
+  id: "preflight" | "privacy-transform" | "output-validation" | "cleanup";
+  status: "pending" | "active" | "complete";
+}
+
+export interface VideoPrivacyJob {
+  jobId: string;
+  label: string;
+  profile: VideoPrivacyProfile;
+  profileLabel: string;
+  profileDescription: string;
+  status: VideoPrivacyStatus;
+  currentStage: string | null;
+  stages: VideoPrivacyStage[];
+  qualityFlags: string[];
+  outputUsable: boolean;
+  requiresAcknowledgement: boolean;
+  acknowledged: boolean;
+  previewAvailable: boolean;
+  previewUrl: string | null;
+  downloadAvailable: boolean;
+  downloadUrl: string | null;
+  retentionExpiresAt: string | null;
+  durationSeconds: number | null;
+  fps: number | null;
+  width: number | null;
+  height: number | null;
+  createdAt: string;
+  completedAt: string | null;
+  error: string | null;
+  researchOnly: boolean;
+  anonymityNotGuaranteed: boolean;
+}

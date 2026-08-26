@@ -127,7 +127,14 @@ class SessionStorage:
         os.chmod(path, 0o700)
         return path
 
-    async def save_upload(self, session_id: str, upload: UploadFile) -> Path:
+    async def save_upload(
+        self,
+        session_id: str,
+        upload: UploadFile,
+        *,
+        max_bytes: int = MAX_UPLOAD_BYTES,
+        filename: str = "upload.zip.enc",
+    ) -> Path:
         """Stream an uploaded ZIP to private original-file storage.
 
         Parameters
@@ -150,15 +157,17 @@ class SessionStorage:
 
         if not upload.filename:
             raise StorageError("Uploaded archive has no filename.")
-        destination = self.directory(session_id, "original") / "upload.zip.enc"
-        return await self._encrypt_upload(upload, destination)
+        if Path(filename).name != filename or not filename:
+            raise StorageError("Stored upload name is invalid.")
+        destination = self.directory(session_id, "original") / filename
+        return await self._encrypt_upload(upload, destination, max_bytes=max_bytes)
 
     async def save_draft_upload(self, draft_id: str, upload: UploadFile) -> Path:
         """Encrypt a ZIP into short-lived private draft storage."""
 
-        return await self._encrypt_upload(upload, self.draft_path(draft_id))
+        return await self._encrypt_upload(upload, self.draft_path(draft_id), max_bytes=MAX_UPLOAD_BYTES)
 
-    async def _encrypt_upload(self, upload: UploadFile, destination: Path) -> Path:
+    async def _encrypt_upload(self, upload: UploadFile, destination: Path, *, max_bytes: int) -> Path:
         """Stream one upload through AES-GCM into an owner-only file."""
 
         total = 0
@@ -170,7 +179,7 @@ class SessionStorage:
                 output.write(nonce)
                 while chunk := await upload.read(1024 * 1024):
                     total += len(chunk)
-                    if total > MAX_UPLOAD_BYTES:
+                    if total > max_bytes:
                         raise StorageError("Uploaded archive exceeds the size limit.")
                     output.write(encryptor.update(chunk))
                 output.write(encryptor.finalize())

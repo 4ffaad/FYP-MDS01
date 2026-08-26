@@ -99,9 +99,10 @@ class AuthenticationSecurityTests(unittest.TestCase):
                     client.get("/api/sessions"),
                     client.get("/api/recordings/REC-UNKNOWN"),
                     client.get("/api/uploads/drafts/UPL-UNKNOWN"),
+                    client.get("/api/video-privacy/jobs"),
                 ]
 
-        self.assertEqual([response.status_code for response in responses], [401, 401, 401])
+        self.assertEqual([response.status_code for response in responses], [401, 401, 401, 401])
 
     def test_cloudflare_mode_rejects_missing_configuration_at_startup(self) -> None:
         with auth_environment(AUTH_MODE="cloudflare"):

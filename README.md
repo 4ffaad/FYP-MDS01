@@ -5,16 +5,16 @@ backend and a separate Next.js frontend. The current implemented product is
 the asynchronous EEG upload, privacy, preprocessing, inference, and result
 review flow. It must not be presented as a clinical diagnostic system.
 
-The next planned subsystem is standalone patient-video privacy processing:
+The implemented standalone patient-video privacy surface is:
 
 ```text
 video upload → selected privacy pipeline(s) → encrypted output → cleanup
 ```
 
-That design is documented in
-[`_bmad-output/specs/spec-patient-video-deidentification/`](_bmad-output/specs/spec-patient-video-deidentification/)
-and is intentionally separate from EEG/H5 inference. Video files and patient
-datasets stay outside this repository.
+It is intentionally separate from EEG/H5 inference. Choose `Face redaction`
+or `Pose-only` at `/video-privacy`; the backend retains only encrypted
+transformed output and a representative transformed frame. Video files and
+patient datasets stay outside this repository.
 
 ## Repository layout
 
@@ -80,6 +80,10 @@ The H5 runtime is review-gated and its scores are uncalibrated research
 scores. Use the development stub for ordinary local testing unless the model
 contract and research dependencies have been reviewed.
 
+Video privacy processing uses OpenCV for face redaction and MediaPipe for
+pose-only rendering. Both outputs are audio-free and metadata-scrubbed. A
+missing runtime fails closed; it never returns an untransformed video.
+
 ## Privacy and data hygiene
 
 - Never commit `.env`, frontend `.env.local`, patient videos, EEG datasets,
@@ -91,6 +95,8 @@ contract and research dependencies have been reviewed.
 - Public API responses must not expose patient references, original metadata,
   original filenames, filesystem paths, hashes, or source files.
 - Encryption protects storage; it does not make EEG or video data anonymous.
+- Video privacy jobs use generated labels and the `VID-…` identifier; original
+  filenames and paths are not returned by the API.
 
 See [`docs/setup.md`](docs/setup.md), [`docs/repository-handoff.md`](docs/repository-handoff.md),
 [`docs/security-audit.md`](docs/security-audit.md), and

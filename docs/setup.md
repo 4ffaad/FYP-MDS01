@@ -142,6 +142,23 @@ This starts the disposable Compose project `mds01-security` on backend port
 It requires Docker and the repository `.venv`. See
 [the security audit](security-audit.md) for scope and remaining deployment work.
 
+## Video privacy workflow
+
+Open <http://127.0.0.1:3000/video-privacy> and select one profile:
+
+- `Face redaction` uses OpenCV detection and blur. The surrounding scene stays
+  visible, but intermittent detection is surfaced as a quality caveat.
+- `Pose-only` renders MediaPipe landmarks on a non-identifying background. It
+  never previews the original scene.
+
+The backend accepts MP4, MOV, and WebM uploads, removes audio by writing a new
+video stream, and stores encrypted output under an opaque `VID-…` job. The
+original and transient plaintext files are removed after processing. A
+`Needs review` result is downloadable only after the reviewer acknowledges the
+quality caveat. This is a research privacy transform, not a guarantee of
+anonymity. Keep real patient videos outside the repository and use a short,
+consented synthetic clip for local tests.
+
 ## Authentication modes
 
 Local Docker uses `APP_ENV=development` and `AUTH_MODE=local`. Its API and
