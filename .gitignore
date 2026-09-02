@@ -44,10 +44,5 @@ htmlcov/
 *.npz
 /backend/model/shap-background-*.npy
 
-# BMad render snapshots are disposable; keep the installed workflows and
-# project-authored planning artifacts under version control.
-_bmad/render/
-_bmad/config.user.toml
-
 # Per-machine editor/tool preferences.
 .impeccable/

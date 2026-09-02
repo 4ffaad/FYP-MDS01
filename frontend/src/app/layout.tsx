@@ -2,9 +2,9 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { AppShell } from "@/components/AppShell";
 import "./globals.css";
-import { Geist } from "next/font/google";
+import { Inter } from "next/font/google";
 
-const geist = Geist({
+const inter = Inter({
   subsets: ["latin"],
   variable: "--font-sans",
   display: "swap",
@@ -13,10 +13,10 @@ const geist = Geist({
 export const metadata: Metadata = {
   applicationName: "MDS01",
   title: {
-    default: "MDS01 · EEG Research Review",
+    default: "MDS01 · EEG Analysis & Video Privacy",
     template: "%s · MDS01",
   },
-  description: "A research workspace for privacy-aware EEG processing and model-result review.",
+  description: "A research workspace for privacy-aware EEG analysis and standalone patient-video privacy transformation.",
   authors: [{ name: "MDS01 Project Group" }],
   robots: { index: false, follow: false },
 };
@@ -28,7 +28,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={geist.variable}>
+    <html lang="en" className={inter.variable}>
       <body>
         <AppShell>{children}</AppShell>
       </body>

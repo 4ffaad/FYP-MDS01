@@ -22,9 +22,6 @@ patient datasets stay outside this repository.
 backend/       FastAPI application, migrations, services, and tests
 frontend/      Next.js application and browser tests
 docs/          Setup, architecture, privacy, security, and handoff notes
-_bmad/         Checked-in BMad configuration and workflow scripts
-.agents/       Installed BMad skills used by this repository
-_bmad-output/  BMad planning artifacts and feature specifications
 ```
 
 The backend keeps routes thin, services responsible for processing, and
@@ -102,18 +99,3 @@ See [`docs/setup.md`](docs/setup.md), [`docs/repository-handoff.md`](docs/reposi
 [`docs/security-audit.md`](docs/security-audit.md), and
 [`docs/privacy-research.md`](docs/privacy-research.md) before handling real
 data.
-
-## BMad workflow
-
-BMad is part of the repository handoff. Use its skills through the agent/chat
-interface—for example, `bmad-help`, `bmad-project-context`, `bmad-architecture`,
-or `bmad-build`; they are not shell commands. Project instructions live in
-[`AGENTS.md`](AGENTS.md). Planning artifacts are under `_bmad-output/`.
-
-The recommended order for a new feature is:
-
-1. clarify the intent with `bmad-help`;
-2. lock the requirements in a spec;
-3. ratify architecture and stories when the feature is ready;
-4. implement with `bmad-build`; and
-5. review the resulting diff before handoff.

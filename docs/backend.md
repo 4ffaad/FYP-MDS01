@@ -238,10 +238,8 @@ hashes.
 
 ## Video privacy boundary
 
-Patient-video processing is a separate planned subsystem, not another EEG
-recording stage. Its contract is documented in
-[`_bmad-output/specs/spec-patient-video-deidentification/SPEC.md`](../_bmad-output/specs/spec-patient-video-deidentification/SPEC.md).
-The intended flow is `video → selected privacy pipeline(s) → encrypted output`
+Patient-video processing is a separate subsystem, not another EEG recording
+stage. Its flow is `video → selected privacy pipeline(s) → encrypted output`
 with no H5 inference, action analysis, or clinical model call.
 
 ## Database tables

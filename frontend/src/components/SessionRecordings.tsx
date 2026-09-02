@@ -5,8 +5,17 @@ import { useMemo, useRef, useState, type PointerEvent } from "react";
 import { formatSubmittedAt } from "@/lib/format";
 import { toDisplayStatus } from "@/lib/api";
 import type { Recording, Session } from "@/lib/types";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Icon } from "./Icon";
@@ -60,7 +69,7 @@ function RecordingRow({ recording, total }: { recording: Recording; total: numbe
   const hasModelAlert = recording.status === "inferred" && recording.modelAlertWindowCount > 0;
   const development = recording.scoreType === "development_score";
   const calibrated = recording.scoreType === "calibrated_probability";
- const alertClass = development || !calibrated ? "border-l-4 border-amber bg-amber-soft/75 text-amber" : "border-l-4 border-red bg-red-soft/60 text-red";
+ const alertClass = development || !calibrated ? "bg-amber-soft/75 text-amber" : "bg-red-soft/60 text-red";
   const content = (
     <>
       <div className="flex min-w-0 items-start gap-3">
@@ -129,7 +138,7 @@ export function SessionGroup({ session, onDelete }: { session: Session; onDelete
   };
 
   return (
-    <div className="relative touch-pan-y overflow-hidden rounded-[1.125rem]" onPointerDown={handlePointerDown} onPointerUp={handlePointerUp} onPointerCancel={() => { pointerStart.current = null; }}>
+    <div className="relative touch-pan-y overflow-hidden rounded-xl" onPointerDown={handlePointerDown} onPointerUp={handlePointerUp} onPointerCancel={() => { pointerStart.current = null; }}>
       {onDelete && <div className="absolute inset-y-0 right-0 flex w-24 items-center justify-center bg-red-soft"><DeleteSessionButton session={session} onDelete={onDelete} variant="swipe" /></div>}
       <section className={`panel relative overflow-hidden transition-transform duration-200 ${swiped ? "-translate-x-24" : ""}`} aria-labelledby={`session-${session.sessionId}`}>
         <Link className="group block bg-surface-soft px-4 py-5 transition-colors hover:bg-surface sm:px-5 sm:py-6" href={`/sessions/${encodeURIComponent(session.sessionId)}`} aria-label={`Open session ${session.sessionId}`}>
@@ -218,21 +227,51 @@ export function DeleteSessionButton({ session, onDelete, variant = "inline" }: {
     }
   };
 
-  return <Dialog open={open} onOpenChange={(nextOpen) => { if (!deleting) setOpen(nextOpen); }}>
-    <DialogTrigger asChild>
+  return <AlertDialog open={open} onOpenChange={(nextOpen) => { if (!deleting) setOpen(nextOpen); }}>
+    <AlertDialogTrigger asChild>
       <button className={variant === "swipe" ? "inline-flex flex-col items-center gap-1 text-xs font-bold text-red disabled:cursor-not-allowed disabled:text-ink-muted" : "inline-flex min-h-9 items-center gap-1.5 text-xs font-bold text-red underline decoration-red/30 underline-offset-4 disabled:cursor-not-allowed disabled:text-ink-muted disabled:no-underline"} type="button" disabled={active} title={active ? "Available after processing finishes" : "Delete this session"} onPointerDown={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}><Icon name="trash" className={variant === "swipe" ? "size-5" : "size-3.5"} />{active ? "Delete after processing" : "Delete session"}</button>
-    </DialogTrigger>
-    <DialogContent showCloseButton={!deleting} className="border-rule bg-surface text-ink sm:max-w-md">
-      <DialogHeader>
-        <DialogTitle className="flex items-center gap-3 text-lg font-bold"><span className="grid size-10 shrink-0 place-items-center rounded-full bg-red-soft text-red"><Icon name="trash" className="size-5" /></span><span>Delete this session?</span></DialogTitle>
-        <p className="pl-[3.25rem] font-mono text-xs text-ink-muted">{session.sessionId}</p>
-        <DialogDescription className="pt-2 text-sm leading-6 text-ink-muted">This permanently removes the session results and retained private artifacts. It cannot be undone.</DialogDescription>
-      </DialogHeader>
-      <dl className="grid grid-cols-2 gap-3 rounded-lg bg-surface-soft p-3 text-xs"><div><dt className="text-ink-muted">Submitted</dt><dd className="mt-1 font-semibold text-ink">{formatSubmittedAt(session.createdAt)}</dd></div><div><dt className="text-ink-muted">Recordings</dt><dd className="mt-1 font-semibold text-ink">{session.progress.totalRecordings}</dd></div></dl>
-      <DialogFooter className="border-0 bg-transparent p-0">
-        <DialogClose asChild><Button variant="outline" disabled={deleting}>Cancel</Button></DialogClose>
-        <Button variant="destructive" type="button" disabled={deleting} onClick={() => void confirmDelete()}>{deleting ? "Deleting…" : "Delete session"}</Button>
-      </DialogFooter>
-    </DialogContent>
-  </Dialog>;
+    </AlertDialogTrigger>
+    <AlertDialogContent>
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-lg bg-red-soft text-red" aria-hidden="true">
+          <Icon name="trash" className="size-4" weight="bold" />
+        </span>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this session?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This permanently removes the session results and retained private artifacts. This action cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+      </div>
+      <dl className="grid gap-x-5 gap-y-3 border-y border-rule py-4 text-xs sm:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="min-w-0">
+          <dt className="text-ink-muted">Session</dt>
+          <dd className="mt-1 truncate font-mono font-medium text-ink">{session.sessionId}</dd>
+        </div>
+        <div>
+          <dt className="text-ink-muted">Recordings</dt>
+          <dd className="mt-1 font-medium tabular-nums text-ink">{session.progress.totalRecordings}</dd>
+        </div>
+        <div className="sm:col-span-2">
+          <dt className="text-ink-muted">Submitted</dt>
+          <dd className="mt-1 font-medium text-ink">{formatSubmittedAt(session.createdAt)}</dd>
+        </div>
+      </dl>
+      <AlertDialogFooter>
+        <AlertDialogCancel className="h-9 w-full px-4 sm:w-auto" disabled={deleting}>Cancel</AlertDialogCancel>
+        <AlertDialogAction
+          className="h-9 w-full bg-red px-4 text-white hover:bg-red/90 focus-visible:border-red focus-visible:ring-red/30 sm:w-auto"
+          disabled={deleting}
+          aria-busy={deleting}
+          onClick={(event) => {
+            event.preventDefault();
+            void confirmDelete();
+          }}
+        >
+          <Icon name={deleting ? "spinner" : "trash"} className={`size-4 ${deleting ? "animate-spin" : ""}`} weight="bold" />
+          {deleting ? "Deleting…" : "Delete session"}
+        </AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  </AlertDialog>;
 }

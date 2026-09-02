@@ -332,4 +332,4 @@ All spacing derives from multiples of 8px: 4, 8, 12, 16, 24, 32, 48, 64, 96, 128
 | **Modal open / overlay** | 250ms | cubic-bezier(0.4, 0, 0.2, 1) | Fade in + slight scale |
 | **Dropdown menu appear** | 150ms | cubic-bezier(0.4, 0, 0.2, 1) | Fade + slide-down |
 | **Loading spinner** | 1s | linear | Continuous rotation; elegant, not frenetic |
-| **Toast notification** | 250ms
+| **Toast notification** | 250ms | cubic-bezier(0.4, 0, 0.2, 1) | Brief feedback after an action |

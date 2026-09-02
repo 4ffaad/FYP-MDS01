@@ -75,12 +75,12 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
  return (
    <div className="page-frame">
       <div className="animate-enter-up">
-        <Link className="inline-flex min-h-10 items-center gap-2 text-xs font-bold text-teal-dark underline decoration-teal/40 underline-offset-4 hover:decoration-teal" href="/dashboard"><Icon name="back" className="size-4" />Back to dashboard</Link>
+        <Link className="inline-flex min-h-10 items-center gap-2 text-xs font-bold text-teal-dark underline decoration-teal/40 underline-offset-4 hover:decoration-teal" href="/dashboard"><Icon name="back" className="size-4" />Back to EEG analysis</Link>
 
         <section className="mt-5 panel overflow-hidden" aria-labelledby="session-heading">
           <div className="flex flex-col justify-between gap-5 px-5 py-6 sm:flex-row sm:items-start sm:px-7">
             <div>
-              <h1 id="session-heading" className="text-2xl font-semibold tracking-[-0.035em] text-ink">Analysis session</h1>
+              <h1 id="session-heading" className="text-2xl font-semibold tracking-[-0.03em] text-ink">Analysis session</h1>
               <p className="mt-2 font-mono text-sm text-ink-muted">{session.sessionId}</p>
               <p className="mt-3 text-sm text-ink-muted">Submitted {formatSubmittedAt(session.createdAt)} <span className="mx-1 text-rule-strong">·</span> {session.privacyMethod.label}</p>
               {analysisReady && alertTimes.length > 0 && <p className="mt-2 text-xs text-ink-muted">Alert times: <span className="font-mono text-ink">{alertTimes.slice(0, 6).join(", ")}{alertTimes.length > 6 ? ` +${alertTimes.length - 6} more` : ""}</span></p>}
@@ -126,5 +126,5 @@ function formatOffset(seconds: number): string {
 }
 
 function SessionError({ message }: { message: string }) {
-  return <div className="page-frame"><div className="max-w-xl rounded-lg border border-red/30 bg-red-soft px-5 py-6" role="alert"><Icon name="alert" className="size-5 text-red" /><h1 className="mt-4 text-xl font-bold text-ink">Session unavailable</h1><p className="mt-2 text-sm leading-6 text-red">{message}</p><Link className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-teal-dark underline underline-offset-4" href="/dashboard">Return to dashboard <Icon name="arrow" className="size-4" /></Link></div></div>;
+  return <div className="page-frame"><div className="max-w-xl rounded-lg border border-red/30 bg-red-soft px-5 py-6" role="alert"><Icon name="alert" className="size-5 text-red" /><h1 className="mt-4 text-xl font-bold text-ink">Session unavailable</h1><p className="mt-2 text-sm leading-6 text-red">{message}</p><Link className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-teal-dark underline underline-offset-4" href="/dashboard">Return to EEG analysis <Icon name="arrow" className="size-4" /></Link></div></div>;
 }

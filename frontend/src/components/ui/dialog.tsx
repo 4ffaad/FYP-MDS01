@@ -1,11 +1,11 @@
 "use client"
 
 import * as React from "react"
-import { X } from "@phosphor-icons/react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { Icon } from "@/components/Icon"
 
 function Dialog({
   ...props
@@ -74,7 +74,7 @@ function DialogContent({
               className="absolute top-2 right-2"
               size="icon-sm"
             >
-              <X />
+              <Icon name="close" />
               <span className="sr-only">Close</span>
             </Button>
           </DialogPrimitive.Close>

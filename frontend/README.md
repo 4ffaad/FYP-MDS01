@@ -31,9 +31,8 @@ Playwright suite.
 - `/sessions/[sessionId]` — inspect safe recording summaries;
 - `/results/[recordId]` — review the score timeline and research-only result.
 
-Patient-video privacy is not wired into the frontend yet. Its implementation
-contract is in
-[`_bmad-output/specs/spec-patient-video-deidentification/`](../_bmad-output/specs/spec-patient-video-deidentification/).
+`/video-privacy` uploads a patient video, applies the selected privacy
+pipeline, and presents the transformed output separately from EEG results.
 
 ## Verification
 

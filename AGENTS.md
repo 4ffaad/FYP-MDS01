@@ -1,24 +1,3 @@
-<!-- bmad:context -->
-<!-- Verified 2026-08-26 against f0f5443 (plus current working tree). Managed by bmad-project-context; edits inside this block are replaced on refresh. Keep preserved rules outside the markers. -->
-
-## MDS01
-
-Research-only EEG review workspace with FastAPI/PostgreSQL backend and Next.js frontend. Shared project knowledge lives in `docs/`; BMad planning and implementation artifacts live in `_bmad-output/`. Root context covers both backend and frontend; child-specific rules remain in `frontend/AGENTS.md`.
-
-## Where things are
-
-- Backend routes: `backend/app/api/`; services: `backend/app/services/`; repositories/models: `backend/app/database/`; EEG/privacy/model code: `backend/app/eeg/`, `backend/app/privacy/`, `backend/app/ml/`.
-- Backend details: `docs/backend.md`; setup commands: `docs/setup.md`; frontend details: `docs/frontend.md`; security/privacy: `docs/security-audit.md` and `docs/privacy-research.md`.
-- Frontend entry points: `frontend/src/app/`, `frontend/src/components/`; API boundary: `frontend/src/lib/api.ts`; visual contract: `DESIGN.md`.
-- BMad configuration: `_bmad/`; use `bmad-help` for workflow selection and `bmad-project-context` to refresh this block.
-
-## Running and verifying
-
-- Follow `docs/setup.md`; run frontend commands from `frontend/`.
-- Use `MODEL_RUNTIME=stub` for lightweight checks. H5 verification runs in Docker and requires a reviewed model contract before startup.
-
-<!-- /bmad:context -->
-
 # MDS01 Engineering Guide
 
 This repository contains the FastAPI backend and a separate Next.js frontend.

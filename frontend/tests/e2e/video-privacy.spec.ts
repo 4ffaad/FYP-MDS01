@@ -18,7 +18,7 @@ test("submits a video to a standalone privacy job and shows only protected outpu
   await expect(page.getByRole("heading", { name: "Protected preview frame" })).toBeVisible();
   await expect(page.getByRole("link", { name: /Download protected video/ })).toBeVisible();
   await expect(page.getByText("patient-confidential.mp4", { exact: true })).toHaveCount(0);
-  await expect(page.getByText(/EEG|H5|model/i)).toHaveCount(0);
+  await expect(page.locator("#main-content").getByText(/EEG|H5|model/i)).toHaveCount(0);
   await page.screenshot({ path: test.info().outputPath("video-privacy.png"), fullPage: true });
 });
 

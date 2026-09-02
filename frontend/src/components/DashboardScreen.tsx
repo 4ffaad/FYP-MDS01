@@ -32,7 +32,7 @@ export function DashboardScreen() {
     } catch (refreshError) {
       if (refreshError instanceof DOMException && refreshError.name === "AbortError") return;
       if (requestNumber !== latestRequest.current) return;
-      setError(refreshError instanceof Error ? refreshError.message : "The dashboard could not be loaded.");
+      setError(refreshError instanceof Error ? refreshError.message : "EEG analyses could not be loaded.");
     } finally {
       if (!signal?.aborted && requestNumber === latestRequest.current) setLoading(false);
     }
@@ -79,18 +79,23 @@ export function DashboardScreen() {
   return (
     <div className="page-frame">
       <div className="animate-enter-up">
-        <div className="flex flex-col justify-between gap-6 border-b border-rule pb-7 sm:flex-row sm:items-end">
-          <div>
-            <h1 className="text-[clamp(2rem,4vw,3.15rem)] font-semibold leading-[1.06] tracking-[-0.04em] text-ink">Analysis dashboard</h1>
-            <p className="mt-4 max-w-xl text-[0.94rem] leading-6 text-ink-muted">Every upload is one session. Its recordings stay together so status, timing, and results are easy to follow.</p>
+        <header className="flex flex-col justify-between gap-6 border-b border-rule pb-7 sm:flex-row sm:items-end">
+          <div className="max-w-2xl">
+            <h1 id="eeg-analysis-heading" className="text-[clamp(2rem,4vw,2.5rem)] font-semibold leading-[1.08] tracking-[-0.035em] text-ink">EEG analysis</h1>
+            <p className="mt-3 max-w-xl text-[0.94rem] leading-6 text-ink-muted">Upload an archive, follow its processing, and review the model output with the original session context.</p>
           </div>
-          <Button asChild className="button-primary h-auto shrink-0 border-0"><Link href="/upload"><Icon name="upload" className="size-4" />New analysis</Link></Button>
+          <Button asChild size="lg" className="shrink-0 self-start"><Link href="/upload"><Icon name="upload" className="size-4" />New EEG analysis</Link></Button>
+        </header>
+
+        <div className="mt-5 flex flex-col justify-between gap-4 border-b border-rule py-4 sm:flex-row sm:items-center">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-ink-muted"><span><span className="font-semibold tabular-nums text-ink">{sessions.length}</span> EEG {sessions.length === 1 ? "session" : "sessions"}</span><span className="text-rule-strong" aria-hidden="true">·</span><span><span className="font-semibold tabular-nums text-ink">{recordingCount}</span> {recordingCount === 1 ? "recording" : "recordings"}</span>{hasActiveSessions && <span className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-muted"><span className="size-1.5 rounded-full bg-teal" aria-hidden="true" />Updating automatically</span>}</div>
+          <label className="flex items-center gap-2 text-xs text-ink-muted" htmlFor="status-filter"><span>Status</span><select className="min-h-10 rounded-lg border border-rule-strong bg-surface px-3 text-xs font-semibold text-ink outline-none transition focus:border-teal focus:ring-3 focus:ring-teal/15" id="status-filter" value={filter} onChange={(event) => setFilter(event.target.value as "all" | DisplayStatus)}><option value="all">All statuses</option><option value="queued">Queued</option><option value="processing">Processing</option><option value="complete">Complete</option><option value="partial">Partial · review</option><option value="failed">Needs review</option></select></label>
         </div>
 
-        <div className="flex flex-col justify-between gap-4 border-b border-rule py-5 sm:flex-row sm:items-center">
-          <div className="flex items-center gap-3 text-sm text-ink-muted"><span className="font-semibold text-ink">{sessions.length}</span> {sessions.length === 1 ? "session" : "sessions"}<span className="text-rule-strong">·</span><span>{recordingCount} {recordingCount === 1 ? "recording" : "recordings"}</span>{hasActiveSessions && <span className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-muted"><span className="size-1.5 rounded-full bg-teal" aria-hidden="true" />Updates automatically</span>}</div>
-          <label className="flex items-center gap-2 text-xs text-ink-muted" htmlFor="status-filter"><span>Filter</span><select className="min-h-9 rounded-md border border-rule-strong bg-surface px-3 text-xs font-semibold text-ink outline-none transition focus:border-teal" id="status-filter" value={filter} onChange={(event) => setFilter(event.target.value as "all" | DisplayStatus)}><option value="all">All statuses</option><option value="queued">Queued</option><option value="processing">Processing</option><option value="complete">Complete</option><option value="partial">Partial · review</option><option value="failed">Needs review</option></select></label>
-        </div>
+        <aside className="mt-5 flex flex-col justify-between gap-3 border-b border-rule pb-5 sm:flex-row sm:items-center" aria-label="Separate video privacy workflow">
+          <p className="flex items-start gap-2 text-sm leading-6 text-ink-muted"><Icon name="shield" className="mt-1 size-4 shrink-0 text-teal" weight="bold" /><span><span className="font-semibold text-ink">Video privacy is separate.</span> Protect a patient video without sending it through the EEG model.</span></p>
+          <Link className="inline-flex min-h-10 shrink-0 items-center gap-2 text-sm font-semibold text-teal-dark underline decoration-teal/30 underline-offset-4 hover:decoration-teal" href="/video-privacy">Open video privacy <Icon name="arrow" className="size-4" /></Link>
+        </aside>
 
         {error && <div className="mt-6 flex items-start justify-between gap-4 rounded-lg border border-red/30 bg-red-soft px-4 py-3 text-sm text-red" role="alert"><span className="flex gap-2"><Icon name="alert" className="mt-0.5 size-4 shrink-0" />{error}</span><button className="text-xs font-bold underline underline-offset-4" type="button" onClick={() => { setLoading(true); void refresh(); }}>Try again</button></div>}
 
@@ -105,5 +110,5 @@ function LoadingRows() {
 }
 
 function EmptyDashboard({ filtered }: { filtered: boolean }) {
-  return <Card className="mt-8 panel px-6 py-14 text-center"><div className="mx-auto grid size-10 place-items-center rounded-md bg-teal-soft text-teal"><Icon name={filtered ? "list" : "upload"} className="size-5" /></div><h2 className="mt-5 text-lg font-bold tracking-[-0.02em]">{filtered ? "No sessions match this filter." : "No analyses submitted yet."}</h2><p className="mx-auto mt-2 max-w-md text-sm leading-6 text-ink-muted">{filtered ? "Choose another status to see more sessions." : "Start with an EEG recording. Its session and recording results will appear here."}</p>{!filtered && <Link className="mt-6 inline-flex self-center items-center gap-2 text-sm font-bold text-teal-dark underline decoration-teal/40 underline-offset-4 hover:decoration-teal" href="/upload">Submit an EEG recording <Icon name="arrow" className="size-4" /></Link>}</Card>;
+  return <Card className="mt-8 panel px-6 py-14 text-center"><Icon name={filtered ? "list" : "activity"} className="mx-auto size-6 text-teal" /><h2 className="mt-4 text-lg font-bold tracking-[-0.02em]">{filtered ? "No EEG sessions match this status." : "No EEG analyses yet."}</h2><p className="mx-auto mt-2 max-w-md text-sm leading-6 text-ink-muted">{filtered ? "Choose another status to see the rest of your EEG sessions." : "Use New EEG analysis above to upload an archive and create a session."}</p></Card>;
 }

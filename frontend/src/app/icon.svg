@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img">
   <title>MDS01</title>
-  <rect width="64" height="64" rx="14" fill="#1d1d1f"/>
-  <path d="M12 34h9l4-13 8 27 6-20 4 6h9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="64" height="64" rx="16" fill="#1D1D1F"/>
+  <path d="M16 45V19L32 38L48 19V45" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

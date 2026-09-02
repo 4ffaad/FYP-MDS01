@@ -108,13 +108,14 @@ export function UploadScreen() {
     return (
       <div className="page-frame">
         <div className="mx-auto max-w-2xl animate-enter-up">
-          <h1 className="text-[clamp(2rem,5vw,3.4rem)] font-semibold leading-[1.05] tracking-[-0.055em] text-ink">Start with one EEG archive.</h1>
+          <SetupSteps current="upload" />
+          <h1 className="mt-7 text-[clamp(2rem,5vw,2.25rem)] font-semibold leading-[1.08] tracking-[-0.03em] text-ink">Upload an EEG archive</h1>
           <p className="mt-5 max-w-xl text-[0.98rem] leading-7 text-ink-muted">The archive is encrypted and staged privately first. You will choose how the analysis should handle the signal next.</p>
 
           <section className="panel mt-10 overflow-hidden" aria-labelledby="upload-heading">
             <div className="px-5 py-7 sm:px-8 sm:py-9">
               <div className="flex items-start gap-4">
-                <span className="grid size-11 shrink-0 place-items-center rounded-md bg-teal-soft text-teal"><Icon name="upload" className="size-5" weight="bold" /></span>
+                <span className="grid size-11 shrink-0 place-items-center rounded-lg bg-teal-soft text-teal-dark"><Icon name="upload" className="size-5" weight="bold" /></span>
                 <div>
                   <h2 id="upload-heading" className="text-lg font-bold tracking-[-0.02em]">Secure an EEG ZIP archive</h2>
                   <p className="mt-2 text-sm leading-6 text-ink-muted">Choose one ZIP containing the EDF recordings for this analysis session.</p>
@@ -125,7 +126,7 @@ export function UploadScreen() {
                 <Icon name={step === "staging" ? "spinner" : "file"} className={`size-8 text-teal ${step === "staging" ? "animate-spin" : ""}`} />
                 <span className="mt-4 text-sm font-bold text-ink">{step === "staging" ? "Encrypting archive…" : "Choose an EEG ZIP archive"}</span>
                 <span className="mt-1 text-xs text-ink-muted">Original filenames are not shown in this workspace.</span>
-                <Button asChild size="sm" className="mt-5 rounded-full bg-teal px-4 py-2 text-xs font-bold text-white hover:bg-teal-dark"><span>Browse files</span></Button>
+                <Button asChild size="sm" className="mt-5"><span>Browse files</span></Button>
                 <input ref={fileInputRef} className="sr-only" id="eeg-file" aria-label="EEG ZIP archive" type="file" accept=".zip,application/zip" onChange={(event) => void handleFileChange(event)} disabled={step === "staging"} />
               </label>
 
@@ -143,7 +144,7 @@ export function UploadScreen() {
     <div className="page-frame">
       <div className="animate-enter-up">
         <button className="inline-flex min-h-10 items-center gap-2 text-xs font-bold text-teal-dark underline decoration-teal/40 underline-offset-4 hover:decoration-teal" type="button" onClick={() => void handleReset()}><Icon name="back" className="size-4" />Choose a different archive</button>
-        <div className="mt-5 max-w-3xl"><h1 className="text-[clamp(2rem,5vw,3.4rem)] font-semibold leading-[1.05] tracking-[-0.055em] text-ink">Choose the privacy treatment.</h1><p className="mt-5 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">Metadata protection is always on. Add signal obfuscation when you want an additional transformation before model scoring.</p></div>
+        <div className="mt-5 max-w-3xl"><SetupSteps current="privacy" /><h1 className="mt-7 text-[clamp(2rem,5vw,2.25rem)] font-semibold leading-[1.08] tracking-[-0.03em] text-ink">Choose the privacy treatment</h1><p className="mt-5 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">Metadata protection is always on. Add signal obfuscation when you want an additional transformation before model scoring.</p></div>
 
         <form className="mt-10 grid items-start gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]" onSubmit={(event) => void handleSubmit(event)}>
           <section className="panel overflow-hidden" aria-labelledby="privacy-heading">
@@ -158,13 +159,23 @@ export function UploadScreen() {
               <p className="rounded-md bg-surface-soft px-3 py-2 text-xs leading-5 text-ink-muted"><span className="font-semibold text-ink">Selected pipeline:</span> metadata scrub → {signalObfuscation ? "signal obfuscation (Apply both)" : "no additional transformation"}.</p>
               {error && <div className="flex items-start gap-2.5 rounded-md border border-red/30 bg-red-soft px-3.5 py-3 text-sm text-red" role="alert"><Icon name="alert" className="mt-0.5 size-4 shrink-0" /><span>{error}</span></div>}
             </div>
-            <div className="border-t border-rule bg-surface-soft px-5 py-5 sm:px-7"><div className="flex items-start gap-3 text-xs leading-5 text-ink-muted"><Icon name="lock" className="mt-0.5 size-4 shrink-0 text-teal" /><p><span className="font-semibold text-ink">{fileSize === null ? "Archive staged" : `${formatBytes(fileSize)} staged privately`}.</span> Draft expires {formatExpiry(draft?.expiresAt)}.</p></div><Button className="button-primary mt-5 h-auto w-full border-0" type="submit" disabled={submitting || !selectedMethod}>{submitting ? <Icon name="spinner" className="size-4 animate-spin" /> : <Icon name="arrow" className="size-4" />}{submitting ? "Starting analysis…" : "Submit for analysis"}</Button></div>
+            <div className="border-t border-rule bg-surface-soft px-5 py-5 sm:px-7"><div className="flex items-start gap-3 text-xs leading-5 text-ink-muted"><Icon name="lock" className="mt-0.5 size-4 shrink-0 text-teal" /><p><span className="font-semibold text-ink">{fileSize === null ? "Archive staged" : `${formatBytes(fileSize)} staged privately`}.</span> Draft expires {formatExpiry(draft?.expiresAt)}.</p></div><Button className="mt-5 w-full" size="lg" type="submit" disabled={submitting || !selectedMethod}>{submitting ? <Icon name="spinner" className="size-4 animate-spin" /> : <Icon name="arrow" className="size-4" />}{submitting ? "Starting analysis…" : "Submit for analysis"}</Button></div>
           </section>
 
           {selectedMethod && <div className="min-w-0 [&_.overflow-x-auto]:overflow-x-hidden [&_.overflow-x-auto>div]:!min-w-0"><PrivacyPreview method={selectedMethod} /></div>}
         </form>
       </div>
     </div>
+  );
+}
+
+function SetupSteps({ current }: { current: "upload" | "privacy" }) {
+  return (
+    <ol className="flex max-w-md items-center gap-3 text-xs font-semibold" aria-label="EEG analysis setup progress">
+      <li className="flex items-center gap-2 text-teal-dark"><span className="grid size-6 place-items-center rounded-full bg-teal text-white">{current === "privacy" ? <Icon name="check" className="size-3.5" weight="bold" /> : "1"}</span>Upload</li>
+      <li className="h-px flex-1 bg-rule" aria-hidden="true" />
+      <li className={`flex items-center gap-2 ${current === "privacy" ? "text-teal-dark" : "text-ink-muted"}`}><span className={`grid size-6 place-items-center rounded-full ${current === "privacy" ? "bg-teal text-white" : "border border-rule-strong bg-surface"}`}>2</span>Privacy</li>
+    </ol>
   );
 }
 

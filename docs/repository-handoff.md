@@ -5,11 +5,9 @@
 - FastAPI/PostgreSQL EEG research backend under `backend/`;
 - Next.js research frontend under `frontend/`;
 - project guidance in `AGENTS.md` and `docs/`;
-- checked-in BMad workflows under `_bmad/` and `.agents/skills/`;
-- BMad planning/specification artifacts under `_bmad-output/`.
+- standalone patient-video privacy processing under `backend/app/video_privacy/`.
 
-The patient-video privacy feature is specified but not yet implemented. Its
-contract is the video-only flow:
+The patient-video privacy feature uses the video-only flow:
 
 ```text
 video → selected privacy pipeline(s) → encrypted output → cleanup
@@ -19,9 +17,9 @@ It must remain separate from EEG/H5 inference.
 
 ## Keep in Git
 
-Source code, migrations, tests, documentation, model-contract metadata, BMad
-configuration/workflows, sanitized environment templates, and reproducible
-package lock files belong in the repository.
+Source code, migrations, tests, documentation, model-contract metadata,
+sanitized environment templates, and reproducible package lock files belong in
+the repository.
 
 ## Keep local-only
 

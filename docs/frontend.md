@@ -137,7 +137,6 @@ exists only on the upload configuration screen.
 The visual rules live in the root [`DESIGN.md`](../DESIGN.md). Keep new visual
 work aligned with that file instead of adding another design system.
 
-Patient-video privacy is intentionally a separate future surface. When it is
-implemented, it must use the video-privacy API contract and render privacy
-outputs without constructing URLs from backend storage paths. See
-[`_bmad-output/specs/spec-patient-video-deidentification/SPEC.md`](../_bmad-output/specs/spec-patient-video-deidentification/SPEC.md).
+Patient-video privacy is a separate surface at `/video-privacy`. It uses the
+video-privacy API and renders privacy outputs without constructing URLs from
+backend storage paths.

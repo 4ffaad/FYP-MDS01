@@ -59,9 +59,9 @@ function ResultContent({ recordId }: { recordId: string }) {
         <section className="mt-5 panel overflow-hidden" aria-labelledby="result-heading">
           <div className="flex flex-col justify-between gap-6 px-5 py-6 sm:px-8 sm:py-8 lg:flex-row lg:items-center">
             <div className="flex items-start gap-4">
-              <div className={`mt-1 grid size-11 shrink-0 place-items-center rounded-full ${copy.tone === "red" ? "bg-red-soft text-red" : copy.tone === "amber" ? "bg-amber-soft text-amber" : "bg-teal-soft text-teal-dark"}`}><Icon name={copy.icon} className="size-5" /></div>
+              <div className={`mt-1 grid size-11 shrink-0 place-items-center rounded-lg ${copy.tone === "red" ? "bg-red-soft text-red" : copy.tone === "amber" ? "bg-amber-soft text-amber" : "bg-teal-soft text-teal-dark"}`}><Icon name={copy.icon} className="size-5" /></div>
               <div>
-                <h1 id="result-heading" className="max-w-2xl text-[clamp(1.9rem,4vw,2.75rem)] font-semibold leading-[1.08] tracking-[-0.035em] text-ink">{copy.title}</h1>
+                <h1 id="result-heading" className="max-w-2xl text-[clamp(1.9rem,4vw,2.25rem)] font-semibold leading-[1.08] tracking-[-0.03em] text-ink">{copy.title}</h1>
                 <p className="mt-3 text-sm text-ink-muted">{result.recordingLabel}<span className="mx-2 text-rule-strong">·</span><Link className="font-semibold text-teal-dark underline underline-offset-4" href={`/sessions/${encodeURIComponent(result.sessionId)}`}>View session</Link></p>
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-ink-muted">{copy.note}</p>
               </div>
@@ -87,14 +87,14 @@ function ResultContent({ recordId }: { recordId: string }) {
             </div>
           </section>
 
-          {hasAlerts && <SignalViewer recordId={result.recordId} predictionWindows={result.predictionWindows} recordingDurationSeconds={result.recordingDurationSeconds} />}
-
-          {result.researchAttributions.length > 0 && <ResearchEvidence attributions={result.researchAttributions} />}
-
           <section className="panel overflow-hidden" aria-labelledby="timeline-heading">
             <div className="border-b border-rule px-5 py-5 sm:px-7"><h2 id="timeline-heading" className="text-base font-bold tracking-[-0.015em]">Prediction score timeline</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">Full-recording overview. Highlighted windows crossed the configured threshold; select a point for its exact time.</p></div>
             <div className="px-5 py-5 sm:px-7 sm:py-7"><PredictionTimeline predictions={result.predictionWindows} durationSeconds={result.recordingDurationSeconds} threshold={result.threshold} /></div>
           </section>
+
+          {hasAlerts && <SignalViewer recordId={result.recordId} predictionWindows={result.predictionWindows} recordingDurationSeconds={result.recordingDurationSeconds} />}
+
+          {result.researchAttributions.length > 0 && <ResearchEvidence attributions={result.researchAttributions} />}
 
           <section className="panel overflow-hidden" aria-labelledby="details-heading">
             <details>
@@ -188,5 +188,5 @@ function Detail({ label, value, mono = false }: { label: string; value: string; 
 
 /** Render a recoverable result-loading error. */
 function ResultError({ message }: { message: string }) {
-  return <div className="page-frame"><div className="max-w-xl rounded-lg border border-red/30 bg-red-soft px-5 py-6" role="alert"><Icon name="alert" className="size-5 text-red" /><h1 className="mt-4 text-xl font-bold text-ink">Result unavailable</h1><p className="mt-2 text-sm leading-6 text-red">{message}</p><Link className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-teal-dark underline underline-offset-4" href="/dashboard">Return to dashboard <Icon name="arrow" className="size-4" /></Link></div></div>;
+  return <div className="page-frame"><div className="max-w-xl rounded-lg border border-red/30 bg-red-soft px-5 py-6" role="alert"><Icon name="alert" className="size-5 text-red" /><h1 className="mt-4 text-xl font-bold text-ink">Result unavailable</h1><p className="mt-2 text-sm leading-6 text-red">{message}</p><Link className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-teal-dark underline underline-offset-4" href="/dashboard">Return to EEG analysis <Icon name="arrow" className="size-4" /></Link></div></div>;
 }
