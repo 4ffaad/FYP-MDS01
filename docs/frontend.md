@@ -134,6 +134,16 @@ exists only on the upload configuration screen.
 7. `src/lib/api.ts` — stub/backend switch and API calls.
 8. `tests/e2e/mds01.spec.ts` — expected user-visible behavior.
 
+The shared header has two destinations: EEG analysis and Video privacy.
+The upload route stays within EEG analysis. Each screen keeps its primary action
+near its heading; model name/version and research-only status remain visible
+on results. Technical metadata stays collapsed until needed.
+
+Estimated probabilities refer to four-second windows at two-second strides.
+Timeline points sit at window centers; shading preserves their full support.
+Only calibrated results use probability language. The recording summary remains
+descriptive: counts, window fractions, peak window output and intervals.
+
 The visual rules live in the root [`DESIGN.md`](../DESIGN.md). Keep new visual
 work aligned with that file instead of adding another design system.
 

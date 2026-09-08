@@ -6,6 +6,8 @@ from collections.abc import Iterable, Sequence
 
 import numpy as np
 
+from backend.app.research.calibration import negative_log_likelihood
+
 
 def _arrays(labels: Sequence[int], scores: Sequence[float]) -> tuple[np.ndarray, np.ndarray]:
     """Validate and return binary labels and bounded scores as arrays."""
@@ -135,6 +137,7 @@ def calibration_metrics(
         reliability.append({"count": count, "mean_score": predicted, "empirical_rate": observed})
     return {
         "brier_score": float(np.mean((values - truth) ** 2)),
+        "negative_log_likelihood": negative_log_likelihood(truth.astype(int).tolist(), values.tolist()),
         "expected_calibration_error": float(weighted_error),
         "reliability": reliability,
     }

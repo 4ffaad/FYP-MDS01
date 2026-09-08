@@ -1,250 +1,166 @@
-# Run MDS01 locally
+# Local setup and testing
 
-MDS01 has two parts: PostgreSQL and FastAPI run in Docker; the Next.js
-frontend runs separately during development.
+## Requirements
 
-```mermaid
-flowchart LR
-    Browser[Browser] --> Frontend[Next.js\nlocalhost:3000]
-    Frontend --> Backend[FastAPI\nlocalhost:8000]
-    Backend --> Postgres[(PostgreSQL)]
-    Backend --> Storage[(Private Docker volume)]
-```
+- Git, Docker Desktop with Linux containers (or Docker Engine plus Compose v2 on Linux), and Node.js 22 or newer with npm.
+- Run commands from the repository root unless a block changes directory.
+- Use a local checkout; keep real patient EEG/video data outside it.
+- No Python installation, AI editor, BMAD or downloaded agent skills are needed for the Docker-based demo.
+
+The backend image uses Python 3.12 and `linux/amd64` for the bundled scientific/media dependencies. Docker Desktop can emulate it on Apple Silicon; the first build and H5 processing may be slow. Python dependencies are not yet fully locked, so retain build logs when comparing environments.
 
 ## First run
 
-From the repository root:
+Start Docker, then:
 
-If you want to run tests locally or remove editor import warnings, create the
-project virtual environment and install the development dependencies:
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r backend/requirements-dev.txt
-```
-
-Docker installs the backend dependencies inside the container, so this local
-environment is not required to run the Docker-based API. In VS Code, select
-`.venv/bin/python` with **Python: Select Interpreter** so Pylance uses the same
-environment as the test commands.
-
-```bash
-cp .env.example .env
-openssl rand -base64 32
-openssl rand -base64 32
-```
-
-Put the two different outputs into `.env`:
-
-```dotenv
-MDS01_STORAGE_KEY=first-random-value
-MDS01_TEMPLATE_KEY=second-random-value
-```
-
-`.env.example` is only a safe template. `.env` contains local secrets and is
-ignored by Git. The first key encrypts uploaded ZIP files. The second key
-controls the experimental signal transformation.
-
-Start PostgreSQL and FastAPI:
-
-```bash
+```sh
+node scripts/setup.mjs
 docker compose up --build
 ```
 
-The Docker backend defaults to the H5 research runtime and builds for
-`linux/amd64`, which is compatible with the TensorFlow CPU wheel. On Apple
-Silicon this may use emulation and can be slower. To run the lightweight
-development stub instead:
+The setup command creates `.env` and `frontend/.env.local` from safe templates.
+It generates separate random storage/template keys and a database password. Existing files are never overwritten. Keep those files private; changing keys makes existing encrypted artifacts unreadable. Changing the database password does not update an already-initialized PostgreSQL volume.
 
-```bash
-MODEL_RUNTIME=stub INSTALL_RESEARCH=false docker compose up --build
-```
+In another terminal:
 
-The H5 service fails at startup until `backend/model/model-contract.json` has
-been verified and explicitly marked reviewed. The contract records the exact
-18-channel order, 256 Hz sampling, four-second windows, two-second step,
-preprocessing, threshold, output semantics, and artifact hash.
-
-Run the frontend in another terminal:
-
-```bash
+```sh
 cd frontend
-npm install
-cp .env.example .env.local
+npm ci
 npm run dev
 ```
 
-Open <http://127.0.0.1:3000>. The API and Swagger are at
-<http://127.0.0.1:8000> and <http://127.0.0.1:8000/docs>.
+Open [the interface](http://127.0.0.1:3000), [Swagger](http://127.0.0.1:8000/docs) or [health](http://127.0.0.1:8000/health).
+These commands also work in PowerShell. On Linux, Docker may require your user to have access to its socket.
 
-## Stop and restart
+Both frontend and API bind to loopback. Each teammate runs their own database, files and keys. Do not share your `.env` or connect classmates to an unauthenticated network-facing instance.
 
-Stop containers while keeping database data:
+## Runtime choices
 
-```bash
-docker compose down
+| Mode | Configuration | What it tests |
+| --- | --- | --- |
+| Backend development stub (default) | Root `.env`: `MODEL_RUNTIME=stub`, `INSTALL_RESEARCH=false` | Real uploads, database, privacy pipeline and synthetic model scores |
+| H5 research runtime | Root `.env`: `MODEL_RUNTIME=h5`, `INSTALL_RESEARCH=true` | Supplied H5 model under the reviewed contract |
+| Browser-only stub | Frontend `.env.local`: `NEXT_PUBLIC_USE_API_STUB=true` | UI flows with synthetic browser data; no actual EEG/video processing |
+
+After changing backend settings, run `docker compose up --build` again.
+After changing frontend settings, restart `npm run dev` (or rebuild a production frontend).
+An existing checkout retains its current mode; setup does not silently switch it.
+
+H5 startup validates the model hash, input/output contract and reviewed status. A failure must be investigated; do not reshape data or mark a replacement artifact reviewed merely to get past startup.
+
+With the research image built, verify the artifact:
+
+```sh
+docker compose run --rm --no-deps backend python backend/scripts/verify_h5_model.py backend/model/best_seizure_model.h5
 ```
 
-Start them again:
+The checked-in contract currently emits **uncalibrated scores**. Fitting and reviewing both privacy-profile calibrators is a separate research task. See [backend research tools](backend.md#profile-specific-calibration). Never present the development stub or an uncalibrated score as confidence.
 
-```bash
-docker compose up
+## Try a patient-free EEG demo
+
+Once the backend is running, generate a synthetic EDF ZIP inside the container and copy it out:
+
+```sh
+docker compose exec backend python -m backend.tests.generate_e2e_archive /tmp/mds01-demo.zip
+docker compose cp backend:/tmp/mds01-demo.zip ./mds01-demo.zip
 ```
 
-Do not use `docker compose down -v` unless you intentionally want to delete
-the PostgreSQL Docker volume and its data.
+The generated archive contains synthetic signals and explicit test identifiers, not patient data. ZIP files are ignored by Git.
 
-## Useful checks
+1. Open **EEG analysis → New EEG analysis** and choose `mds01-demo.zip`.
+2. Select metadata scrub, optionally adding signal obfuscation.
+3. Submit and wait for the session to finish.
+4. Open a recording to review its timeline, threshold, flagged windows and model version.
+5. Delete the completed session through the confirmation dialog when finished.
 
-```bash
-curl http://127.0.0.1:8000/health
-docker compose ps
-docker compose logs backend
-docker compose exec backend alembic -c backend/alembic.ini current
+For video, use a short synthetic or appropriately consented MP4, MOV or WebM. Open **Video privacy**, select a profile, then review the transformed output. The browser stub does not validate the actual privacy transform. Docker builds smoke-test both video adapters as the unprivileged application user. Pose-only uses MediaPipe's bundled full model without a first-upload download. Face detection can miss frames; missing/failed transforms must not return source video.
+
+## Enable waveform review for a local prototype
+
+Both sides must opt in:
+
+| File | Setting |
+| --- | --- |
+| Root `.env` | `ENABLE_SIGNAL_PREVIEW=true` |
+| `frontend/.env.local` | `NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW=true` |
+
+Restart both services and submit a new analysis. Only retained transformed data from model-positive recordings is available. Non-alert recordings have no waveform artifact.
+
+For full transformed-recording preview, also set `ENABLE_FULL_SIGNAL_PREVIEW=true` in the backend and `NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW=true` in the frontend. This is a local-development exception, not a production privacy policy. Existing deleted data cannot be recovered by changing a flag.
+
+## Tests
+
+Setup safety check, from the repository root:
+
+```sh
+node --test scripts/setup.test.mjs
+git diff --check
 ```
 
-## Verify and run the H5 artifact
+Backend unit tests require a separate local Python environment. Prefer Python 3.12 to match Docker:
 
-The host virtual environment may not have a compatible TensorFlow wheel on
-Apple Silicon or Python 3.13. Run verification inside the research-enabled
-Docker image instead:
-
-```bash
-docker compose build --no-cache
-docker compose run --rm backend python backend/scripts/verify_h5_model.py \
-  backend/model/best_seizure_model.h5
+```sh
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements-dev.txt
+.venv/bin/python -m unittest discover -s backend/tests
 ```
 
-The verifier performs an actual model load and float32 smoke prediction. It
-does not mark the contract reviewed automatically. After independently
-reviewing the training preprocessing and threshold, set `reviewed` to `true`
-and restart the backend. If verification fails, use the stub explicitly and
-do not transpose or reshape the model input to force compatibility.
+PowerShell equivalents:
 
-Run tests from the repository root:
-
-```bash
-PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v
-PYTHONPATH=. .venv/bin/python -m compileall -q backend
-cd frontend && npm run lint && npm run build && npm run test:e2e
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r backend/requirements-dev.txt
+.venv\Scripts\python.exe -m unittest discover -s backend/tests
 ```
 
-`npm run test:e2e` is the fast stub-based browser suite. To exercise the real
-Next.js → FastAPI → PostgreSQL workflow with a synthetic privacy-canary EDF:
+Frontend checks, from `frontend/`:
 
-```bash
-cd frontend
+```sh
+npm ci
+npx playwright install chromium
+npm run lint
+npx next typegen
+npx tsc --noEmit
+npm run build
+npm run test:e2e
+```
+
+On a fresh Linux machine, use `npx playwright install --with-deps chromium` if browser system libraries are missing.
+The desktop/mobile browser suite uses synthetic UI data on port 3001.
+
+To test real Next.js → FastAPI → PostgreSQL behavior, first create the local Python environment above, then run from `frontend/`:
+
+```sh
 npm run test:e2e:real
 ```
 
-This starts the disposable Compose project `mds01-security` on backend port
-`18000`, runs one real workflow, and removes only that project's test volumes.
-It requires Docker and the repository `.venv`. See
-[the security audit](security-audit.md) for scope and remaining deployment work.
+This creates and removes only the disposable Compose project `mds01-security`, including its test volumes, on API port 18000 and frontend port 3002. Never store real data in that project. It exercises migrations, upload, background processing, safe results and deletion; it does not establish H5 accuracy or video anonymization.
 
-## Video privacy workflow
+## Stop, restart and troubleshoot
 
-Open <http://127.0.0.1:3000/video-privacy> and select one profile:
-
-- `Face redaction` uses OpenCV detection and blur. The surrounding scene stays
-  visible, but intermittent detection is surfaced as a quality caveat.
-- `Pose-only` renders MediaPipe landmarks on a non-identifying background. It
-  never previews the original scene.
-
-The backend accepts MP4, MOV, and WebM uploads, removes audio by writing a new
-video stream, and stores encrypted output under an opaque `VID-…` job. The
-original and transient plaintext files are removed after processing. A
-`Needs review` result is downloadable only after the reviewer acknowledges the
-quality caveat. This is a research privacy transform, not a guarantee of
-anonymity. Keep real patient videos outside the repository and use a short,
-consented synthetic clip for local tests.
-
-## Authentication modes
-
-Local Docker uses `APP_ENV=development` and `AUTH_MODE=local`. Its API and
-database ports bind to `127.0.0.1`, so they are available only from this
-computer.
-
-Before exposing the app to teammates, place it behind Cloudflare Access and
-configure the backend with:
-
-```dotenv
-APP_ENV=production
-AUTH_MODE=cloudflare
-CLOUDFLARE_ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
-CLOUDFLARE_ACCESS_AUD=your-access-application-audience
+```sh
+docker compose down
+docker compose up
 ```
 
-The team domain is a hostname only—do not include `https://` or a trailing
-slash. Cloudflare secrets and Access tokens must never use a `NEXT_PUBLIC_`
-frontend variable.
+`down` preserves data. Do not add `-v` unless you intend to delete the project's database and private storage volumes.
 
-## How an upload is tested
+| Problem | Check |
+| --- | --- |
+| Cannot connect to Docker | Start Docker Desktop; run `docker info`. |
+| UI cannot reach API | Use `NEXT_PUBLIC_USE_API_STUB=false`, API URL `http://127.0.0.1:8000`, and check `docker compose ps`. |
+| Backend exits | Run `docker compose logs backend`; check migrations, keys and selected runtime. Do not post secrets or patient data in logs. |
+| H5 build is too slow | Use the backend development stub for workflow demos; H5/TensorFlow is optional. |
+| Docker build hangs at image metadata | Check Docker Desktop's credential helper or Keychain prompt. This happens before application code is built; do not change application secrets to fix it. |
+| Database authentication fails after editing config | An existing volume keeps its original password. Restore the matching local configuration; do not delete data to bypass the error. |
+| Waveform returns 404 | Check both preview flags, positive windows, retention and whether the analysis was rerun after enabling preview. |
+| Test browser missing | Run `npx playwright install chromium` in `frontend/`. |
+| Port already allocated | Stop the conflicting local process, or update Compose port mapping, API URL and CORS together. |
 
-Use the Swagger page, or stage a ZIP with curl:
+Migrations run before FastAPI startup. Check the applied revision with:
 
-```bash
-curl -F 'archive=@recordings.zip' \
-  http://127.0.0.1:8000/api/uploads/drafts
+```sh
+docker compose exec backend alembic -c backend/alembic.ini current
 ```
 
-The response is `201` with an opaque `draft_id`. Select a privacy method only
-after staging, then finalize the draft:
-
-```bash
-curl -X POST \
-  -F 'privacy_methods=["metadata-scrub"]' \
-  http://127.0.0.1:8000/api/uploads/drafts/UPL-.../finalize
-```
-
-Finalization returns `202` with a session ID. The frontend then polls the
-session while FastAPI's in-process `BackgroundTasks` runs the pipeline. The
-older `POST /api/sessions/upload` remains available for compatibility and
-accepts either the legacy `privacy_method` field or the new ordered
-`privacy_methods` field. Use
-`["metadata-scrub", "signal-obfuscation"]` to apply both. Metadata scrub and
-encrypted storage are always enabled; omitting signal obfuscation means no
-additional signal transformation.
-
-```mermaid
-sequenceDiagram
-    participant UI as Frontend or curl
-    participant API as FastAPI
-    participant DB as PostgreSQL
-    participant Task as BackgroundTasks
-
-    UI->>API: POST /api/uploads/drafts
-    API->>DB: Save encrypted draft metadata
-    API-->>UI: 201 draft_id
-    UI->>API: POST /api/uploads/drafts/{id}/finalize
-    API->>DB: Save queued session
-    API-->>UI: 202 session_id
-    API->>Task: process_session(session_id)
-    loop Until finished
-        UI->>API: GET /api/sessions/{id}/status
-        API-->>UI: current status
-    end
-    Task->>DB: Save predictions and safe explanations
-```
-
-BackgroundTasks is suitable for this prototype. A process restart can interrupt
-a running task; Redis/RQ can be added later if durable retries or multiple
-workers become necessary.
-
-## Common problems
-
-- Upload fails with a missing-key error: fill both key values in `.env` and
-  restart Docker.
-- API is unavailable: run `docker compose ps` and inspect
-  `docker compose logs backend`.
-- Frontend cannot call the API: use `NEXT_PUBLIC_USE_API_STUB=false` and make
-  sure the backend is running on port 8000.
-- Migration errors: inspect `docker compose logs backend`; the container runs
-  `alembic upgrade head` before starting FastAPI.
-- Waveform endpoint returns `404`: this is expected unless both
-  `ENABLE_SIGNAL_PREVIEW=true` in the backend and
-  `NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW=true` in the frontend. Even when enabled,
-  only retained model-positive transformed data can be viewed. A complete
-  transformed recording requires both full-preview flags and must remain a
-  local-development setting: `ENABLE_FULL_SIGNAL_PREVIEW=true` and
-  `NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW=true`.
+Before network deployment, configure authenticated access, HTTPS and the remaining controls in [the security audit](security-audit.md). Local demonstration setup is not a deployment guide.

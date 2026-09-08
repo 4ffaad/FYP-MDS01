@@ -815,6 +815,61 @@ Seizure End Time: 3036 seconds
         self.assertEqual(payload["source_filename"], "recording_12.edf")
         self.assertNotIn("patient", str(payload).lower())
 
+    def test_prediction_api_exposes_calibration_provenance_without_recording_probability(self) -> None:
+        """Calibrated window output stays distinct from a recording probability."""
+
+        from backend.app.api.recordings import get_prediction
+
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as db:
+            session = EEGSession(
+                session_id="SES-CALIBRATED",
+                privacy_method="metadata-scrub+signal-obfuscation",
+                status=AnalysisStatus.COMPLETED,
+            )
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+            record = EEGRecording(
+                record_id="REC-CALIBRATED",
+                session_db_id=session.id,
+                sequence_index=1,
+                original_filename="",
+                status=RecordingStatus.INFERRED,
+            )
+            db.add(record)
+            db.commit()
+            db.refresh(record)
+            db.add(
+                Prediction(
+                    recording_db_id=record.id,
+                    window_index=0,
+                    model_name="reviewed-h5",
+                    model_version="h5-1",
+                    threshold=0.5,
+                    probability=0.8,
+                    raw_score=0.7,
+                    calibrated_probability=0.8,
+                    score_type="calibrated_probability",
+                    calibration_method="temperature_scaling",
+                    calibration_version="temperature-scaling-v1",
+                    calibration_dataset="CHB-MIT",
+                    privacy_method=session.privacy_method,
+                    seizure_detected=True,
+                    start_seconds=0,
+                    end_seconds=4,
+                )
+            )
+            db.commit()
+            payload = get_prediction(record.record_id, db)
+
+        self.assertEqual(payload["model"]["privacy_method"], "metadata-scrub+signal-obfuscation")
+        self.assertEqual(payload["model"]["calibration_version"], "temperature-scaling-v1")
+        self.assertFalse(payload["summary"]["recording_probability_available"])
+        self.assertEqual(payload["predictions"][0]["calibrated_probability"], 0.8)
+
     def test_repositories_query_sessions_recordings_and_predictions(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
         self.addCleanup(engine.dispose)
@@ -1143,7 +1198,7 @@ Seizure End Time: 3036 seconds
             score_type = "development_score"
             calibration_method = None
 
-            def predict(self, windows, window_starts, record_id):
+            def predict(self, windows, window_starts, record_id, privacy_method="metadata-scrub"):
                 return [
                     WindowPrediction(index, float(start), float(start + 4), 0.9, True)
                     for index, start in enumerate(window_starts.tolist())

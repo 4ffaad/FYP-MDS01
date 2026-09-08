@@ -249,9 +249,9 @@ type BackendRecording = {
 };
 
 type BackendPredictionResponse = {
-  model: { name: string; version: string; threshold: number; score_type: string; calibrated: boolean; calibration_method: string | null } | null;
+  model: { name: string; version: string; threshold: number; score_type: string; calibrated: boolean; calibration_method: string | null; calibration_version?: string | null; calibration_dataset?: string | null; privacy_method?: string | null } | null;
   summary?: { window_count: number; flagged_window_count: number; flagged_window_fraction: number; peak_window_score: number; highest_window?: { start_seconds: number; end_seconds: number; score: number } | null; alert_intervals?: Array<{ start_seconds: number; end_seconds: number }>; aggregation_unit: string; recording_probability_available: boolean };
-  predictions: Array<{ start_seconds: number; end_seconds: number; score?: number; probability: number; raw_score?: number | null; calibrated_probability?: number | null; score_type?: string; seizure_detected: boolean }>;
+  predictions: Array<{ start_seconds: number; end_seconds: number; score?: number; probability: number; raw_score?: number | null; calibrated_probability?: number | null; score_type?: string; calibration_method?: string | null; calibration_version?: string | null; calibration_dataset?: string | null; seizure_detected: boolean }>;
 };
 
 type BackendExplanationResponse = {
@@ -470,6 +470,9 @@ function createStubResult(job: StubJob): AnalysisResult {
     predictionWindows,
     scoreType: "development_score",
     calibrationMethod: null,
+    calibrationVersion: null,
+    calibrationDataset: null,
+    recordingProbabilityAvailable: false,
     explanationSummary: "Each point is the score for one four-second window. Amber windows crossed the displayed threshold; the timeline does not explain why the model produced a score.",
     researchAttributions: [],
     modelName: "development-stub",
@@ -687,6 +690,9 @@ export async function getResult(recordId: string, signal?: AbortSignal): Promise
     flaggedWindowFraction: predictionSummary.flagged_window_fraction,
     scoreType: predictionPayload.model?.score_type ?? predictions[0]?.score_type ?? "development_score",
     calibrationMethod: predictionPayload.model?.calibration_method ?? null,
+    calibrationVersion: predictionPayload.model?.calibration_version ?? null,
+    calibrationDataset: predictionPayload.model?.calibration_dataset ?? null,
+    recordingProbabilityAvailable: predictionSummary.recording_probability_available,
     privacyMethod: record.privacyMethod ?? methodForId(undefined),
     privacyMethods: record.privacyMethods ?? [record.privacyMethod ?? methodForId(undefined)],
     recordingDurationSeconds: record.durationSeconds ?? predictions.at(-1)?.end_seconds ?? 0,
@@ -702,9 +708,16 @@ export async function getResult(recordId: string, signal?: AbortSignal): Promise
       calibratedProbability: prediction.calibrated_probability ?? null,
       threshold: predictionPayload.model?.threshold ?? 0.5,
       scoreType: prediction.score_type ?? predictionPayload.model?.score_type,
+      calibrationMethod: prediction.calibration_method ?? predictionPayload.model?.calibration_method ?? null,
+      calibrationVersion: prediction.calibration_version ?? predictionPayload.model?.calibration_version ?? null,
+      calibrationDataset: prediction.calibration_dataset ?? predictionPayload.model?.calibration_dataset ?? null,
       seizureDetected: prediction.seizure_detected,
     })),
-    explanationSummary: explanationPayload.explanations.length > 0 ? "Each point is the score for one four-second window. Highlighted windows crossed the displayed threshold; the timeline does not explain why the model produced a score." : "No explanation artifact was returned for this recording.",
+    explanationSummary: explanationPayload.explanations.length > 0
+      ? predictionPayload.model?.score_type === "calibrated_probability"
+        ? "Each point is the estimated probability that one four-second window meets the research seizure-label definition. Highlighted windows crossed the displayed threshold; this is not a recording-level probability or diagnosis."
+        : "Each point is the score for one four-second window. Highlighted windows crossed the displayed threshold; the timeline does not explain why the model produced a score."
+      : "No explanation artifact was returned for this recording.",
     researchAttributions,
     modelName: predictionPayload.model?.name ?? "backend-model",
     modelVersion: predictionPayload.model?.version ?? "unknown",

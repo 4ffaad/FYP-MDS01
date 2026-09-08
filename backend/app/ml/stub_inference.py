@@ -30,6 +30,7 @@ class StubInferenceService:
         windows: np.ndarray,
         window_starts: np.ndarray,
         record_id: str,
+        privacy_method: str = "metadata-scrub",
     ) -> list[WindowPrediction]:
         """Generate reproducible placeholder predictions for model windows.
 

@@ -5,7 +5,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -14,6 +14,7 @@ from backend.app.ml.shap_explanation import ShapExplanationError, _normalise_att
 from backend.app.privacy.methods import CANONICAL_COMBINED, METADATA_SCRUB
 from backend.app.research.evaluation import EvaluationRecording
 from backend.app.research.evaluation import _safe_reason, build_metrics_report, split_subjects
+from backend.app.research.calibration import fit_temperature, temperature_scale
 from backend.app.services.processing_service import _shap_background_for_profile
 from backend.scripts.create_shap_background import (
     _choose_background,
@@ -49,6 +50,67 @@ class EvaluationAndExplanationTests(unittest.TestCase):
         self.assertIn("average_precision", report)
         self.assertIn("patient_bootstrap_f1", report)
         self.assertEqual(report["patient_bootstrap_f1"]["seed"], 7)
+        self.assertIn("negative_log_likelihood", report["calibration"])
+
+    def test_temperature_scaling_is_positive_and_profile_ready(self) -> None:
+        labels = [0, 0, 0, 1, 1, 1]
+        scores = [0.1, 0.2, 0.4, 0.6, 0.8, 0.9]
+        temperature = fit_temperature(labels, scores)
+        calibrated = temperature_scale(scores, temperature)
+        self.assertGreater(temperature, 0)
+        self.assertEqual(calibrated.shape, (6,))
+        self.assertTrue(np.isfinite(calibrated).all())
+        self.assertTrue(np.all((calibrated >= 0) & (calibrated <= 1)))
+
+    def test_h5_calibration_requires_both_active_privacy_profiles(self) -> None:
+        from backend.app.ml.h5_inference import H5InferenceService, H5ModelError
+
+        service = H5InferenceService.__new__(H5InferenceService)
+        service.score_type = "calibrated_probability"
+        service.calibration_method = "temperature_scaling"
+        service.calibration_profiles = {
+            METADATA_SCRUB: {
+                "status": "active",
+                "method": "temperature_scaling",
+                "temperature": 1.0,
+                "version": "v1",
+                "dataset": "CHB-MIT",
+                "subjects": ["chb07", "chb08"],
+                "metrics": {"brier_score": 0.1, "expected_calibration_error": 0.1, "negative_log_likelihood": 0.2},
+            }
+        }
+        with self.assertRaisesRegex(H5ModelError, "metadata-scrub\\+signal-obfuscation"):
+            service._validate_calibration_profiles()
+
+    def test_h5_calibration_selects_the_active_privacy_profile(self) -> None:
+        from backend.app.ml.h5_inference import H5InferenceService
+
+        service = H5InferenceService.__new__(H5InferenceService)
+        service.model = MagicMock()
+        service.model.predict.return_value = np.asarray([[0.2]], dtype=np.float32)
+        service.threshold = 0.5
+        service.score_type = "calibrated_probability"
+        service.calibration_method = "temperature_scaling"
+        profile = lambda temperature, version: {
+            "status": "active",
+            "method": "temperature_scaling",
+            "temperature": temperature,
+            "version": version,
+            "dataset": "CHB-MIT",
+            "subjects": ["chb07", "chb08"],
+            "metrics": {"brier_score": 0.1, "expected_calibration_error": 0.1, "negative_log_likelihood": 0.2},
+        }
+        service.calibration_profiles = {
+            METADATA_SCRUB: profile(1.0, "baseline-v1"),
+            CANONICAL_COMBINED: profile(2.0, "obfuscated-v1"),
+        }
+        starts = np.asarray([0.0], dtype=np.float32)
+        windows = np.zeros((1, 1024, 18), dtype=np.float32)
+        baseline = service.predict(windows, starts, "REC-CAL", privacy_method=METADATA_SCRUB)[0]
+        obfuscated = service.predict(windows, starts, "REC-CAL", privacy_method=CANONICAL_COMBINED)[0]
+        self.assertNotEqual(baseline.probability, obfuscated.probability)
+        self.assertEqual(baseline.calibration_version, "baseline-v1")
+        self.assertEqual(obfuscated.calibration_version, "obfuscated-v1")
 
     def test_shap_explanation_is_bounded_and_contains_no_signal_samples(self) -> None:
         class FakeGradientExplainer:

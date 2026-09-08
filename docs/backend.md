@@ -74,8 +74,10 @@ nor metadata scrubbing removes every possible EEG biometric signal.
 
 ## H5 runtime boundary
 
-Docker defaults to the supplied `best_seizure_model.h5` through the reviewed
-H5 adapter. The research image is built as `linux/amd64` because the normal
+New Docker installations default to the deterministic development stub. Set
+`MODEL_RUNTIME=h5` and `INSTALL_RESEARCH=true` in `.env`, then rebuild, to use
+the supplied `best_seizure_model.h5` through the reviewed adapter.
+The image is built as `linux/amd64` because the normal
 Apple Silicon host environment may not provide the required TensorFlow wheel.
 The adapter loads the model once, validates `(None, 1024, 18)` input and
 `(None, 1)` sigmoid output, and runs batched float32 predictions.
@@ -84,8 +86,12 @@ The checked-in contract is reviewed for the supplied artifact, including its
 hash, output semantics, threshold, and training preprocessing. If the H5 file
 changes, rerun the verifier and set `reviewed` to false until the replacement
 has been reviewed.
-The H5 score is an uncalibrated research score. It must not be presented as
-confidence, accuracy, or a clinical probability. The notebook's reported
+The H5 contract starts as an uncalibrated research score. It must not be
+presented as confidence, accuracy, or a clinical probability. After separate
+patient-disjoint temperature scaling has been fitted for both privacy
+profiles, the contract can explicitly activate `calibrated_probability`; the
+UI then labels each value as an estimated probability for one four-second
+window. The notebook's reported
 metrics are also preliminary because its random window split allows adjacent
 windows from the same recordings and patients to cross train/test boundaries.
 
@@ -94,6 +100,46 @@ keeps the input tensor unchanged but uses that same 50% overlap when generating
 prediction windows. `signal-obfuscation` remains shape-compatible but needs a
 separate utility evaluation because the H5 model was trained on the
 preprocessed, non-obfuscated signal distribution.
+
+### Profile-specific calibration
+
+Fit calibration only on the fixed `chb07`–`chb08` calibration patients. Run the
+command once for each privacy profile and inspect both reports before activating
+calibrated output. These are optional research commands for a research-enabled
+image, not teammate setup steps. Replace `/absolute/private/chb-mit` below with
+your external dataset directory (POSIX shell examples):
+
+```bash
+mkdir -p reports
+docker compose run --rm --no-deps \
+  -v "/absolute/private/chb-mit:/app/chb-mit:ro" \
+  -v "$(pwd)/backend/model:/app/backend/model" \
+  -v "$(pwd)/reports:/app/reports" \
+  backend python backend/scripts/fit_calibration.py /app/chb-mit \
+  --privacy-method metadata-scrub \
+  --output /app/reports/calibration-metadata-scrub.json \
+  --write-contract /app/backend/model/model-contract.json
+
+docker compose run --rm --no-deps \
+  -v "/absolute/private/chb-mit:/app/chb-mit:ro" \
+  -v "$(pwd)/backend/model:/app/backend/model" \
+  -v "$(pwd)/reports:/app/reports" \
+  backend python backend/scripts/fit_calibration.py /app/chb-mit \
+  --privacy-method metadata-scrub+signal-obfuscation \
+  --output /app/reports/calibration-obfuscated.json \
+  --write-contract /app/backend/model/model-contract.json
+```
+
+These commands store candidates, not reviewed probabilities. The explicit
+`--activate` option is for a separate review decision; it is not a substitute
+for checking training provenance, exclusions and calibration quality. Do not
+activate metadata just to make the UI show a percentage. Rebuild the backend
+after changing its bundled contract.
+
+Activation requires both profiles and records the fitted temperature,
+calibration subjects, Brier score, ECE, and negative log-likelihood in the
+contract. Run the test split evaluator separately for each profile; never use
+the test report to fit or select calibration.
 
 ## Privacy profile contract
 
@@ -121,6 +167,10 @@ that metadata protection or encrypted storage is disabled.
 
 The model writes one prediction row per four-second window. A recording is
 model-positive only when persisted rows have `seizure_detected=true`.
+Calibrated output is profile-specific and stored with its calibration version
+and dataset. `recording_probability_available` remains `false`: the maximum,
+mean, or flagged-window fraction is not a calibrated probability that the
+recording contains a seizure.
 Optional `.edf.seizures` sidecars and summary files are stored only as private
 research metadata; they cannot create, remove, count, color, retain, or label a
 model alert.
@@ -152,7 +202,7 @@ groups, and scores windows only after the recording has been assigned to a
 split. `.edf.seizures` sidecars supply labels for this report only; they never
 change a live alert. The JSON report includes confusion matrix, ROC/AUC,
 precision-recall, sensitivity, specificity, precision, recall, F1, false
-alarms per hour, calibration/Brier/ECE, threshold sweep, exclusions, and a
+alarms per hour, Brier score, ECE, negative log-likelihood, threshold sweep, exclusions, and a
 patient-level bootstrap interval.
 
 SHAP attribution is an optional H5-only research feature. Generate the two
@@ -167,7 +217,10 @@ The command creates the private, Git-ignored files
 `backend/model/shap-background-metadata.npy` and
 `backend/model/shap-background-obfuscated.npy`. Set
 `ENABLE_SHAP_EXPLANATIONS=true` only after checking both are `(32, 1024, 18)`
-`float32` tensors. The pipeline selects the background matching the final
+`float32` tensors. Docker deliberately excludes these private tensors from its
+build context: mount them read-only with a local Compose override and configure
+the two `SHAP_*_BACKGROUND_PATH` variables to their container paths. Do not bake
+them into an image. The pipeline selects the background matching the final
 privacy profile, explains at most the highest-scoring flagged windows, and
 returns only channel-level and time-binned aggregates. Missing backgrounds or
 SHAP errors fail closed to the normal score-only result. The UI labels this
@@ -286,6 +339,9 @@ erDiagram
         float probability
         string score_type
         string calibration_method
+        string calibration_version
+        string calibration_dataset
+        string privacy_method
         boolean seizure_detected
     }
     EXPLANATIONS {

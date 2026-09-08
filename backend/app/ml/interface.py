@@ -40,6 +40,8 @@ class WindowPrediction:
     calibration_method: str | None = None
     raw_score: float | None = None
     calibrated_probability: float | None = None
+    calibration_version: str | None = None
+    calibration_dataset: str | None = None
 
 
 class InferenceService(Protocol):
@@ -56,6 +58,7 @@ class InferenceService(Protocol):
         windows: np.ndarray,
         window_starts: np.ndarray,
         record_id: str,
+        privacy_method: str = "metadata-scrub",
     ) -> list[WindowPrediction]:
         """Return one prediction for each model-input window."""
 

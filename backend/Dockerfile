@@ -15,6 +15,14 @@ RUN case "$INSTALL_RESEARCH" in \
       *) echo "Building without research model dependencies" ;; \
     esac
 
+# MediaPipe also installs OpenCV's contrib wheel, which needs these shared libraries.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Fail the build if the video runtime cannot load in a clean installation.
+RUN python -c "import cv2; import mediapipe as mp; assert hasattr(mp, 'solutions')"
+
 RUN groupadd --system mds01 && useradd --system --gid mds01 --home-dir /app --no-create-home mds01
 
 COPY --chown=mds01:mds01 backend /app/backend
@@ -23,5 +31,7 @@ RUN mkdir -p /app/backend/storage /app/backend/database \
     && chown -R mds01:mds01 /app/backend/storage /app/backend/database
 
 USER mds01
+
+RUN python -m backend.scripts.verify_video_runtime
 
 CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]

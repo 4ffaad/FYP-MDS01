@@ -12,7 +12,12 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "NEXT_DIST_DIR=.next-e2e NEXT_TSCONFIG_PATH=tsconfig.e2e.json NEXT_PUBLIC_USE_API_STUB=true npm run dev -- --port 3001",
+    command: "npm run dev -- --hostname 127.0.0.1 --port 3001",
+    env: {
+      NEXT_DIST_DIR: ".next-e2e",
+      NEXT_TSCONFIG_PATH: "tsconfig.e2e.json",
+      NEXT_PUBLIC_USE_API_STUB: "true",
+    },
     url: "http://127.0.0.1:3001",
     reuseExistingServer: false,
     timeout: 120_000,

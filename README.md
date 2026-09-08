@@ -1,101 +1,73 @@
 # MDS01
 
-MDS01 is a research-only EEG review application. It has a FastAPI/PostgreSQL
-backend and a separate Next.js frontend. The current implemented product is
-the asynchronous EEG upload, privacy, preprocessing, inference, and result
-review flow. It must not be presented as a clinical diagnostic system.
+A research prototype with two independent workflows:
 
-The implemented standalone patient-video privacy surface is:
+- **EEG analysis:** upload an EDF archive, apply privacy preprocessing, review window scores and flagged intervals.
+- **Video privacy:** upload a video, choose face redaction or pose-only rendering, review and download protected output. Video never enters the EEG model.
 
-```text
-video upload → selected privacy pipeline(s) → encrypted output → cleanup
-```
+Model output is **not a diagnosis**. Privacy transforms do not guarantee anonymity.
 
-It is intentionally separate from EEG/H5 inference. Choose `Face redaction`
-or `Pose-only` at `/video-privacy`; the backend retains only encrypted
-transformed output and a representative transformed frame. Video files and
-patient datasets stay outside this repository.
+## Start on your laptop
 
-## Repository layout
+Install **Docker Desktop** (Linux containers) and **Node.js 22 or newer**. Start Docker, clone this repository, and run from its root:
 
-```text
-backend/       FastAPI application, migrations, services, and tests
-frontend/      Next.js application and browser tests
-docs/          Setup, architecture, privacy, security, and handoff notes
-```
-
-The backend keeps routes thin, services responsible for processing, and
-repositories responsible for database access. Private session files are
-encrypted and stored under `backend/storage/` during local development.
-
-## Run locally
-
-From the repository root:
-
-```bash
-cp .env.example .env
-openssl rand -base64 32
-openssl rand -base64 32
-```
-
-Put the two generated values into `.env` as different values for
-`MDS01_STORAGE_KEY` and `MDS01_TEMPLATE_KEY`. Then start the backend stack:
-
-```bash
+```sh
+node scripts/setup.mjs
 docker compose up --build
 ```
 
-The API and Swagger UI are available at <http://127.0.0.1:8000> and
-<http://127.0.0.1:8000/docs>.
+In a second terminal:
 
-For the fast deterministic development runtime:
-
-```bash
-MODEL_RUNTIME=stub INSTALL_RESEARCH=false docker compose up --build
-```
-
-Run the frontend separately:
-
-```bash
+```sh
 cd frontend
-npm install
-cp .env.example .env.local
+npm ci
 npm run dev
 ```
 
-The frontend is available at <http://127.0.0.1:3000>.
+Open [MDS01](http://127.0.0.1:3000) or [API documentation](http://127.0.0.1:8000/docs).
+The setup command generates local secrets and leaves existing configuration untouched.
+New installations use the deterministic **development stub**; existing `.env` runtime choices are preserved.
+For H5 scores, waveform preview, sample data, Windows instructions and troubleshooting, see [setup](docs/setup.md).
 
-## Verify the repository
+## How it fits together
 
-```bash
-PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v
-PYTHONPATH=. .venv/bin/python -m compileall -q backend
-cd frontend && npm run lint && npm run build && npm run test:e2e
+```mermaid
+flowchart LR
+    Browser[Next.js interface] --> API[FastAPI]
+    API --> DB[(PostgreSQL: status and results)]
+    API --> EEG[EEG processing]
+    API --> Video[Video privacy processing]
+    EEG --> Model[H5 adapter or development stub]
+    Model --> DB
+    EEG --> Files[(Private encrypted storage)]
+    Video --> Files
 ```
 
-The H5 runtime is review-gated and its scores are uncalibrated research
-scores. Use the development stub for ordinary local testing unless the model
-contract and research dependencies have been reviewed.
+| Location | Responsibility |
+| --- | --- |
+| `frontend/src/app/` | Routes and shared layout |
+| `frontend/src/components/` | Screens, waveform/timeline views, UI primitives |
+| `frontend/src/lib/` | API adapter, view-model types, formatting |
+| `backend/app/api/` | HTTP validation and responses |
+| `backend/app/services/` | Upload, processing, storage and cleanup |
+| `backend/app/eeg/`, `privacy/`, `ml/` | Model inputs, privacy transforms, inference |
+| `backend/app/video_privacy/` | Standalone video transforms |
+| `backend/app/database/`, `backend/migrations/` | Persistence and schema history |
+| `backend/app/research/`, `backend/scripts/` | Offline evaluation and calibration |
+| `scripts/` | Local setup and its safety test |
 
-Video privacy processing uses OpenCV for face redaction and MediaPipe for
-pose-only rendering. Both outputs are audio-free and metadata-scrubbed. A
-missing runtime fails closed; it never returns an untransformed video.
+## Team reading order
 
-## Privacy and data hygiene
+1. [Setup and testing](docs/setup.md)
+2. [Architecture and code ownership](docs/architecture.md)
+3. [Frontend guide](docs/frontend.md) or [backend guide](docs/backend.md)
+4. [Design rules](DESIGN.md)
+5. [Privacy limitations](docs/privacy-research.md) and [deployment risks](docs/security-audit.md)
 
-- Never commit `.env`, frontend `.env.local`, patient videos, EEG datasets,
-  private keys, model background tensors, generated reports, or storage files.
-- Keep patient data in a private directory outside the repository, such as
-  `/Users/daffa/PrivatePatientData/`.
-- The checked-in `.env.example` files contain placeholders only; they are setup
-  templates, not credentials.
-- Public API responses must not expose patient references, original metadata,
-  original filenames, filesystem paths, hashes, or source files.
-- Encryption protects storage; it does not make EEG or video data anonymous.
-- Video privacy jobs use generated labels and the `VID-…` identifier; original
-  filenames and paths are not returned by the API.
+The [EEG confidence research](docs/eeg-viewing-and-confidence-research.md) records the rationale for per-window calibration. It is background material, not a claim that calibration has been fitted. The checked-in H5 contract currently has no active calibrators.
 
-See [`docs/setup.md`](docs/setup.md), [`docs/repository-handoff.md`](docs/repository-handoff.md),
-[`docs/security-audit.md`](docs/security-audit.md), and
-[`docs/privacy-research.md`](docs/privacy-research.md) before handling real
-data.
+## Repository hygiene
+
+Commit source, tests, migrations, the model contract and package lock. Keep `.env`, patient data, ZIP/RAR uploads, encrypted storage, generated reports and model backgrounds local-only. Store real patient data **outside the repository**.
+
+`.dockerignore` limits builds to backend source and the supplied model; `.gitignore` excludes common private artifacts. Neither replaces checking files before a commit. Agent skills under `.agents/` are optional developer tooling; teammates do not need an AI editor or BMAD to run this project.

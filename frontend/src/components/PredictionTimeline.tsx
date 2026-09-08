@@ -11,7 +11,7 @@ const MAX_LINE_POINTS = 4000;
 type IndexedPrediction = { prediction: PredictionWindow; windowIndex: number };
 
 /** Render the complete prediction timeline with exact, inspectable alert windows. */
-export function PredictionTimeline({ predictions, durationSeconds, threshold = 0.5 }: { predictions: PredictionWindow[]; durationSeconds: number; threshold?: number }) {
+export function PredictionTimeline({ predictions, durationSeconds, threshold = 0.5, scoreType = "development_score" }: { predictions: PredictionWindow[]; durationSeconds: number; threshold?: number; scoreType?: string }) {
   const [activeAlertIndex, setActiveAlertIndex] = useState(0);
   const plotWidth = CHART_WIDTH - PADDING.left - PADDING.right;
   const plotHeight = CHART_HEIGHT - PADDING.top - PADDING.bottom;
@@ -35,6 +35,9 @@ export function PredictionTimeline({ predictions, durationSeconds, threshold = 0
   }, [predictions]);
   const selectedAlertIndex = Math.min(activeAlertIndex, Math.max(0, alertPredictions.length - 1));
   const selectedAlert = alertPredictions[selectedAlertIndex];
+  const calibrated = scoreType === "calibrated_probability";
+  const scoreLabel = calibrated ? "Estimated probability" : "Model score";
+  const windowLabel = calibrated ? "estimated probability" : "score";
   const x = (seconds: number) => PADDING.left + (Math.max(0, Math.min(recordingDuration, seconds)) / recordingDuration) * plotWidth;
   const y = (score: number) => PADDING.top + (1 - Math.max(0, Math.min(1, score))) * plotHeight;
   const thresholdY = y(threshold);
@@ -59,7 +62,7 @@ export function PredictionTimeline({ predictions, durationSeconds, threshold = 0
     <div aria-label="Prediction score timeline" role="group">
       <div className="overflow-x-auto rounded-lg border border-rule bg-surface-soft p-2 sm:p-3">
         <svg className="h-auto min-w-[680px] w-full" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-labelledby="prediction-chart-title prediction-chart-description">
-          <title id="prediction-chart-title">Prediction score timeline</title>
+          <title id="prediction-chart-title">{calibrated ? "Estimated window probability timeline" : "Prediction score timeline"}</title>
           <desc id="prediction-chart-description">Every scored four-second window across the recording. Highlighted windows crossed the configured threshold.</desc>
           {[1, 0.5, 0].map((value) => (
             <g key={value}>
@@ -67,13 +70,13 @@ export function PredictionTimeline({ predictions, durationSeconds, threshold = 0
               <text x={PADDING.left - 10} y={y(value) + 4} textAnchor="end" className="fill-ink-muted text-[11px]">{value.toFixed(1)}</text>
             </g>
           ))}
-          <text x="14" y={PADDING.top + plotHeight / 2} textAnchor="middle" transform={`rotate(-90 14 ${PADDING.top + plotHeight / 2})`} className="fill-ink-muted text-[11px] font-semibold">Model score</text>
+          <text x="14" y={PADDING.top + plotHeight / 2} textAnchor="middle" transform={`rotate(-90 14 ${PADDING.top + plotHeight / 2})`} className="fill-ink-muted text-[11px] font-semibold">{scoreLabel}</text>
           {alertPredictions.map(({ prediction, windowIndex }) => {
             const left = x(prediction.startSeconds);
             const right = Math.max(left + 1, x(prediction.endSeconds));
             return <rect key={`alert-band-${windowIndex}`} x={left} y={PADDING.top} width={Math.max(1, right - left)} height={plotHeight} className="fill-amber-soft/75" />;
           })}
-          <path d={linePredictions.map((prediction, index) => `${index === 0 ? "M" : "L"} ${x(prediction.startSeconds).toFixed(2)} ${y(prediction.score).toFixed(2)}`).join(" ")} fill="none" stroke="currentColor" strokeWidth="2.25" vectorEffect="non-scaling-stroke" className="text-teal" data-testid="prediction-score-line" data-point-count={linePredictions.length} />
+          <path d={linePredictions.map((prediction, index) => `${index === 0 ? "M" : "L"} ${x(windowCenterSeconds(prediction)).toFixed(2)} ${y(prediction.score).toFixed(2)}`).join(" ")} fill="none" stroke="currentColor" strokeWidth="2.25" vectorEffect="non-scaling-stroke" className="text-teal" data-testid="prediction-score-line" data-point-count={linePredictions.length} />
           {hoverPredictions.map(({ prediction, windowIndex }) => {
             const alert = prediction.seizureDetected;
             const alertIndex = alert ? alertIndexByWindow.get(windowIndex) ?? -1 : -1;
@@ -82,7 +85,7 @@ export function PredictionTimeline({ predictions, durationSeconds, threshold = 0
             return (
               <g key={`point-${windowIndex}`}>
                 <circle
-                  cx={x(prediction.startSeconds)}
+                  cx={x(windowCenterSeconds(prediction))}
                   cy={y(prediction.score)}
                   r="11"
                   className="fill-transparent stroke-transparent"
@@ -96,7 +99,7 @@ export function PredictionTimeline({ predictions, durationSeconds, threshold = 0
                 >
                   <title>{label}</title>
                 </circle>
-                {alert && <circle cx={x(prediction.startSeconds)} cy={y(prediction.score)} r={selected ? 5 : 3.5} className="pointer-events-none fill-amber stroke-white" strokeWidth="1" data-alert-point="true" data-score={prediction.score} />}
+                {alert && <circle cx={x(windowCenterSeconds(prediction))} cy={y(prediction.score)} r={selected ? 5 : 3.5} className="pointer-events-none fill-amber stroke-white" strokeWidth="1" data-alert-point="true" data-score={prediction.score} />}
               </g>
             );
           })}
@@ -109,7 +112,7 @@ export function PredictionTimeline({ predictions, durationSeconds, threshold = 0
         </svg>
       </div>
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-ink-muted" aria-label="Prediction timeline legend">
-        <span className="inline-flex items-center gap-2"><span className="size-2 rounded-full bg-teal" aria-hidden="true" />Window score</span>
+        <span className="inline-flex items-center gap-2"><span className="size-2 rounded-full bg-teal" aria-hidden="true" />{calibrated ? "Window probability" : "Window score"}</span>
         <span className="inline-flex items-center gap-2"><span className="size-2 rounded-full bg-amber" aria-hidden="true" />Window above threshold</span>
         <span className="inline-flex items-center gap-2"><span className="w-4 border-t border-dashed border-amber" aria-hidden="true" />Alert threshold {threshold.toFixed(2)}</span>
       </div>
@@ -121,7 +124,7 @@ export function PredictionTimeline({ predictions, durationSeconds, threshold = 0
           aria-label="Browse exact flagged windows. Use the arrow keys, Home, or End."
           onKeyDown={handleAlertNavigation}
         >
-          <p aria-live="polite"><span className="font-semibold text-amber">Flagged window {selectedAlertIndex + 1} of {alertPredictions.length}</span> · <span className="font-mono">{formatSeconds(selectedAlert.prediction.startSeconds)}–{formatSeconds(selectedAlert.prediction.endSeconds)}</span> · score {selectedAlert.prediction.score.toFixed(3)}</p>
+          <p aria-live="polite"><span className="font-semibold text-amber">Flagged window {selectedAlertIndex + 1} of {alertPredictions.length}</span> · <span className="font-mono">{formatSeconds(selectedAlert.prediction.startSeconds)}–{formatSeconds(selectedAlert.prediction.endSeconds)}</span> · {windowLabel} {selectedAlert.prediction.score.toFixed(3)}</p>
           <p className="mt-1 text-ink-muted">Use the arrow keys to inspect exact flagged times. Hover any visible point for its window details.</p>
         </div>
       ) : <p className="mt-2 text-xs text-ink-muted">Hover any visible point for its exact window time and score. No window crossed the configured threshold.</p>}
@@ -141,7 +144,13 @@ function linePoints(predictions: PredictionWindow[], maxPoints: number): Predict
 
 /** Describe one exact prediction window for native SVG hover details. */
 function predictionLabel(prediction: PredictionWindow, windowIndex: number, threshold: number): string {
-  return `Window ${windowIndex + 1}, ${formatSeconds(prediction.startSeconds)}–${formatSeconds(prediction.endSeconds)}, score ${prediction.score.toFixed(3)}, ${prediction.seizureDetected ? "above" : "below"} threshold ${threshold.toFixed(2)}`;
+  const label = prediction.scoreType === "calibrated_probability" ? "estimated probability" : "score";
+  return `Window ${windowIndex + 1}, ${formatSeconds(prediction.startSeconds)}–${formatSeconds(prediction.endSeconds)}, ${label} ${prediction.score.toFixed(3)}, ${prediction.seizureDetected ? "above" : "below"} threshold ${threshold.toFixed(2)}`;
+}
+
+/** Position each plotted value at the centre of its four-second support window. */
+function windowCenterSeconds(prediction: PredictionWindow): number {
+  return (prediction.startSeconds + prediction.endSeconds) / 2;
 }
 
 /** Format seconds as a compact recording-relative timestamp. */

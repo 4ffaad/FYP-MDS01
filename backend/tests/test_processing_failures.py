@@ -167,7 +167,7 @@ class ProcessingFailureTests(unittest.TestCase):
                 score_type = "uncalibrated_probability"
                 calibration_method = None
 
-                def predict(self, windows, starts, _record_id):
+                def predict(self, windows, starts, _record_id, privacy_method="metadata-scrub"):
                     return [WindowPrediction(0, float(starts[0]), float(starts[0] + 4), 0.9, True, score_type=self.score_type, raw_score=0.9)]
 
             artifact = storage.directory(session.session_id, "retained") / "REC-ARTIFACT.edf.enc"

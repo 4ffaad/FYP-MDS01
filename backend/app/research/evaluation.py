@@ -136,14 +136,14 @@ def build_metrics_report(
     return report
 
 
-def evaluate_dataset(
+def collect_evaluation_data(
     *,
     dataset_root: Path,
     privacy_method: str = METADATA_SCRUB,
     split: str = "test",
-    seed: int = 0,
+    inference: H5InferenceService | None = None,
 ) -> dict[str, Any]:
-    """Evaluate the reviewed H5 model on a fixed patient-disjoint split.
+    """Collect labelled raw and displayed scores without writing private data.
 
     Parameters
     ----------
@@ -156,8 +156,8 @@ def evaluate_dataset(
         ``signal-obfuscation`` spelling is accepted as an input alias.
     split : str
         Fixed manifest split to evaluate, normally ``test``.
-    seed : int
-        Seed recorded for deterministic bootstrap sampling.
+    inference : H5InferenceService or None
+        Optional runtime override used by calibration tests and tooling.
     """
 
     if privacy_method == SIGNAL_OBFUSCATION:
@@ -172,11 +172,12 @@ def evaluate_dataset(
     if not selected:
         raise ValueError(f"No recordings found for the {split} split.")
 
-    inference = H5InferenceService(H5_MODEL_PATH, H5_CONTRACT_PATH)
+    inference = inference or H5InferenceService(H5_MODEL_PATH, H5_CONTRACT_PATH)
     obfuscate = privacy_method == CANONICAL_COMBINED
     template_key = read_base64_key(TEMPLATE_KEY_ENV) if obfuscate else None
     labels: list[int] = []
     scores: list[float] = []
+    raw_scores: list[float] = []
     patient_ids: list[str] = []
     duration_hours = 0.0
     exclusions = list(discovery_exclusions)
@@ -190,12 +191,21 @@ def evaluate_dataset(
                 windows, starts, details = preprocess_edf(scrubbed_path)
                 if obfuscate:
                     windows = obfuscate_signal(windows, template_key or b"")
-                predictions = inference.predict(windows, starts, f"EVAL-{recording_index:04d}")
+                predictions = inference.predict(
+                    windows,
+                    starts,
+                    f"EVAL-{recording_index:04d}",
+                    privacy_method=privacy_method,
+                )
                 recording_labels = seizure_window_labels(starts.tolist(), list(recording.intervals))
                 if len(recording_labels) != len(predictions):
                     raise ValueError("Evaluation label and prediction window counts differ.")
                 labels.extend(recording_labels)
                 scores.extend([item.probability for item in predictions])
+                raw_scores.extend([
+                    item.raw_score if item.raw_score is not None else item.probability
+                    for item in predictions
+                ])
                 patient_ids.extend([recording.subject_id] * len(predictions))
                 duration_hours += float(details["original_shape"][1]) / float(details["sampling_rate"]) / 3600
                 evaluated_recordings += 1
@@ -215,18 +225,50 @@ def evaluate_dataset(
             "threshold": inference.threshold,
             "score_type": inference.score_type,
         },
-        "seed": seed,
-        "split_policy": "patient-disjoint fixed chb01-chb10 manifest; windows never split independently",
         "recording_count": evaluated_recordings,
         "window_count": len(labels),
         "positive_windows": int(sum(labels)),
         "exclusions": exclusions,
+        "labels": labels,
+        "scores": scores,
+        "raw_scores": raw_scores,
+        "patient_ids": patient_ids,
+        "duration_hours": duration_hours,
+    }
+
+
+def evaluate_dataset(
+    *,
+    dataset_root: Path,
+    privacy_method: str = METADATA_SCRUB,
+    split: str = "test",
+    seed: int = 0,
+) -> dict[str, Any]:
+    """Evaluate the reviewed H5 model on a fixed patient-disjoint split."""
+
+    data = collect_evaluation_data(
+        dataset_root=dataset_root,
+        privacy_method=privacy_method,
+        split=split,
+    )
+    return {
+        "dataset": data["dataset"],
+        "subjects": data["subjects"],
+        "split": data["split"],
+        "privacy_method": data["privacy_method"],
+        "model": data["model"],
+        "seed": seed,
+        "split_policy": "patient-disjoint fixed chb01-chb10 manifest; windows never split independently",
+        "recording_count": data["recording_count"],
+        "window_count": data["window_count"],
+        "positive_windows": data["positive_windows"],
+        "exclusions": data["exclusions"],
         "metrics": build_metrics_report(
-            labels=labels,
-            scores=scores,
-            patient_ids=patient_ids,
-            duration_hours=duration_hours,
-            threshold=inference.threshold,
+            labels=data["labels"],
+            scores=data["scores"],
+            patient_ids=data["patient_ids"],
+            duration_hours=data["duration_hours"],
+            threshold=data["model"]["threshold"],
             seed=seed,
         ),
     }

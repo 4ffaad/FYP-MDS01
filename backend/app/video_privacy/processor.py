@@ -118,7 +118,8 @@ class VideoPrivacyProcessor:
                 raise VideoProcessorError("Pose privacy runtime is unavailable.") from exc
             pose = mp.solutions.pose.Pose(
                 static_image_mode=False,
-                model_complexity=0,
+                # The full model is bundled; lite downloads into read-only site-packages.
+                model_complexity=1,
                 enable_segmentation=False,
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5,

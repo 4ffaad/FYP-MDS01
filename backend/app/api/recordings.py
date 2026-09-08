@@ -97,6 +97,7 @@ def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
     """
 
     record = _get_record(db, record_id)
+    session = get_session_by_database_id(db, record.session_db_id)
     predictions = list_predictions(db, record.id)
     first = predictions[0] if predictions else None
     score_type = first.score_type if first else None
@@ -113,6 +114,9 @@ def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
                 "score_type": score_type,
                 "calibrated": calibrated,
                 "calibration_method": first.calibration_method,
+                "calibration_version": first.calibration_version,
+                "calibration_dataset": first.calibration_dataset,
+                "privacy_method": session.privacy_method if session else first.privacy_method,
             }
             if first
             else None
@@ -139,7 +143,7 @@ def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
                 for start, end in intervals
             ],
             "aggregation_unit": "window",
-            "recording_probability_available": calibrated,
+            "recording_probability_available": False,
         },
         "predictions": [
             {
@@ -151,6 +155,9 @@ def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
                 "raw_score": item.raw_score,
                 "calibrated_probability": item.calibrated_probability,
                 "score_type": item.score_type,
+                "calibration_method": item.calibration_method,
+                "calibration_version": item.calibration_version,
+                "calibration_dataset": item.calibration_dataset,
                 "seizure_detected": item.seizure_detected,
             }
             for item in predictions

@@ -22,11 +22,11 @@ services:
       context: .
       dockerfile: backend/Dockerfile
       args:
-        INSTALL_RESEARCH: ${INSTALL_RESEARCH:-true}
+        INSTALL_RESEARCH: ${INSTALL_RESEARCH:-false}
     environment:
       DATABASE_URL: postgresql+psycopg://seizureai:${POSTGRES_PASSWORD:-seizureai}@postgres:5432/seizureai
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
-      MODEL_RUNTIME: ${MODEL_RUNTIME:-h5}
+      MODEL_RUNTIME: ${MODEL_RUNTIME:-stub}
       STORAGE_DIR: /app/backend/storage
       MDS01_STORAGE_KEY: ${MDS01_STORAGE_KEY:-}
       MDS01_TEMPLATE_KEY: ${MDS01_TEMPLATE_KEY:-}

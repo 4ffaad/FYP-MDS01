@@ -1,0 +1,13 @@
+# Source-only build context. Local datasets, secrets and artifacts stay out.
+**
+!backend/
+!backend/**/
+!backend/**/*.py
+!backend/Dockerfile
+!backend/requirements*.txt
+!backend/alembic.ini
+!backend/model/model-contract.json
+!backend/model/best_seizure_model.h5
+backend/storage/
+backend/database/
+**/__pycache__/

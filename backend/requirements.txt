@@ -10,4 +10,5 @@ alembic
 cryptography
 PyJWT[crypto]>=2.10,<3
 opencv-python-headless>=4.10,<5
-mediapipe>=0.10,<1
+# The processor uses the bundled legacy solutions.pose API.
+mediapipe==0.10.14

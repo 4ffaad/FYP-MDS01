@@ -60,8 +60,10 @@ test("EEG analysis shows an empty state and no private fields", async ({ page })
   if ((page.viewportSize()?.width ?? 0) >= 1024) {
     await page.keyboard.press("Tab");
     await expect(page.getByRole("link", { name: "Skip to main content" })).toBeFocused();
+    await expect(page.getByRole("link", { name: "Skip to main content" })).toHaveCSS("opacity", "1");
     await page.keyboard.press("Enter");
     await expect(page.locator("#main-content")).toBeFocused();
+    await expect(page.getByRole("link", { name: "Skip to main content" })).toHaveCSS("opacity", "0");
   }
   await expect(page.getByRole("heading", { name: "EEG analysis" })).toBeVisible();
   await expect(page.locator('[data-slot="button"]', { hasText: "New EEG analysis" })).toHaveCSS("color", "rgb(255, 255, 255)");
@@ -70,11 +72,13 @@ test("EEG analysis shows an empty state and no private fields", async ({ page })
     await expect(menuButton).toBeVisible();
     await menuButton.click();
     await expect(menuButton).toHaveAttribute("aria-expanded", "true");
-    await expect(page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "New EEG analysis" })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "EEG analysis", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Video privacy" })).toBeVisible();
     await menuButton.click();
     await expect(menuButton).toHaveAttribute("aria-expanded", "false");
   }
   await expect(page.getByText("No EEG analyses yet.")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect(page.getByText("patient_reference")).not.toBeVisible();
   await expect(page.getByText("original_path")).not.toBeVisible();
   await page.waitForTimeout(500);

@@ -128,6 +128,8 @@ def main() -> int:
         "threshold": args.threshold,
         "score_type": "uncalibrated_probability",
         "calibration_method": None,
+        "calibration_status": "not_available",
+        "calibration_profiles": {},
         "training_preprocessing": args.training_preprocessing,
         "channel_order": list(MODEL_CHANNELS),
         "sampling_rate": MODEL_SAMPLING_RATE,

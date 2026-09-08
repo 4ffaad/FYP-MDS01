@@ -99,6 +99,9 @@ export interface PredictionWindow extends TimeInterval {
   seizureDetected: boolean;
   threshold: number;
   scoreType?: string;
+  calibrationMethod?: string | null;
+  calibrationVersion?: string | null;
+  calibrationDataset?: string | null;
 }
 
 export interface ResearchAttribution {
@@ -124,6 +127,9 @@ export interface AnalysisResult {
   threshold: number;
   scoreType: string;
   calibrationMethod: string | null;
+  calibrationVersion: string | null;
+  calibrationDataset: string | null;
+  recordingProbabilityAvailable: boolean;
   windowCount: number;
   flaggedWindowCount: number;
   flaggedWindowFraction: number;

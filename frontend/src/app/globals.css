@@ -61,6 +61,8 @@ select { color-scheme: light; }
   z-index: 60;
   min-height: 2.75rem;
   transform: translateY(calc(-100% - 1rem));
+  opacity: 0;
+  pointer-events: none;
   border-radius: 0.5rem;
   background: var(--color-ink);
   padding: 0.7rem 1rem;
@@ -70,7 +72,7 @@ select { color-scheme: light; }
   transition: transform 160ms ease;
 }
 
-.skip-link:focus-visible { transform: translateY(0); }
+.skip-link:focus-visible { transform: translateY(0); opacity: 1; pointer-events: auto; }
 #main-content:focus-visible { box-shadow: none; }
 
 .page-frame {

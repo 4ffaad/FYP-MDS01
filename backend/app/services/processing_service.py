@@ -409,7 +409,12 @@ def _process_record(
         model_windows = windows
         if SIGNAL_OBFUSCATION in methods_from_profile(session.privacy_method):
             model_windows = obfuscate_signal(windows, read_base64_key(TEMPLATE_KEY_ENV))
-        predictions = inference.predict(model_windows, starts, record.record_id)
+        predictions = inference.predict(
+            model_windows,
+            starts,
+            record.record_id,
+            privacy_method=session.privacy_method,
+        )
         for prediction in predictions:
             db_prediction = Prediction(
                 recording_db_id=record.id,
@@ -422,6 +427,9 @@ def _process_record(
                 calibrated_probability=prediction.calibrated_probability,
                 score_type=prediction.score_type,
                 calibration_method=prediction.calibration_method,
+                calibration_version=prediction.calibration_version,
+                calibration_dataset=prediction.calibration_dataset,
+                privacy_method=session.privacy_method,
                 seizure_detected=prediction.seizure_detected,
                 start_seconds=prediction.start_seconds,
                 end_seconds=prediction.end_seconds,
@@ -468,10 +476,15 @@ def _process_record(
                     calibration_method=stored.calibration_method,
                     raw_score=stored.raw_score,
                     calibrated_probability=stored.calibrated_probability,
+                    calibration_version=stored.calibration_version,
+                    calibration_dataset=stored.calibration_dataset,
                 ),
                 model_name=stored.model_name,
                 model_version=stored.model_version,
                 threshold=stored.threshold,
+                calibration_version=stored.calibration_version,
+                calibration_dataset=stored.calibration_dataset,
+                privacy_method=session.privacy_method,
             )
             attribution = shap_by_window.get(stored.window_index)
             if attribution is not None:

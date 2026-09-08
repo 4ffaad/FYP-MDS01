@@ -17,6 +17,8 @@
   "threshold": 0.5,
   "score_type": "uncalibrated_probability",
   "calibration_method": null,
+  "calibration_status": "not_available",
+  "calibration_profiles": {},
   "training_preprocessing": "256 Hz; exact 18 bipolar channels; 0.5-100 Hz band-pass; 60 Hz notch; per-channel z-score; clip to +/-5.",
   "channel_order": [
     "FP1-F7",

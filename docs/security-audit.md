@@ -1,4 +1,4 @@
-# Security audit
+# Security audit — August 2026 snapshot
 
 This report records the August 2026 repository and disposable-runtime audit. The managed Codex Security deep-scan runner could not start because this session did not provide its required managed filesystem. The audit instead used three independent source reviews, direct API tests, Bandit, dependency checks, secret/history checks, Docker inspection, Playwright, and a disposable real-backend workflow.
 
@@ -26,12 +26,15 @@ This report records the August 2026 repository and disposable-runtime audit. The
 - Bandit previously reported no Python source findings; `npm audit` previously reported no known frontend dependency vulnerabilities.
 - The Python dependency check did not establish a fully reproducible lock-file audit; application dependencies are still range/unpinned requirements.
 
+This is historical evidence, not the current test count or a fresh security
+assessment. For current startup and test commands, use [setup](setup.md).
+
 Run the permanent checks with:
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v
 cd frontend && npm run lint && npm run build && npm run test:e2e
-cd frontend && npm run test:e2e:real
+npm run test:e2e:real
 ```
 
 `test:e2e:real` creates and destroys only the Compose project named `mds01-security`. It requires Docker and the repository `.venv`.

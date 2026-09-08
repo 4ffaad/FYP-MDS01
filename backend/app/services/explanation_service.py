@@ -12,6 +12,9 @@ def build_score_summary(
     model_name: str,
     model_version: str,
     threshold: float = 0.5,
+    calibration_version: str | None = None,
+    calibration_dataset: str | None = None,
+    privacy_method: str | None = None,
 ) -> dict:
     """Build an explicitly non-clinical summary of one model score.
 
@@ -56,4 +59,7 @@ def build_score_summary(
         "calibrated_probability": prediction.calibrated_probability,
         "score_type": prediction.score_type,
         "calibration_method": prediction.calibration_method,
+        "calibration_version": calibration_version or prediction.calibration_version,
+        "calibration_dataset": calibration_dataset or prediction.calibration_dataset,
+        "privacy_method": privacy_method,
     }

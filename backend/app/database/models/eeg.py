@@ -177,6 +177,9 @@ class Prediction(SQLModel, table=True):
     calibrated_probability: float | None = Field(default=None, ge=0, le=1)
     score_type: str = Field(default="development_score", max_length=64)
     calibration_method: str | None = Field(default=None, max_length=64)
+    calibration_version: str | None = Field(default=None, max_length=128)
+    calibration_dataset: str | None = Field(default=None, max_length=128)
+    privacy_method: str = Field(default="metadata-scrub", max_length=64)
     seizure_detected: bool
     start_seconds: float = Field(ge=0)
     end_seconds: float = Field(ge=0)
