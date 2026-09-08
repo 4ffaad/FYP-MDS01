@@ -74,6 +74,7 @@ async def create_upload_draft(
     storage: SessionStorage,
     archive: UploadFile,
     expires_at: datetime,
+    owner_user_id: int | None = None,
 ) -> UploadDraft:
     """Encrypt and persist a ZIP while waiting for privacy configuration.
 
@@ -100,7 +101,12 @@ async def create_upload_draft(
     """
 
     draft_id = new_draft_id()
-    draft = UploadDraft(draft_id=draft_id, encrypted_path="", expires_at=expires_at)
+    draft = UploadDraft(
+        owner_user_id=owner_user_id,
+        draft_id=draft_id,
+        encrypted_path="",
+        expires_at=expires_at,
+    )
     db.add(draft)
     db.flush()
     try:
@@ -122,6 +128,7 @@ def finalize_upload_draft(
     draft_id: str,
     privacy_method: str = "metadata-scrub",
     privacy_methods: Iterable[str] | None = None,
+    owner_user_id: int | None = None,
 ) -> EEGSession:
     """Convert one encrypted draft into a queued analysis session.
 
@@ -129,7 +136,7 @@ def finalize_upload_draft(
     commit leaves the encrypted draft available for a safe retry.
     """
 
-    draft = get_upload_draft(db, draft_id)
+    draft = get_upload_draft(db, draft_id, owner_user_id)
     if draft is None:
         raise ValueError("Upload draft was not found or has expired.")
     if _is_expired(draft.expires_at):
@@ -140,6 +147,7 @@ def finalize_upload_draft(
 
     profile = canonical_privacy_profile(privacy_methods if privacy_methods is not None else privacy_method)
     session = EEGSession(
+        owner_user_id=owner_user_id,
         session_id=new_session_id(),
         privacy_method=profile,
         original_filename="",
@@ -168,6 +176,7 @@ async def create_session(
     archive: UploadFile,
     privacy_method: str = "metadata-scrub",
     privacy_methods: Iterable[str] | None = None,
+    owner_user_id: int | None = None,
 ) -> EEGSession:
     """Persist an upload session and stream its ZIP into private storage.
 
@@ -195,6 +204,7 @@ async def create_session(
 
     profile = canonical_privacy_profile(privacy_methods if privacy_methods is not None else privacy_method)
     session = EEGSession(
+        owner_user_id=owner_user_id,
         session_id=new_session_id(),
         privacy_method=profile,
         original_filename="",
@@ -215,7 +225,7 @@ async def create_session(
         raise
 
 
-def get_session_or_none(db: Session, session_id: str) -> EEGSession | None:
+def get_session_or_none(db: Session, session_id: str, owner_user_id: int | None = None) -> EEGSession | None:
     """Look up a session by public ID without exposing internal identifiers.
 
     Parameters
@@ -231,7 +241,7 @@ def get_session_or_none(db: Session, session_id: str) -> EEGSession | None:
         Matching session row, if present.
     """
 
-    return get_session_by_public_id(db, session_id)
+    return get_session_by_public_id(db, session_id, owner_user_id)
 
 
 def public_record(
@@ -340,7 +350,7 @@ def _public_session_payload(
     }
 
 
-def public_session(db: Session, session: EEGSession) -> dict:
+def public_session(db: Session, session: EEGSession, owner_user_id: int | None = None) -> dict:
     """Serialize a session and its recordings for public API responses.
 
     Parameters
@@ -356,7 +366,7 @@ def public_session(db: Session, session: EEGSession) -> dict:
         Safe session status, timestamps, and recording summaries.
     """
 
-    records = list_recordings_for_session(db, session.id) if session.id is not None else []
+    records = list_recordings_for_session(db, session.id, owner_user_id) if session.id is not None else []
     record_ids = [record.id for record in records if record.id is not None]
     return _public_session_payload(
         session,
@@ -367,7 +377,7 @@ def public_session(db: Session, session: EEGSession) -> dict:
     )
 
 
-def public_session_list(db: Session) -> list[dict]:
+def public_session_list(db: Session, owner_user_id: int | None = None) -> list[dict]:
     """Serialize all sessions in newest-first order.
 
     Parameters
@@ -381,9 +391,9 @@ def public_session_list(db: Session) -> list[dict]:
         Safe public session summaries.
     """
 
-    sessions = list_sessions(db)
+    sessions = list_sessions(db, owner_user_id)
     session_ids = [session.id for session in sessions if session.id is not None]
-    records = list_recordings_for_sessions(db, session_ids)
+    records = list_recordings_for_sessions(db, session_ids, owner_user_id)
     records_by_session: dict[int, list[EEGRecording]] = {}
     for record in records:
         records_by_session.setdefault(record.session_db_id, []).append(record)

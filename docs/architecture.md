@@ -2,6 +2,29 @@
 
 MDS01 has a browser interface, one FastAPI process, PostgreSQL and a private filesystem volume. EEG and video share infrastructure, not analysis pipelines.
 
+## Authentication boundary
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Auth as FastAPI auth routes
+    participant API as Protected API
+    participant DB as PostgreSQL
+    Browser->>Auth: Register or sign in with email/password
+    Auth->>DB: Store password hash and session-token hash
+    Auth-->>Browser: HttpOnly, SameSite=Lax cookie
+    Browser->>API: Request with cookie
+    API->>DB: Resolve active, unexpired session
+    API->>DB: Query rows where owner_user_id matches
+    API-->>Browser: Safe owner-scoped response
+```
+
+`GET /health` and `GET /api/auth/session` are public. In `local-accounts`,
+all EEG/video routes require an active cookie and state-changing browser
+requests require a configured `Origin`. `local` is an explicit unauthenticated
+test mode. Cloudflare Access remains the remote-deployment path; its verified
+subject is mapped to the same ownership table.
+
 ## Two independent workflows
 
 ```mermaid
@@ -79,11 +102,18 @@ BackgroundTasks runs in the API process. Restarting it can interrupt work; there
 
 ```mermaid
 erDiagram
+    USER ||--o{ AUTH_SESSION : signs_in
+    USER ||--o{ SESSION : owns
+    USER ||--o{ VIDEO_PRIVACY_JOB : owns
     SESSION ||--o{ RECORDING : contains
     RECORDING ||--o{ PREDICTION : produces
     PREDICTION ||--o{ EXPLANATION : explains
     SESSION ||--o{ PROCESSING_ATTEMPT : tracks
 ```
+
+Rows created before account ownership was enabled have `owner_user_id = null`
+and are quarantined from normal account queries. They are not reassigned or
+returned to a signed-in user.
 
 Video jobs are independent rows; transformed video artifacts live in the filesystem. PostgreSQL stores status, safe result metadata and private internal artifact references. File bytes stay in private storage.
 

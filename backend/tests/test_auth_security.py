@@ -121,10 +121,11 @@ class AuthenticationSecurityTests(unittest.TestCase):
                     pass
 
     def test_production_rejects_local_authentication_at_startup(self) -> None:
-        with auth_environment(APP_ENV="production", AUTH_MODE="local"):
-            with self.assertRaisesRegex(RuntimeError, "production"):
-                with TestClient(app):
-                    pass
+        for mode in ("local", "local-accounts"):
+            with self.subTest(mode=mode), auth_environment(APP_ENV="production", AUTH_MODE=mode):
+                with self.assertRaisesRegex(RuntimeError, "production"):
+                    with TestClient(app):
+                        pass
 
     def test_local_mode_preserves_existing_api_behavior(self) -> None:
         with auth_environment(AUTH_MODE="local"):

@@ -7,6 +7,10 @@ repositories own database queries.
 ```mermaid
 flowchart TD
     Main[app/main.py] --> Routes[app/api/]
+    Routes --> Auth[api/auth.py]
+    Auth --> AuthService[services/auth_service.py]
+    AuthService --> AuthModels[database/models/auth.py]
+    AuthService --> AuthDB[(users and auth_sessions)]
     Routes --> SessionService[services/session_service.py]
     Routes --> Repository[database/repository.py]
     Routes --> Processing[services/processing_service.py]
@@ -20,6 +24,31 @@ flowchart TD
     Processing --> PostgreSQL[(PostgreSQL results)]
     Storage --> Files[(Temporary private EEG files)]
 ```
+
+## Authentication and ownership
+
+The local account API is:
+
+```text
+GET  /api/auth/session
+POST /api/auth/register
+POST /api/auth/login
+POST /api/auth/logout
+```
+
+`local-accounts` uses email/password accounts with 12-character minimum
+passwords, salted `hashlib.scrypt` records and eight-hour opaque sessions. The
+raw session token is sent only as an HttpOnly, SameSite=Lax cookie; PostgreSQL
+stores its SHA-256 hash. `require_api_auth` resolves the current user before
+protected routes run. EEG sessions, upload drafts and video jobs are filtered
+by `owner_user_id`; recordings inherit ownership through their session. A
+missing or foreign identifier returns `404`.
+
+Use `AUTH_MODE=local` only for isolated tests. It intentionally bypasses login
+and exposes legacy owner-null rows, so it is not a demo or deployment mode.
+Production still requires `AUTH_MODE=cloudflare`. Cloudflare Access validates
+the JWT issuer, audience and signing key before mapping its subject to a local
+ownership row; see [Cloudflare's JWT validation guidance](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/).
 
 ## Request and processing flow
 

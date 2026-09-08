@@ -19,22 +19,31 @@ from backend.app.database.models.eeg import (
 from backend.app.database.models.video import VideoPrivacyJob
 
 
-def get_upload_draft(db: Session, draft_id: str) -> UploadDraft | None:
+def get_upload_draft(db: Session, draft_id: str, owner_user_id: int | None = None) -> UploadDraft | None:
     """Find one staged upload by its opaque draft identifier."""
 
-    return db.exec(select(UploadDraft).where(UploadDraft.draft_id == draft_id)).first()
+    statement = select(UploadDraft).where(UploadDraft.draft_id == draft_id)
+    if owner_user_id is not None:
+        statement = statement.where(UploadDraft.owner_user_id == owner_user_id)
+    return db.exec(statement).first()
 
 
-def get_video_job(db: Session, job_id: str) -> VideoPrivacyJob | None:
+def get_video_job(db: Session, job_id: str, owner_user_id: int | None = None) -> VideoPrivacyJob | None:
     """Find a video job by its opaque public identifier."""
 
-    return db.exec(select(VideoPrivacyJob).where(VideoPrivacyJob.job_id == job_id)).first()
+    statement = select(VideoPrivacyJob).where(VideoPrivacyJob.job_id == job_id)
+    if owner_user_id is not None:
+        statement = statement.where(VideoPrivacyJob.owner_user_id == owner_user_id)
+    return db.exec(statement).first()
 
 
-def list_video_jobs(db: Session) -> list[VideoPrivacyJob]:
+def list_video_jobs(db: Session, owner_user_id: int | None = None) -> list[VideoPrivacyJob]:
     """Return video jobs in newest-first order."""
 
-    return list(db.exec(select(VideoPrivacyJob).order_by(VideoPrivacyJob.created_at.desc())).all())
+    statement = select(VideoPrivacyJob).order_by(VideoPrivacyJob.created_at.desc())
+    if owner_user_id is not None:
+        statement = statement.where(VideoPrivacyJob.owner_user_id == owner_user_id)
+    return list(db.exec(statement).all())
 
 
 def list_expired_upload_drafts(db: Session, now: datetime) -> list[UploadDraft]:
@@ -43,51 +52,61 @@ def list_expired_upload_drafts(db: Session, now: datetime) -> list[UploadDraft]:
     return list(db.exec(select(UploadDraft).where(UploadDraft.expires_at <= now)).all())
 
 
-def get_session_by_public_id(db: Session, session_id: str) -> EEGSession | None:
+def get_session_by_public_id(db: Session, session_id: str, owner_user_id: int | None = None) -> EEGSession | None:
     """Find one session by its opaque public identifier."""
 
-    return db.exec(select(EEGSession).where(EEGSession.session_id == session_id)).first()
+    statement = select(EEGSession).where(EEGSession.session_id == session_id)
+    if owner_user_id is not None:
+        statement = statement.where(EEGSession.owner_user_id == owner_user_id)
+    return db.exec(statement).first()
 
 
-def get_session_by_database_id(db: Session, session_db_id: int) -> EEGSession | None:
+def get_session_by_database_id(db: Session, session_db_id: int, owner_user_id: int | None = None) -> EEGSession | None:
     """Find the owning session for one recording without exposing its database ID."""
 
-    return db.get(EEGSession, session_db_id)
+    session = db.get(EEGSession, session_db_id)
+    if owner_user_id is not None and (session is None or session.owner_user_id != owner_user_id):
+        return None
+    return session
 
 
-def list_sessions(db: Session) -> list[EEGSession]:
+def list_sessions(db: Session, owner_user_id: int | None = None) -> list[EEGSession]:
     """Return sessions ordered from newest to oldest."""
 
-    return list(db.exec(select(EEGSession).order_by(EEGSession.created_at.desc())).all())
-
-
-def get_recording_by_public_id(db: Session, record_id: str) -> EEGRecording | None:
-    """Find one recording by its opaque public identifier."""
-
-    return db.exec(select(EEGRecording).where(EEGRecording.record_id == record_id)).first()
-
-
-def list_recordings_for_session(db: Session, session_db_id: int) -> list[EEGRecording]:
-    """Return recordings for a session in archive sequence order."""
-
-    statement = (
-        select(EEGRecording)
-        .where(EEGRecording.session_db_id == session_db_id)
-        .order_by(EEGRecording.sequence_index)
-    )
+    statement = select(EEGSession).order_by(EEGSession.created_at.desc())
+    if owner_user_id is not None:
+        statement = statement.where(EEGSession.owner_user_id == owner_user_id)
     return list(db.exec(statement).all())
 
 
-def list_recordings_for_sessions(db: Session, session_db_ids: list[int]) -> list[EEGRecording]:
+def get_recording_by_public_id(db: Session, record_id: str, owner_user_id: int | None = None) -> EEGRecording | None:
+    """Find one recording by its opaque public identifier."""
+
+    statement = select(EEGRecording).where(EEGRecording.record_id == record_id)
+    if owner_user_id is not None:
+        statement = statement.join(EEGSession, EEGSession.id == EEGRecording.session_db_id).where(EEGSession.owner_user_id == owner_user_id)
+    return db.exec(statement).first()
+
+
+def list_recordings_for_session(db: Session, session_db_id: int, owner_user_id: int | None = None) -> list[EEGRecording]:
+    """Return recordings for a session in archive sequence order."""
+
+    statement = select(EEGRecording).where(EEGRecording.session_db_id == session_db_id)
+    if owner_user_id is not None:
+        statement = statement.join(EEGSession, EEGSession.id == EEGRecording.session_db_id).where(EEGSession.owner_user_id == owner_user_id)
+    statement = statement.order_by(EEGRecording.sequence_index)
+    return list(db.exec(statement).all())
+
+
+def list_recordings_for_sessions(db: Session, session_db_ids: list[int], owner_user_id: int | None = None) -> list[EEGRecording]:
     """Return recordings for multiple sessions in stable archive order."""
 
     if not session_db_ids:
         return []
-    statement = (
-        select(EEGRecording)
-        .where(EEGRecording.session_db_id.in_(session_db_ids))
-        .order_by(EEGRecording.session_db_id, EEGRecording.sequence_index)
-    )
+    statement = select(EEGRecording).where(EEGRecording.session_db_id.in_(session_db_ids))
+    if owner_user_id is not None:
+        statement = statement.join(EEGSession, EEGSession.id == EEGRecording.session_db_id).where(EEGSession.owner_user_id == owner_user_id)
+    statement = statement.order_by(EEGRecording.session_db_id, EEGRecording.sequence_index)
     return list(db.exec(statement).all())
 
 

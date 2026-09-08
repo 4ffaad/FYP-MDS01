@@ -9,6 +9,8 @@ from fastapi.responses import FileResponse
 from sqlmodel import Session
 
 from backend.app.database.db import get_session
+from backend.app.database.models.auth import User
+from backend.app.core.security import owner_id, require_api_auth
 from backend.app.database.repository import get_video_job, list_video_jobs
 from backend.app.services.video_privacy_service import (
     acknowledge_video_job,
@@ -32,6 +34,7 @@ async def create_job(
     video: UploadFile = File(...),
     profile: str = Form(...),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
 ) -> dict:
     """Encrypt and queue one supported video privacy transform."""
 
@@ -41,7 +44,10 @@ async def create_job(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     storage = VideoStorage()
     try:
-        job = await create_video_job(db, storage, video, selected_profile)
+        create_kwargs = {}
+        if (current_owner_id := owner_id(current_user)) is not None:
+            create_kwargs["owner_user_id"] = current_owner_id
+        job = await create_video_job(db, storage, video, selected_profile, **create_kwargs)
     except StorageError as exc:
         message = str(exc)
         code = 413 if "size" in message.lower() else 400
@@ -58,28 +64,39 @@ async def create_job(
 
 
 @router.get("/jobs")
-def list_jobs(db: Session = Depends(get_session)) -> dict:
+def list_jobs(
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
     """List video privacy jobs without private media metadata."""
 
     storage = VideoStorage()
-    return {"jobs": [public_video_job(db, job, storage) for job in list_video_jobs(db)]}
+    return {"jobs": [public_video_job(db, job, storage) for job in list_video_jobs(db, owner_id(current_user))]}
 
 
 @router.get("/jobs/{job_id}")
-def get_job(job_id: str, db: Session = Depends(get_session)) -> dict:
+def get_job(
+    job_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
     """Return safe status and output policy for one job."""
 
-    job = get_video_job(db, job_id)
+    job = get_video_job(db, job_id, owner_id(current_user))
     if job is None:
         raise HTTPException(status_code=404, detail="Video privacy job was not found.")
     return {"job": public_video_job(db, job, VideoStorage())}
 
 
 @router.post("/jobs/{job_id}/acknowledge")
-def acknowledge_job(job_id: str, db: Session = Depends(get_session)) -> dict:
+def acknowledge_job(
+    job_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
     """Acknowledge a usable quality caveat before enabling download."""
 
-    job = get_video_job(db, job_id)
+    job = get_video_job(db, job_id, owner_id(current_user))
     if job is None:
         raise HTTPException(status_code=404, detail="Video privacy job was not found.")
     storage = VideoStorage()
@@ -96,12 +113,17 @@ def _remove_private_work(storage: VideoStorage, path) -> None:
 
 
 @router.get("/jobs/{job_id}/preview")
-def get_preview(job_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_session)) -> FileResponse:
+def get_preview(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> FileResponse:
     """Stream only the transformed representative preview frame."""
 
     storage = VideoStorage()
     try:
-        job, encrypted_path = get_download_artifact(db, job_id, preview=True, storage=storage)
+        job, encrypted_path = get_download_artifact(db, job_id, preview=True, storage=storage, owner_user_id=owner_id(current_user))
         materialized = storage.materialize_artifact(job.job_id, encrypted_path, f"protected-preview-{secrets.token_hex(8)}.jpg")
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -117,12 +139,17 @@ def get_preview(job_id: str, background_tasks: BackgroundTasks, db: Session = De
 
 
 @router.get("/jobs/{job_id}/download")
-def download_output(job_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_session)) -> FileResponse:
+def download_output(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> FileResponse:
     """Stream transformed output only after backend policy checks pass."""
 
     storage = VideoStorage()
     try:
-        job, encrypted_path = get_download_artifact(db, job_id, storage=storage)
+        job, encrypted_path = get_download_artifact(db, job_id, storage=storage, owner_user_id=owner_id(current_user))
         materialized = storage.materialize_artifact(job.job_id, encrypted_path, f"protected-output-{secrets.token_hex(8)}.mp4")
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

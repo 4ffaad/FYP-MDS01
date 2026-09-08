@@ -27,13 +27,19 @@ npm run dev
 Open [MDS01](http://127.0.0.1:3000) or [API documentation](http://127.0.0.1:8000/docs).
 The setup command generates local secrets and leaves existing configuration untouched.
 New installations use the deterministic **development stub**; existing `.env` runtime choices are preserved.
+New installations also use `AUTH_MODE=local-accounts`: register the first
+teammate in the browser, then sign in. Each account sees only its own EEG
+sessions, upload drafts and video jobs. Use `AUTH_MODE=local` only for explicit
+unauthenticated backend tests.
 For H5 scores, waveform preview, sample data, Windows instructions and troubleshooting, see [setup](docs/setup.md).
 
 ## How it fits together
 
 ```mermaid
 flowchart LR
-    Browser[Next.js interface] --> API[FastAPI]
+    Browser[Next.js interface] --> Auth[Login or register]
+    Auth --> Cookie[HttpOnly session cookie]
+    Cookie --> API[FastAPI auth dependency]
     API --> DB[(PostgreSQL: status and results)]
     API --> EEG[EEG processing]
     API --> Video[Video privacy processing]
@@ -41,6 +47,7 @@ flowchart LR
     Model --> DB
     EEG --> Files[(Private encrypted storage)]
     Video --> Files
+    API --> Owner[Owner-filtered EEG and video queries]
 ```
 
 | Location | Responsibility |

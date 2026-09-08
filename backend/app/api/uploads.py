@@ -8,7 +8,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from sqlmodel import Session
 
 from backend.app.core.config import UPLOAD_DRAFT_TTL_SECONDS
+from backend.app.core.security import owner_id, require_api_auth
 from backend.app.database.db import get_session
+from backend.app.database.models.auth import User
 from backend.app.database.repository import get_upload_draft
 from backend.app.database.models.eeg import utc_now
 from backend.app.services.session_service import (
@@ -36,7 +38,11 @@ def _public_draft(draft) -> dict:
 
 
 @router.post("/drafts", status_code=status.HTTP_201_CREATED)
-async def stage_upload(archive: UploadFile = File(...), db: Session = Depends(get_session)) -> dict:
+async def stage_upload(
+    archive: UploadFile = File(...),
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
     """Encrypt a ZIP into a short-lived draft before privacy selection.
 
     Parameters
@@ -63,19 +69,23 @@ async def stage_upload(archive: UploadFile = File(...), db: Session = Depends(ge
     cleanup_expired_drafts(db, storage)
     expires_at = utc_now() + timedelta(seconds=UPLOAD_DRAFT_TTL_SECONDS)
     try:
-        draft = await create_upload_draft(db, storage, archive, expires_at)
+        draft = await create_upload_draft(db, storage, archive, expires_at, owner_id(current_user))
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return _public_draft(draft)
 
 
 @router.get("/drafts/{draft_id}")
-def get_staged_upload(draft_id: str, db: Session = Depends(get_session)) -> dict:
+def get_staged_upload(
+    draft_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
     """Return safe status for one staged upload."""
 
     storage = SessionStorage()
     cleanup_expired_drafts(db, storage)
-    draft = get_upload_draft(db, draft_id)
+    draft = get_upload_draft(db, draft_id, owner_id(current_user))
     if draft is None:
         raise HTTPException(status_code=404, detail="Upload draft was not found or has expired.")
     return _public_draft(draft)
@@ -88,6 +98,7 @@ def finalize_staged_upload(
     privacy_method: str | None = Form(None),
     privacy_methods: str | None = Form(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
 ) -> dict:
     """Create and queue one analysis session from an encrypted draft.
 
@@ -128,7 +139,10 @@ def finalize_staged_upload(
     storage = SessionStorage()
     cleanup_expired_drafts(db, storage)
     try:
-        session = finalize_upload_draft(db, storage, draft_id, privacy_profile)
+        finalize_kwargs = {}
+        if (current_owner_id := owner_id(current_user)) is not None:
+            finalize_kwargs["owner_user_id"] = current_owner_id
+        session = finalize_upload_draft(db, storage, draft_id, privacy_profile, **finalize_kwargs)
     except ValueError as exc:
         processing_capacity.release()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -143,11 +157,15 @@ def finalize_staged_upload(
 
 
 @router.delete("/drafts/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_staged_upload(draft_id: str, db: Session = Depends(get_session)) -> None:
+def delete_staged_upload(
+    draft_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> None:
     """Delete one staged upload before it becomes an analysis session."""
 
     storage = SessionStorage()
-    draft = get_upload_draft(db, draft_id)
+    draft = get_upload_draft(db, draft_id, owner_id(current_user))
     if draft is None:
         raise HTTPException(status_code=404, detail="Upload draft was not found.")
     storage.delete_draft(draft.draft_id)

@@ -12,6 +12,7 @@ autonomous diagnosis.
 flowchart TD
     Pages[frontend/src/app/] --> Screens[frontend/src/components/]
     Screens --> API[frontend/src/lib/api.ts]
+    API --> Auth[HttpOnly backend session]
     API --> FastAPI[FastAPI REST API]
     API --> Stub[Local browser stub mode]
     Screens --> Types[frontend/src/lib/types.ts]
@@ -22,7 +23,9 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    Upload[/upload] --> Stage[Encrypt and stage ZIP]
+    Login[/login] --> Auth[Backend session cookie]
+    Auth --> Upload[/upload]
+    Upload --> Stage[Encrypt and stage ZIP]
     Stage --> Config[Choose privacy treatment]
     Config --> Submit[Submit with metadata scrub plus optional obfuscation]
     Submit --> Session[/sessions/{sessionId}]
@@ -43,6 +46,11 @@ sequenceDiagram
     participant Page as Next.js page
     participant Adapter as lib/api.ts
     participant API as FastAPI
+    User->>Page: Register or sign in
+    Page->>Adapter: registerAccount() or loginAccount()
+    Adapter->>API: POST /api/auth/register or /login
+    API-->>Adapter: HttpOnly session cookie
+    Page->>Page: Navigate to protected workspace
 
     User->>Page: Select ZIP
     Page->>Adapter: stageUpload(file)
@@ -66,6 +74,7 @@ E2E tests or UI work without a backend:
 
 ```dotenv
 NEXT_PUBLIC_USE_API_STUB=false
+NEXT_PUBLIC_AUTH_MODE=backend
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW=false
 NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW=false
@@ -77,6 +86,7 @@ NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW=false
 - `src/app/dashboard/page.tsx` renders session groups and every recording.
 - `src/app/sessions/[sessionId]/page.tsx` renders one session’s timestamp and recording list.
 - `src/app/results/[recordId]/page.tsx` renders one recording result.
+- `src/app/login/page.tsx` renders sign-in and self-registration.
 - `src/components/UploadScreen.tsx` owns file selection and submission.
 - `src/components/DashboardScreen.tsx` owns session grouping and active-session polling.
 - `src/components/SessionDetailScreen.tsx` owns one session’s summary and recording list.
@@ -86,6 +96,7 @@ NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW=false
 - `src/components/PredictionTimeline.tsx` renders window scores, the alert threshold, and flagged intervals.
 - `src/components/SignalViewer.tsx` requests a bounded retained positive clip only on a model-alert result page.
 - `src/components/AppShell.tsx` provides shared navigation and page frame.
+- `src/components/LoginScreen.tsx` owns the local account form and actionable errors.
 - `src/lib/api.ts` is the only frontend-to-backend adapter.
 - `src/lib/types.ts` defines the frontend view-model types.
 
@@ -103,6 +114,10 @@ The frontend never displays patient references, original filenames, original
 paths, unrestricted original files, or waveform samples during upload
 configuration. CHB-MIT summary/sidecar intervals are not displayed to normal
 users; recording rows and alert states use only model alert windows.
+The app shell checks `/api/auth/session` before rendering protected pages. It
+does not put credentials or auth state in local storage. A `401` from a
+protected request returns the user to `/login`; the backend remains the source
+of truth.
 Development results use amber `Development flag` and `Development score`
 wording. A verified calibrated runtime may use red model-alert wording. The
 development score is not confidence, accuracy, or a seizure diagnosis. The

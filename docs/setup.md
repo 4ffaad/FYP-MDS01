@@ -34,13 +34,21 @@ These commands also work in PowerShell. On Linux, Docker may require your user t
 
 Both frontend and API bind to loopback. Each teammate runs their own database, files and keys. Do not share your `.env` or connect classmates to an unauthenticated network-facing instance.
 
+The default local mode is `local-accounts`. The first browser visit shows the
+MDS01 sign-in page; choose **Create an account** and use a non-patient email
+and a password of at least 12 characters. The API stores only a salted password
+hash and an opaque server-side session token. Sign out from the header when
+switching teammates.
+
 ## Runtime choices
 
 | Mode | Configuration | What it tests |
 | --- | --- | --- |
 | Backend development stub (default) | Root `.env`: `MODEL_RUNTIME=stub`, `INSTALL_RESEARCH=false` | Real uploads, database, privacy pipeline and synthetic model scores |
 | H5 research runtime | Root `.env`: `MODEL_RUNTIME=h5`, `INSTALL_RESEARCH=true` | Supplied H5 model under the reviewed contract |
-| Browser-only stub | Frontend `.env.local`: `NEXT_PUBLIC_USE_API_STUB=true` | UI flows with synthetic browser data; no actual EEG/video processing |
+| Local accounts (default) | Root `.env`: `AUTH_MODE=local-accounts` | Backend-enforced login and owner-filtered data |
+| Unauthenticated backend test mode | Root `.env`: `AUTH_MODE=local` | API/service tests only; never expose this mode to a network |
+| Browser-only stub | Frontend test config: `NEXT_PUBLIC_USE_API_STUB=true`, `NEXT_PUBLIC_AUTH_MODE=stub` | UI flows with synthetic browser data; no actual EEG/video processing |
 
 After changing backend settings, run `docker compose up --build` again.
 After changing frontend settings, restart `npm run dev` (or rebuild a production frontend).
@@ -134,7 +142,7 @@ To test real Next.js → FastAPI → PostgreSQL behavior, first create the local
 npm run test:e2e:real
 ```
 
-This creates and removes only the disposable Compose project `mds01-security`, including its test volumes, on API port 18000 and frontend port 3002. Never store real data in that project. It exercises migrations, upload, background processing, safe results and deletion; it does not establish H5 accuracy or video anonymization.
+This creates and removes only the disposable Compose project `mds01-security`, including its test volumes, on API port 18000 and frontend port 3002. Never store real data in that project. It exercises registration through the UI, the authenticated migration, upload, background processing, safe results and deletion; it does not establish H5 accuracy or video anonymization.
 
 ## Stop, restart and troubleshoot
 

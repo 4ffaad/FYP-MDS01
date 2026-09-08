@@ -72,6 +72,7 @@ class EEGSession(SQLModel, table=True):
     __tablename__ = "sessions"
 
     id: int | None = Field(default=None, primary_key=True)
+    owner_user_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     session_id: str = Field(index=True, unique=True)
     privacy_method: str = Field(default="metadata-scrub", max_length=64)
     original_filename: str = ""
@@ -98,6 +99,7 @@ class UploadDraft(SQLModel, table=True):
     __tablename__ = "upload_drafts"
 
     id: int | None = Field(default=None, primary_key=True)
+    owner_user_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     draft_id: str = Field(index=True, unique=True, max_length=64)
     encrypted_path: str = Field(max_length=1024)
     created_at: datetime = Field(default_factory=utc_now)

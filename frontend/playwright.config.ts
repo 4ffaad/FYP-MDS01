@@ -17,6 +17,7 @@ export default defineConfig({
       NEXT_DIST_DIR: ".next-e2e",
       NEXT_TSCONFIG_PATH: "tsconfig.e2e.json",
       NEXT_PUBLIC_USE_API_STUB: "true",
+      NEXT_PUBLIC_AUTH_MODE: "stub",
     },
     url: "http://127.0.0.1:3001",
     reuseExistingServer: false,

@@ -30,7 +30,7 @@ services:
       STORAGE_DIR: /app/backend/storage
       CORS_ORIGINS: http://127.0.0.1:3002
       APP_ENV: test
-      AUTH_MODE: local
+      AUTH_MODE: local-accounts
       MODEL_RUNTIME: stub
       MDS01_STORAGE_KEY: c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3M=
       MDS01_TEMPLATE_KEY: dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHQ=

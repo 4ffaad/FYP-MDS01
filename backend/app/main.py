@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.health import router as health_router
+from backend.app.api.auth import router as auth_router
 from backend.app.api.recordings import router as recordings_router
 from backend.app.api.sessions import router as sessions_router
 from backend.app.api.uploads import router as uploads_router
@@ -57,6 +58,7 @@ async def add_security_headers(request: Request, call_next) -> Response:
 
 
 app.include_router(health_router)
+app.include_router(auth_router)
 api_dependencies = [Depends(require_api_auth)]
 app.include_router(sessions_router, dependencies=api_dependencies)
 app.include_router(recordings_router, dependencies=api_dependencies)

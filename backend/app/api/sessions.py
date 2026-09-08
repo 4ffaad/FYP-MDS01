@@ -5,8 +5,10 @@ from __future__ import annotations
 from fastapi import BackgroundTasks, APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from sqlmodel import Session
 
+from backend.app.core.security import owner_id, require_api_auth
 from backend.app.privacy.methods import canonical_privacy_profile, normalize_privacy_methods
 from backend.app.database.db import get_session
+from backend.app.database.models.auth import User
 from backend.app.services.session_service import (
     create_session,
     get_session_or_none,
@@ -28,6 +30,7 @@ async def upload_session(
     privacy_method: str = Form("metadata-scrub"),
     privacy_methods: str | None = Form(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
 ) -> dict:
     """Accept a ZIP archive, create a session, and schedule background work.
 
@@ -70,12 +73,10 @@ async def upload_session(
         raise HTTPException(status_code=503, detail="The analysis service is at capacity. Try again later.")
 
     try:
-        session = await create_session(
-            db,
-            SessionStorage(),
-            archive,
-            privacy_profile,
-        )
+        create_kwargs = {}
+        if (current_owner_id := owner_id(current_user)) is not None:
+            create_kwargs["owner_user_id"] = current_owner_id
+        session = await create_session(db, SessionStorage(), archive, privacy_profile, **create_kwargs)
     except StorageError as exc:
         processing_capacity.release()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -91,7 +92,10 @@ async def upload_session(
 
 
 @router.get("/sessions")
-def get_sessions(db: Session = Depends(get_session)) -> list[dict]:
+def get_sessions(
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> list[dict]:
     """List sessions using privacy-safe public serialization.
 
     Parameters
@@ -105,11 +109,15 @@ def get_sessions(db: Session = Depends(get_session)) -> list[dict]:
         Sessions ordered from newest to oldest without patient references.
     """
 
-    return public_session_list(db)
+    return public_session_list(db, owner_id(current_user))
 
 
 @router.get("/sessions/{session_id}")
-def get_session_detail(session_id: str, db: Session = Depends(get_session)) -> dict:
+def get_session_detail(
+    session_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
     """Return one session and its safe recording summaries.
 
     Parameters
@@ -130,14 +138,18 @@ def get_session_detail(session_id: str, db: Session = Depends(get_session)) -> d
         Raised with 404 when the session does not exist.
     """
 
-    session = get_session_or_none(db, session_id)
+    session = get_session_or_none(db, session_id, owner_id(current_user))
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
-    return public_session(db, session)
+    return public_session(db, session, owner_id(current_user))
 
 
 @router.get("/sessions/{session_id}/status")
-def get_session_status(session_id: str, db: Session = Depends(get_session)) -> dict:
+def get_session_status(
+    session_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
     """Return the current pipeline stage and status for a session.
 
     Parameters
@@ -153,7 +165,7 @@ def get_session_status(session_id: str, db: Session = Depends(get_session)) -> d
         Current status, stage, and a safe error message when applicable.
     """
 
-    session = get_session_or_none(db, session_id)
+    session = get_session_or_none(db, session_id, owner_id(current_user))
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
     return {
@@ -165,7 +177,11 @@ def get_session_status(session_id: str, db: Session = Depends(get_session)) -> d
 
 
 @router.get("/sessions/{session_id}/recordings")
-def get_session_recordings(session_id: str, db: Session = Depends(get_session)) -> list[dict]:
+def get_session_recordings(
+    session_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> list[dict]:
     """List the safe recording summaries belonging to a session.
 
     Parameters
@@ -181,14 +197,18 @@ def get_session_recordings(session_id: str, db: Session = Depends(get_session)) 
         Recording metadata without original filenames or storage paths.
     """
 
-    session = get_session_or_none(db, session_id)
+    session = get_session_or_none(db, session_id, owner_id(current_user))
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
-    return public_session(db, session)["recordings"]
+    return public_session(db, session, owner_id(current_user))["recordings"]
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_session_route(session_id: str, db: Session = Depends(get_session)) -> Response:
+def delete_session_route(
+    session_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> Response:
     """Delete one completed session and its private artifacts.
 
     Parameters
@@ -209,7 +229,7 @@ def delete_session_route(session_id: str, db: Session = Depends(get_session)) ->
         Raised with 404 when missing or 409 while processing is active.
     """
 
-    session = get_session_or_none(db, session_id)
+    session = get_session_or_none(db, session_id, owner_id(current_user))
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
     try:

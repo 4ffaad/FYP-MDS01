@@ -42,6 +42,7 @@ class VideoPrivacyJob(SQLModel, table=True):
     __tablename__ = "video_privacy_jobs"
 
     id: int | None = Field(default=None, primary_key=True)
+    owner_user_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     job_id: str = Field(index=True, unique=True, max_length=64)
     profile: VideoPrivacyProfile = Field(
         sa_column=Column(

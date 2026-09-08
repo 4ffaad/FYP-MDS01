@@ -7,7 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 
 from backend.app.core.config import ENABLE_FULL_SIGNAL_PREVIEW, ENABLE_SIGNAL_PREVIEW, FULL_SIGNAL_PREVIEW_MAX_SECONDS
+from backend.app.core.security import owner_id, require_api_auth
 from backend.app.database.db import get_session
+from backend.app.database.models.auth import User
 from backend.app.database.models.eeg import EEGRecording
 from backend.app.database.repository import (
     get_recording_by_public_id,
@@ -26,7 +28,7 @@ from backend.app.privacy.retention import model_alert_intervals
 router = APIRouter(prefix="/api", tags=["recordings"])
 
 
-def _get_record(db: Session, record_id: str) -> EEGRecording:
+def _get_record(db: Session, record_id: str, owner_user_id: int | None = None) -> EEGRecording:
     """Load a recording by its public identifier or raise HTTP 404.
 
     Parameters
@@ -47,14 +49,18 @@ def _get_record(db: Session, record_id: str) -> EEGRecording:
         Raised with status 404 when the recording does not exist.
     """
 
-    record = get_recording_by_public_id(db, record_id)
+    record = get_recording_by_public_id(db, record_id, owner_user_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Recording was not found.")
     return record
 
 
 @router.get("/recordings/{record_id}")
-def get_recording(record_id: str, db: Session = Depends(get_session)) -> dict:
+def get_recording(
+    record_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
     """Return safe technical metadata for one recording.
 
     Parameters
@@ -71,8 +77,8 @@ def get_recording(record_id: str, db: Session = Depends(get_session)) -> dict:
         paths.
     """
 
-    record = _get_record(db, record_id)
-    session = get_session_by_database_id(db, record.session_db_id)
+    record = _get_record(db, record_id, owner_id(current_user))
+    session = get_session_by_database_id(db, record.session_db_id, owner_id(current_user))
     alert_count = list_flagged_window_counts(db, [record.id] if record.id is not None else []).get(record.id or 0, 0)
     metadata = list_model_metadata(db, [record.id] if record.id is not None else []).get(record.id or 0)
     intervals = model_alert_intervals(list_predictions(db, record.id))
@@ -80,7 +86,11 @@ def get_recording(record_id: str, db: Session = Depends(get_session)) -> dict:
 
 
 @router.get("/recordings/{record_id}/prediction")
-def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
+def get_prediction(
+    record_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
     """Return model metadata and window predictions for a recording.
 
     Parameters
@@ -96,8 +106,8 @@ def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
         Model version and one safe prediction object per EEG window.
     """
 
-    record = _get_record(db, record_id)
-    session = get_session_by_database_id(db, record.session_db_id)
+    record = _get_record(db, record_id, owner_id(current_user))
+    session = get_session_by_database_id(db, record.session_db_id, owner_id(current_user))
     predictions = list_predictions(db, record.id)
     first = predictions[0] if predictions else None
     score_type = first.score_type if first else None
@@ -166,7 +176,11 @@ def get_prediction(record_id: str, db: Session = Depends(get_session)) -> dict:
 
 
 @router.get("/recordings/{record_id}/explanation")
-def get_explanation(record_id: str, db: Session = Depends(get_session)) -> dict:
+def get_explanation(
+    record_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
     """Return stored non-clinical explanation artifacts for a recording.
 
     Parameters
@@ -183,7 +197,7 @@ def get_explanation(record_id: str, db: Session = Depends(get_session)) -> dict:
         Internal artifact paths are never returned.
     """
 
-    record = _get_record(db, record_id)
+    record = _get_record(db, record_id, owner_id(current_user))
     predictions = list_predictions(db, record.id)
     prediction_ids = [prediction.id for prediction in predictions if prediction.id is not None]
     explanations = list_explanations(db, prediction_ids)
@@ -210,6 +224,7 @@ def get_signal(
     duration_seconds: float = Query(10, gt=0, le=7200),
     max_points: int = Query(2000, gt=0, le=10000),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
 ) -> dict:
     """Reject waveform access because EEG remains biometrically sensitive.
 
@@ -246,8 +261,8 @@ def get_signal(
     max_duration = FULL_SIGNAL_PREVIEW_MAX_SECONDS if ENABLE_FULL_SIGNAL_PREVIEW else 660.0
     if duration_seconds > max_duration:
         raise HTTPException(status_code=422, detail="The requested signal range is too large.")
-    record = _get_record(db, record_id)
-    session = get_session_by_database_id(db, record.session_db_id)
+    record = _get_record(db, record_id, owner_id(current_user))
+    session = get_session_by_database_id(db, record.session_db_id, owner_id(current_user))
     if session is None:
         raise HTTPException(status_code=404, detail="Recording session was not found.")
     try:

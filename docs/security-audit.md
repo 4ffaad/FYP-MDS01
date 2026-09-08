@@ -2,24 +2,38 @@
 
 This report records the August 2026 repository and disposable-runtime audit. The managed Codex Security deep-scan runner could not start because this session did not provide its required managed filesystem. The audit instead used three independent source reviews, direct API tests, Bandit, dependency checks, secret/history checks, Docker inspection, Playwright, and a disposable real-backend workflow.
 
+## Current implementation verification — September 2026
+
+The local multi-user authentication update was rechecked after the historical
+snapshot above:
+
+- Backend unit/security suite: **101 passed**.
+- Frontend lint, type check and production build: **passed**.
+- Browser-only desktop/mobile suite: **20 passed**.
+- Authenticated login/register/logout browser suite: **1 passed**.
+- Disposable real Docker workflow, including browser registration: **1 passed**.
+
+These checks use synthetic or disposable data only and do not establish
+clinical accuracy, anonymity or production security.
+
 ## Security controls verified
 
 | Area | Result |
 | --- | --- |
-| API authentication | Every `/api` router requires a valid Cloudflare Access assertion in `AUTH_MODE=cloudflare`; `/health` remains public. Production startup rejects local authentication. |
+| API authentication | Protected routers require either a server-side local account session in `AUTH_MODE=local-accounts` or a valid Cloudflare Access assertion in `AUTH_MODE=cloudflare`; `/health` and auth status remain public. Production startup rejects local authentication. |
 | Local exposure | FastAPI and PostgreSQL bind to `127.0.0.1` in Docker Compose. Local authentication is intended only for this loopback development mode. |
 | Identifiers | New `SES-`, `REC-`, and `UPL-` identifiers contain 128 random bits. Historical IDs remain readable. |
 | Upload abuse | ZIP traversal, per-member size, member count, cumulative uncompressed size, and compression-ratio limits are enforced. |
 | Processing load | A bounded in-process semaphore rejects new analyses with `503` when the configured prototype capacity is full. |
 | Private storage | New directories use mode `0700`, files use `0600`, the process uses umask `077`, and the backend container runs as an unprivileged user. A scoped initializer repairs ownership of an older Docker storage volume without deleting it. |
-| Browser boundary | Explicit credentialed CORS origins support Cloudflare Access cookies. FastAPI and Next.js return framing, MIME-sniffing, referrer, and browser-permission headers. |
+| Browser boundary | Explicit credentialed CORS origins support local and Cloudflare cookies. Local state changes also require a configured `Origin`. FastAPI and Next.js return framing, MIME-sniffing, referrer, and browser-permission headers. |
 | Signal access | Signal preview remains disabled by default and returns `404`; enabling it is a deliberate local-development choice. |
 
 ## Verification evidence
 
-- Backend unit and security suite: **54 passed**.
+- Backend unit and security suite: **54 passed** at the time of the August snapshot.
 - Frontend ESLint and production Next.js build: **passed**.
-- Stub Playwright desktop/mobile suite: **12 passed**.
+- Stub Playwright desktop/mobile suite: **12 passed** at the time of the August snapshot.
 - Disposable real-backend Playwright workflow: **1 passed**. It exercised encrypted draft upload, privacy selection, PostgreSQL migrations, background processing, session/result APIs, signal denial, and deletion.
 - Privacy canaries placed in the synthetic EDF filename, patient fields, equipment fields, annotations, and signal-header text did not appear in the browser or tested API responses.
 - The disposable PostgreSQL and storage volumes were removed after the test.
@@ -27,7 +41,9 @@ This report records the August 2026 repository and disposable-runtime audit. The
 - The Python dependency check did not establish a fully reproducible lock-file audit; application dependencies are still range/unpinned requirements.
 
 This is historical evidence, not the current test count or a fresh security
-assessment. For current startup and test commands, use [setup](setup.md).
+assessment. The local-account controls above are part of the current
+implementation; rerun the checks below after changes. For current startup and
+test commands, use [setup](setup.md).
 
 Run the permanent checks with:
 

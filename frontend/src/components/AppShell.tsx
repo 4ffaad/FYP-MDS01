@@ -2,17 +2,55 @@
 
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Icon } from "./Icon";
 import { Mds01Logo } from "./Mds01Logo";
 import { NavLink } from "./NavLink";
+import { getCurrentUser, logoutAccount } from "@/lib/api";
+import type { AuthUser } from "@/lib/types";
 
 /** Provide the shared MDS01 workspace chrome and persistent privacy boundary. */
 export function AppShell({ children }: { children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [authStatus, setAuthStatus] = useState<"loading" | "authenticated" | "unauthenticated">("loading");
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
   const isVideoPrivacy = pathname.startsWith("/video-privacy");
+  const isLogin = pathname === "/login";
+
+  useEffect(() => {
+    let mounted = true;
+    void getCurrentUser()
+      .then((nextUser) => {
+        if (!mounted) return;
+        setUser(nextUser);
+        setAuthStatus(nextUser ? "authenticated" : "unauthenticated");
+        if (!nextUser && pathname !== "/login") router.replace("/login");
+        if (nextUser && pathname === "/login") router.replace("/dashboard");
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setUser(null);
+        setAuthStatus("unauthenticated");
+        if (pathname !== "/login") router.replace("/login");
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [pathname, router]);
+
+  useEffect(() => {
+    const redirectToLogin = () => {
+      setUser(null);
+      setAuthStatus("unauthenticated");
+      if (pathname !== "/login") router.replace("/login");
+    };
+    window.addEventListener("mds01:auth-expired", redirectToLogin);
+    return () => window.removeEventListener("mds01:auth-expired", redirectToLogin);
+  }, [pathname, router]);
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -21,6 +59,31 @@ export function AppShell({ children }: { children: ReactNode }) {
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, []);
+
+  async function handleLogout() {
+    setLoggingOut(true);
+    try {
+      await logoutAccount();
+    } finally {
+      setUser(null);
+      setAuthStatus("unauthenticated");
+      setLoggingOut(false);
+      router.replace("/login");
+    }
+  }
+
+  if (authStatus === "loading" && isLogin) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-canvas px-6" aria-live="polite">
+        <p className="text-sm text-ink-muted">Checking workspace access…</p>
+      </main>
+    );
+  }
+  if (authStatus === "unauthenticated" && !isLogin) return null;
+  if (authStatus === "authenticated" && isLogin) return null;
+  if (isLogin) {
+    return <main className="min-h-screen bg-canvas" tabIndex={-1}>{children}</main>;
+  }
 
   return (
     <div className="flex min-h-screen flex-col bg-canvas text-ink">
@@ -55,8 +118,22 @@ export function AppShell({ children }: { children: ReactNode }) {
             </NavLink>
           </nav>
 
-          <div className="ml-auto flex items-center gap-4">
+          <div className="ml-auto flex items-center gap-3">
             <span className="text-xs text-ink-faint">Research prototype</span>
+            {user && (
+              <div className="hidden items-center gap-2 border-l border-rule pl-3 sm:flex">
+                <span className="max-w-48 truncate text-xs text-ink-muted" title={user.email}>{user.email}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  type="button"
+                  onClick={() => void handleLogout()}
+                  disabled={loggingOut}
+                >
+                  {loggingOut ? "Signing out…" : "Sign out"}
+                </Button>
+              </div>
+            )}
             <Button
               variant="outline"
               size="icon-lg"
@@ -97,12 +174,24 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Icon name="shield" className="size-4" />
               Video privacy
             </NavLink>
+            {user && (
+              <div className="mt-2 flex items-center justify-between border-t border-rule px-3 pt-3 lg:hidden">
+                <span className="max-w-52 truncate text-xs text-ink-muted">{user.email}</span>
+                <Button variant="ghost" size="sm" type="button" onClick={() => void handleLogout()} disabled={loggingOut}>
+                  {loggingOut ? "Signing out…" : "Sign out"}
+                </Button>
+              </div>
+            )}
           </nav>
         </div>
       </header>
 
       <main id="main-content" className="flex-1" tabIndex={-1}>
-        {children}
+        {authStatus === "authenticated" ? children : (
+          <div className="grid min-h-[50vh] place-items-center px-6" aria-live="polite">
+            <p className="text-sm text-ink-muted">Checking workspace access…</p>
+          </div>
+        )}
       </main>
 
       <footer className="mt-auto shrink-0 border-t border-rule">

@@ -16,6 +16,12 @@ export interface UploadDraft {
   expiresAt: string;
 }
 
+export interface AuthUser {
+  id: string;
+  email: string;
+  displayName: string;
+}
+
 export interface SignalPreviewChannel {
   label: string;
   samples: number[];

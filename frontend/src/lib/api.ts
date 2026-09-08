@@ -1,5 +1,6 @@
 import type {
   AnalysisResult,
+  AuthUser,
   ApiErrorPayload,
   DisplayStatus,
   Recording,
@@ -18,10 +19,9 @@ import type {
 } from "./types";
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
-const API_HOSTNAME = new URL(API_BASE_URL).hostname;
-const INCLUDE_ACCESS_COOKIES = API_HOSTNAME !== "localhost" && API_HOSTNAME !== "127.0.0.1";
-const REQUEST_CREDENTIALS: RequestCredentials = INCLUDE_ACCESS_COOKIES ? "include" : "same-origin";
+const REQUEST_CREDENTIALS: RequestCredentials = "include";
 const USE_STUB = process.env.NEXT_PUBLIC_USE_API_STUB === "true";
+export const AUTH_MODE = process.env.NEXT_PUBLIC_AUTH_MODE ?? "backend";
 export const ENABLE_SIGNAL_PREVIEW = process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW === "true";
 export const ENABLE_FULL_SIGNAL_PREVIEW = ENABLE_SIGNAL_PREVIEW && process.env.NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW === "true";
 const JOBS_KEY = "mds01.jobs.v1";
@@ -70,6 +70,52 @@ type StubJob = {
 type StubDraft = UploadDraft & { fileSize: number };
 
 type StubVideoJob = { job: VideoPrivacyJob; submittedAt: string };
+
+type BackendAuthResponse = {
+  authenticated: boolean;
+  mode: string;
+  user: { id: string; email: string; display_name: string } | null;
+};
+
+function authUserFromBackend(user: BackendAuthResponse["user"]): AuthUser | null {
+  return user ? { id: user.id, email: user.email, displayName: user.display_name } : null;
+}
+
+/** Read the backend-owned session state; no browser storage is used for auth. */
+export async function getCurrentUser(): Promise<AuthUser | null> {
+  if (AUTH_MODE === "stub") return { id: "USR-STUB", email: "demo@mds01.local", displayName: "Demo user" };
+  const response = await fetch(`${API_BASE_URL}/api/auth/session`, {
+    headers: { Accept: "application/json" },
+    credentials: REQUEST_CREDENTIALS,
+    cache: "no-store",
+  });
+  if (response.status === 401) return null;
+  if (!response.ok) throw await readError(response, false);
+  const payload = (await response.json()) as BackendAuthResponse;
+  return payload.authenticated ? authUserFromBackend(payload.user) : null;
+}
+
+/** Register one local account and accept the HttpOnly cookie set by the API. */
+export async function registerAccount(email: string, password: string): Promise<AuthUser> {
+  const response = await postJson<BackendAuthResponse>("/api/auth/register", { email, password });
+  const user = authUserFromBackend(response.user);
+  if (!user) throw new ApiError("The account could not be created.");
+  return user;
+}
+
+/** Sign in through the backend session endpoint. */
+export async function loginAccount(email: string, password: string): Promise<AuthUser> {
+  const response = await postJson<BackendAuthResponse>("/api/auth/login", { email, password });
+  const user = authUserFromBackend(response.user);
+  if (!user) throw new ApiError("The account could not be signed in.");
+  return user;
+}
+
+/** Revoke the current server-side session. */
+export async function logoutAccount(): Promise<void> {
+  if (AUTH_MODE === "stub") return;
+  await requestWithoutBody("/api/auth/logout", "POST", undefined, false);
+}
 
 type BackendVideoJob = {
   job_id: string;
@@ -764,14 +810,14 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function requestWithoutBody(path: string, method: string, signal?: AbortSignal): Promise<void> {
+async function requestWithoutBody(path: string, method: string, signal?: AbortSignal, notifyExpiry = true): Promise<void> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method,
     signal,
     headers: { Accept: "application/json" },
     credentials: REQUEST_CREDENTIALS,
   });
-  if (!response.ok) throw await readError(response);
+  if (!response.ok) throw await readError(response, notifyExpiry);
 }
 
 async function postFormJson<T>(path: string, body: FormData, signal?: AbortSignal): Promise<T> {
@@ -786,7 +832,21 @@ async function postFormJson<T>(path: string, body: FormData, signal?: AbortSigna
   return (await response.json()) as T;
 }
 
-async function readError(response: Response): Promise<ApiError> {
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    credentials: REQUEST_CREDENTIALS,
+  });
+  if (!response.ok) throw await readError(response, false);
+  return (await response.json()) as T;
+}
+
+async function readError(response: Response, notifyExpiry = true): Promise<ApiError> {
+  if (notifyExpiry && response.status === 401 && typeof window !== "undefined") {
+    window.dispatchEvent(new Event("mds01:auth-expired"));
+  }
   let message = `Request failed with status ${response.status}.`;
   try { const payload = (await response.json()) as ApiErrorPayload; if (payload.detail) message = payload.detail; } catch { /* Keep the status message. */ }
   return new ApiError(message, response.status);
@@ -796,7 +856,7 @@ function uploadJson<T>(path: string, body: FormData, onProgress: (progress: numb
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("POST", `${API_BASE_URL}${path}`);
-    request.withCredentials = INCLUDE_ACCESS_COOKIES;
+    request.withCredentials = true;
     request.responseType = "json";
     request.setRequestHeader("Accept", "application/json");
     request.upload.addEventListener("progress", (event) => { if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100)); });

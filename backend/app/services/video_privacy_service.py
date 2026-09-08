@@ -72,12 +72,17 @@ async def create_video_job(
     storage: VideoStorage,
     upload: UploadFile,
     profile: VideoPrivacyProfile,
+    owner_user_id: int | None = None,
 ) -> VideoPrivacyJob:
     """Create metadata and encrypt the source before queueing processing."""
 
     content_type = _safe_content_type(upload)
-    upload_number = len(list(db.exec(select(VideoPrivacyJob)).all())) + 1
+    count_statement = select(VideoPrivacyJob)
+    if owner_user_id is not None:
+        count_statement = count_statement.where(VideoPrivacyJob.owner_user_id == owner_user_id)
+    upload_number = len(list(db.exec(count_statement).all())) + 1
     job = VideoPrivacyJob(
+        owner_user_id=owner_user_id,
         job_id=new_video_job_id(),
         profile=profile,
         display_label=f"Video upload {upload_number:02d}",
@@ -308,10 +313,11 @@ def get_download_artifact(
     *,
     preview: bool = False,
     storage: VideoStorage | None = None,
+    owner_user_id: int | None = None,
 ) -> tuple[VideoPrivacyJob, Path]:
     """Enforce output policy before a route materializes protected media."""
 
-    job = get_video_job(db, job_id)
+    job = get_video_job(db, job_id, owner_user_id)
     if job is None:
         raise LookupError("Video job was not found.")
     _expire_if_needed(db, job, storage)

@@ -89,8 +89,8 @@ def auth_configuration() -> tuple[str, str, str]:
         raise RuntimeError("APP_ENV must be development, test, or production.")
 
     mode = os.getenv("AUTH_MODE", "local").strip().lower()
-    if mode not in {"local", "cloudflare"}:
-        raise RuntimeError("AUTH_MODE must be local or cloudflare.")
+    if mode not in {"local", "local-accounts", "cloudflare"}:
+        raise RuntimeError("AUTH_MODE must be local, local-accounts, or cloudflare.")
     if environment == "production" and mode != "cloudflare":
         raise RuntimeError("AUTH_MODE must be cloudflare in production.")
 
