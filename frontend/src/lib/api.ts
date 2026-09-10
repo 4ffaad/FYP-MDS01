@@ -804,7 +804,7 @@ export async function getSignalPreview(recordId: string, startSeconds: number, d
   return { recordId: response.record_id, representation: response.representation, samplingRate: response.sampling_rate, channels: response.channels, timeSeconds: response.time_seconds, segments: response.segments.map((segment) => ({ sourceStartSeconds: segment.source_start_seconds, sourceEndSeconds: segment.source_end_seconds })), flaggedIntervals: response.flagged_intervals.map((interval) => ({ startSeconds: interval.start_seconds, endSeconds: interval.end_seconds })) };
 }
 
-async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+export async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, { signal, headers: { Accept: "application/json" }, credentials: REQUEST_CREDENTIALS, cache: "no-store" });
   if (!response.ok) throw await readError(response);
   return (await response.json()) as T;
@@ -852,7 +852,7 @@ async function readError(response: Response, notifyExpiry = true): Promise<ApiEr
   return new ApiError(message, response.status);
 }
 
-function uploadJson<T>(path: string, body: FormData, onProgress: (progress: number) => void, signal?: AbortSignal): Promise<T> {
+export function uploadJson<T>(path: string, body: FormData, onProgress: (progress: number) => void, signal?: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("POST", `${API_BASE_URL}${path}`);

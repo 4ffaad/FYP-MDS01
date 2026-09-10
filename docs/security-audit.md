@@ -53,7 +53,7 @@ cd frontend && npm run lint && npm run build && npm run test:e2e
 npm run test:e2e:real
 ```
 
-`test:e2e:real` creates and destroys only the Compose project named `mds01-security`. It requires Docker and the repository `.venv`.
+`test:e2e:real` creates and destroys only the Compose project named `mds01-security`. It requires Docker and npm; its synthetic EEG fixture is generated inside the backend container.
 
 ## Remaining deployment work
 

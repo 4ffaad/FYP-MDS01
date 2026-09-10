@@ -131,3 +131,6 @@ The UI distinguishes development scores, uncalibrated H5 scores and estimated **
 Keep each profile's calibration/evaluation separate. The fixed research split is train `chb01–chb06`, calibration `chb07–chb08`, test `chb09–chb10`. This evaluator split does not establish the supplied model's original training provenance; review that before making held-out performance claims.
 
 See [backend details](backend.md) for the API and research tools, [frontend details](frontend.md) for screen behavior, and [setup](setup.md) for runnable checks. Historical security and research reports are retained as evidence, not current validation certificates.
+# Independent video detection
+
+Video detection adds `VideoDetectionJob` (migration 015) alongside the existing EEG and privacy job tables. Its routes live under `/api/video-detection`; its service schedules an isolated CPU subprocess through FastAPI BackgroundTasks. [Video architecture and retention](video-detection.md#architecture-and-data-handling) describes encrypted inputs, owner-filtered playback, scoring and cleanup. There are no changes to the EEG model-input contract or EEG processing routes.

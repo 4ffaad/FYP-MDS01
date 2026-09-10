@@ -165,3 +165,6 @@ work aligned with that file instead of adding another design system.
 Patient-video privacy is a separate surface at `/video-privacy`. It uses the
 video-privacy API and renders privacy outputs without constructing URLs from
 backend storage paths.
+# Video detection review
+
+`/video-detection` uploads a clip and lists the signed-in user's jobs. `/video-detection/[jobId]` shows stages, owner-only source-appearance playback, score supports and clickable intervals. It reuses the current tokens and controls. Scores are labelled **Uncalibrated model score**, never whole-recording confidence. Private raw playback is an explicit exception to the privacy-transform screen's protected-output-only policy; see [video data handling](video-detection.md).

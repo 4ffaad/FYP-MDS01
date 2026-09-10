@@ -44,7 +44,7 @@ Icons support labels. Keep them generally 16–20px, using the shared Hugeicons 
 - Keep model name/version and research-only status findable. No whole-recording confidence badge.
 - Use flagged-window counts, exact intervals and waveform context to guide review. No flagged windows does not mean a patient is seizure-free.
 - Video output is a research privacy transform. Keep acknowledgement and quality caveats near the download action.
-- Never display original patient filenames, identifying metadata or source media.
+- Never display original patient filenames or identifying container metadata. The video detection review screen explicitly allows owner-only source-appearance playback during retention; the video privacy screen continues to show only protected output.
 
 ## Interaction checks
 

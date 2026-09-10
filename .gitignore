@@ -44,6 +44,9 @@ htmlcov/
 *.mkv
 *.webm
 *.npz
+*.pth
+*.pt
+/video-models/
 /backend/model/shap-background-*.npy
 
 # Per-machine editor/tool preferences.

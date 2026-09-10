@@ -399,3 +399,6 @@ migrations or using `create_all()` in the Docker runtime.
 9. `app/ml/` — stub and reviewed H5 adapter.
 10. `app/database/models/eeg.py` and `app/database/repository.py` — persistence.
 11. `migrations/versions/` — database history.
+# Video detection
+
+`app/video_detection` validates a reviewed, hash-checked external VSViG bundle and runs pose/patch/model inference. The separate video detection service owns the job lifecycle; its repository enforces ownership. Migration 015 is additive. See [runtime setup and limitations](video-detection.md). No weights are fetched automatically and missing preprocessing evidence fails closed.

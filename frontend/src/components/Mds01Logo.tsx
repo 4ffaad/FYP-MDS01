@@ -1,5 +1,5 @@
 type Mds01LogoProps = {
-  context?: "eeg" | "video";
+  context?: "eeg" | "video" | "detection";
 };
 
 /** Render the MDS01 monogram and research workspace wordmark. */
@@ -12,7 +12,7 @@ export function Mds01Logo({ context = "eeg" }: Mds01LogoProps) {
       </svg>
       <span className="min-w-0 leading-none">
         <span className="block text-[0.96rem] font-bold tracking-[-0.035em] text-ink">MDS<span className="text-teal">01</span></span>
-        <span className="mt-1 block truncate text-[0.57rem] font-semibold uppercase tracking-[0.13em] text-ink-faint">{context === "video" ? "Video Privacy" : "EEG Research"}</span>
+        <span className="mt-1 block truncate text-[0.57rem] font-semibold uppercase tracking-[0.13em] text-ink-faint">{context === "detection" ? "Video Detection" : context === "video" ? "Video Privacy" : "EEG Research"}</span>
       </span>
     </span>
   );

@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: seizureai
       POSTGRES_USER: seizureai
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-seizureai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run node scripts/setup.mjs and configure POSTGRES_PASSWORD}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -24,7 +24,7 @@ services:
       args:
         INSTALL_RESEARCH: ${INSTALL_RESEARCH:-false}
     environment:
-      DATABASE_URL: postgresql+psycopg://seizureai:${POSTGRES_PASSWORD:-seizureai}@postgres:5432/seizureai
+      DATABASE_URL: postgresql+psycopg://seizureai:${POSTGRES_PASSWORD:?Configure POSTGRES_PASSWORD}@postgres:5432/seizureai
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
       MODEL_RUNTIME: ${MODEL_RUNTIME:-stub}
       STORAGE_DIR: /app/backend/storage
@@ -34,6 +34,7 @@ services:
       UPLOAD_DRAFT_TTL_SECONDS: ${UPLOAD_DRAFT_TTL_SECONDS:-1800}
       MAX_VIDEO_UPLOAD_BYTES: ${MAX_VIDEO_UPLOAD_BYTES:-536870912}
       VIDEO_RETENTION_SECONDS: ${VIDEO_RETENTION_SECONDS:-86400}
+      VIDEO_DETECTION_ENABLED: "true"
       VIDEO_MAX_DURATION_SECONDS: ${VIDEO_MAX_DURATION_SECONDS:-3600}
       ENABLE_SIGNAL_PREVIEW: ${ENABLE_SIGNAL_PREVIEW:-false}
       ENABLE_FULL_SIGNAL_PREVIEW: ${ENABLE_FULL_SIGNAL_PREVIEW:-false}

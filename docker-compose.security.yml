@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: mds01_security
       POSTGRES_USER: mds01_security
-      POSTGRES_PASSWORD: disposable-security-test
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Provide a disposable test password}
     volumes:
       - security_postgres:/var/lib/postgresql/data
     healthcheck:
@@ -26,14 +26,15 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment:
-      DATABASE_URL: postgresql+psycopg://mds01_security:disposable-security-test@postgres:5432/mds01_security
+      DATABASE_URL: postgresql+psycopg://mds01_security:${POSTGRES_PASSWORD:?Provide a disposable test password}@postgres:5432/mds01_security
       STORAGE_DIR: /app/backend/storage
       CORS_ORIGINS: http://127.0.0.1:3002
       APP_ENV: test
       AUTH_MODE: local-accounts
       MODEL_RUNTIME: stub
-      MDS01_STORAGE_KEY: c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3M=
-      MDS01_TEMPLATE_KEY: dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHQ=
+      MDS01_STORAGE_KEY: ${MDS01_STORAGE_KEY:?Provide a disposable test storage key}
+      MDS01_TEMPLATE_KEY: ${MDS01_TEMPLATE_KEY:?Provide a disposable test template key}
+      VIDEO_DETECTION_ENABLED: "true"
       ENABLE_SIGNAL_PREVIEW: "false"
       MAX_CONCURRENT_ANALYSES: "1"
       MDS01_MAX_ARCHIVE_TOTAL_BYTES: "10485760"

@@ -1,6 +1,7 @@
 """SQLModel table definitions."""
 
 from backend.app.database.models.auth import AuthSession, User
+from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.database.models.eeg import (
     AnalysisStatus,
     EEGRecording,
@@ -20,6 +21,7 @@ from backend.app.database.models.video import (
 )
 
 __all__ = [
+    "VideoDetectionJob",
     "AuthSession",
     "AnalysisStatus",
     "EEGRecording",

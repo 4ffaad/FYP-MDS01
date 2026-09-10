@@ -1,6 +1,8 @@
 """FastAPI application entry point."""
 
 from contextlib import asynccontextmanager
+import asyncio
+from contextlib import suppress
 import os
 
 from fastapi import Depends, FastAPI, Request, Response
@@ -12,6 +14,7 @@ from backend.app.api.recordings import router as recordings_router
 from backend.app.api.sessions import router as sessions_router
 from backend.app.api.uploads import router as uploads_router
 from backend.app.api.video_privacy import router as video_privacy_router
+from backend.app.api.video_detection import router as video_detection_router
 from backend.app.core.config import CORS_ORIGINS, MODEL_RUNTIME, auth_configuration
 from backend.app.core.security import require_api_auth
 from backend.app.ml.model_loader import get_inference_service
@@ -28,7 +31,20 @@ async def lifespan(_: FastAPI):
         # HTTP 202.
         get_inference_service()
     os.umask(0o077)
-    yield
+    from backend.app.services.video_detection_service import retention_loop, sweep
+    # Migrations run before Uvicorn; recovery removes interrupted video work.
+    # Tests that do not provision a database use their existing lifespan fixture.
+    cleanup_task = None
+    if os.environ.get("VIDEO_DETECTION_ENABLED", "false").lower() == "true":
+        await asyncio.to_thread(sweep, startup=True)
+        cleanup_task = asyncio.create_task(retention_loop())
+    try:
+        yield
+    finally:
+        if cleanup_task:
+            cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleanup_task
 
 
 app = FastAPI(title="SeizureAI Backend", version="2.0.0", lifespan=lifespan)
@@ -52,6 +68,8 @@ async def add_security_headers(request: Request, call_next) -> Response:
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.path.startswith("/api/video-detection"):
+        response.headers["Cache-Control"] = "no-store, private"
     if auth_configuration()[0] == "cloudflare":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
@@ -64,3 +82,4 @@ app.include_router(sessions_router, dependencies=api_dependencies)
 app.include_router(recordings_router, dependencies=api_dependencies)
 app.include_router(uploads_router, dependencies=api_dependencies)
 app.include_router(video_privacy_router, dependencies=api_dependencies)
+app.include_router(video_detection_router, dependencies=api_dependencies)

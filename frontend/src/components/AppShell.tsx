@@ -19,6 +19,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const isVideoPrivacy = pathname.startsWith("/video-privacy");
+  const isVideoDetection = pathname.startsWith("/video-detection");
   const isLogin = pathname === "/login";
 
   useEffect(() => {
@@ -97,11 +98,11 @@ export function AppShell({ children }: { children: ReactNode }) {
             className="inline-flex min-h-11 min-w-0 items-center rounded-lg focus-visible:ring-2 focus-visible:ring-teal focus-visible:ring-offset-2"
             href="/dashboard"
             aria-label={
-              isVideoPrivacy ? "MDS01 video privacy" : "MDS01 EEG analysis"
+              isVideoDetection ? "MDS01 video detection" : isVideoPrivacy ? "MDS01 video privacy" : "MDS01 EEG analysis"
             }
             onClick={() => setMenuOpen(false)}
           >
-            <Mds01Logo context={isVideoPrivacy ? "video" : "eeg"} />
+            <Mds01Logo context={isVideoDetection ? "detection" : isVideoPrivacy ? "video" : "eeg"} />
           </Link>
 
           <nav
@@ -115,6 +116,10 @@ export function AppShell({ children }: { children: ReactNode }) {
             <NavLink href="/video-privacy">
               <Icon name="shield" className="size-4" />
               Video privacy
+            </NavLink>
+            <NavLink href="/video-detection">
+              <Icon name="activity" className="size-4" />
+              Video detection
             </NavLink>
           </nav>
 
@@ -182,6 +187,10 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </Button>
               </div>
             )}
+            <NavLink href="/video-detection" onNavigate={() => setMenuOpen(false)}>
+              <Icon name="activity" className="size-4" />
+              Video detection
+            </NavLink>
           </nav>
         </div>
       </header>
@@ -201,7 +210,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             {isVideoPrivacy
               ? "Privacy transforms do not guarantee anonymity."
               : "Model output is not a diagnosis."}{" "}
-            Original uploads are never displayed.
+            {isVideoDetection ? "Patient video is available only to its owner during retention." : "Original uploads are never displayed."}
           </p>
         </div>
       </footer>

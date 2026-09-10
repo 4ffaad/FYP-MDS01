@@ -1,15 +1,16 @@
 # MDS01
 
-A research prototype with two independent workflows:
+A research prototype with three independent workflows:
 
 - **EEG analysis:** upload an EDF archive, apply privacy preprocessing, review window scores and flagged intervals.
 - **Video privacy:** upload a video, choose face redaction or pose-only rendering, review and download protected output. Video never enters the EEG model.
+- **Video detection:** authenticated video review with VSViG window scores and flagged intervals. Requires external checkpoints and a reviewed preprocessing contract; see [video detection setup](docs/video-detection.md). The default installation does not produce video model scores.
 
 Model output is **not a diagnosis**. Privacy transforms do not guarantee anonymity.
 
 ## Start on your laptop
 
-Install **Docker Desktop** (Linux containers) and **Node.js 22 or newer**. Start Docker, clone this repository, and run from its root:
+Only **Docker Desktop** (Linux containers) and **Node.js 22 or newer** (with npm) are required. Start Docker and run from the repository root:
 
 ```sh
 node scripts/setup.mjs
@@ -25,7 +26,7 @@ npm run dev
 ```
 
 Open [MDS01](http://127.0.0.1:3000) or [API documentation](http://127.0.0.1:8000/docs).
-The setup command generates local secrets and leaves existing configuration untouched.
+The setup command generates local secrets and leaves existing configuration untouched. Python and backend package installation are handled inside Docker; teammates do not need a local Python environment.
 New installations use the deterministic **development stub**; existing `.env` runtime choices are preserved.
 New installations also use `AUTH_MODE=local-accounts`: register the first
 teammate in the browser, then sign in. Each account sees only its own EEG
@@ -43,6 +44,8 @@ flowchart LR
     API --> DB[(PostgreSQL: status and results)]
     API --> EEG[EEG processing]
     API --> Video[Video privacy processing]
+    API --> Detection[Video detection: VSViG]
+    Detection --> Files
     EEG --> Model[H5 adapter or development stub]
     Model --> DB
     EEG --> Files[(Private encrypted storage)]
@@ -59,6 +62,7 @@ flowchart LR
 | `backend/app/services/` | Upload, processing, storage and cleanup |
 | `backend/app/eeg/`, `privacy/`, `ml/` | Model inputs, privacy transforms, inference |
 | `backend/app/video_privacy/` | Standalone video transforms |
+| `backend/app/video_detection/` | Validated VSViG assets, preprocessing and inference |
 | `backend/app/database/`, `backend/migrations/` | Persistence and schema history |
 | `backend/app/research/`, `backend/scripts/` | Offline evaluation and calibration |
 | `scripts/` | Local setup and its safety test |

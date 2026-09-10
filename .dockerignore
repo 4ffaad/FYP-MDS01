@@ -4,6 +4,7 @@
 !backend/**/
 !backend/**/*.py
 !backend/Dockerfile
+!backend/Dockerfile.video-detection
 !backend/requirements*.txt
 !backend/alembic.ini
 !backend/model/model-contract.json

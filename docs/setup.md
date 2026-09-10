@@ -2,10 +2,14 @@
 
 ## Requirements
 
-- Git, Docker Desktop with Linux containers (or Docker Engine plus Compose v2 on Linux), and Node.js 22 or newer with npm.
+- Docker Desktop with Linux containers (or Docker Engine plus Compose v2 on Linux).
+- Node.js 22 or newer, which includes npm.
 - Run commands from the repository root unless a block changes directory.
 - Use a local checkout; keep real patient EEG/video data outside it.
-- No Python installation, AI editor, BMAD or downloaded agent skills are needed for the Docker-based demo.
+
+That is everything required to run the demo. Python is included inside the
+backend image; teammates do not install Python, create a virtual environment,
+install backend packages, use an AI editor, or download agent skills.
 
 The backend image uses Python 3.12 and `linux/amd64` for the bundled scientific/media dependencies. Docker Desktop can emulate it on Apple Silicon; the first build and H5 processing may be slow. Python dependencies are not yet fully locked, so retain build logs when comparing environments.
 
@@ -105,7 +109,9 @@ node --test scripts/setup.test.mjs
 git diff --check
 ```
 
-Backend unit tests require a separate local Python environment. Prefer Python 3.12 to match Docker:
+Optional backend unit tests require a separate local Python environment. This
+is not needed to run the application or the real browser workflow. Prefer
+Python 3.12 to match Docker:
 
 ```sh
 python3.12 -m venv .venv
@@ -136,13 +142,13 @@ npm run test:e2e
 On a fresh Linux machine, use `npx playwright install --with-deps chromium` if browser system libraries are missing.
 The desktop/mobile browser suite uses synthetic UI data on port 3001.
 
-To test real Next.js → FastAPI → PostgreSQL behavior, first create the local Python environment above, then run from `frontend/`:
+To test real Next.js → FastAPI → PostgreSQL behavior, run from `frontend/`:
 
 ```sh
 npm run test:e2e:real
 ```
 
-This creates and removes only the disposable Compose project `mds01-security`, including its test volumes, on API port 18000 and frontend port 3002. Never store real data in that project. It exercises registration through the UI, the authenticated migration, upload, background processing, safe results and deletion; it does not establish H5 accuracy or video anonymization.
+This creates and removes only the disposable Compose project `mds01-security`, including its test volumes, on API port 18000 and frontend port 3002. The synthetic EEG archive is generated inside the backend container, so this workflow needs only Docker and npm. Never store real data in that project. It exercises registration through the UI, the authenticated migration, upload, background processing, safe results and deletion; it does not establish H5 accuracy or video anonymization.
 
 ## Stop, restart and troubleshoot
 
@@ -172,3 +178,6 @@ docker compose exec backend alembic -c backend/alembic.ini current
 ```
 
 Before network deployment, configure authenticated access, HTTPS and the remaining controls in [the security audit](security-audit.md). Local demonstration setup is not a deployment guide.
+# Optional video seizure detection
+
+The normal stack exposes the video detection workspace, but inference requires an external VSViG bundle and reviewed preprocessing. Follow [video detection setup](video-detection.md) for the optional Docker image, read-only mounts and safe inventory command. Python is provided inside Docker. The login email/password you register in the browser also controls video job ownership.
