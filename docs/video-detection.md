@@ -12,7 +12,20 @@ The implemented adapter supports the published base architecture, 30 frames, 15 
 
 ## Laptop setup
 
-Install Docker Desktop and Node.js 22+ with npm. Run the normal setup first:
+The normal stack can run natively with SQLite, but the official VSViG runtime is
+the dependency-heavy path. Use native mode for the API, privacy workflow and
+stub demos; use the Docker overlay when the host cannot install the pinned
+PyTorch/MediaPipe/OpenPose dependencies.
+
+For the native prototype:
+
+```sh
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements-dev.txt
+node scripts/start-native.mjs
+```
+
+For the reproducible VSViG runtime, install Docker Desktop and Node.js 22+ with npm. Run the normal setup first:
 
 ```sh
 node scripts/setup.mjs
@@ -91,7 +104,7 @@ This command prints aggregate counts, durations, frame rates and resolutions wit
 ```mermaid
 flowchart LR
     Login[Login cookie] --> API[Owner-filtered video API]
-    API --> DB[(PostgreSQL job metadata)]
+    API --> DB[(SQLite native / PostgreSQL Docker job metadata)]
     API --> Encrypted[(Encrypted video storage)]
     Encrypted --> Work[Temporary plaintext]
     Work --> Pose[Official OpenPose + pose checkpoint]

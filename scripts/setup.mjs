@@ -39,5 +39,5 @@ export function setup(root) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const root = fileURLToPath(new URL("../", import.meta.url));
   for (const message of setup(root)) console.log(message);
-  console.log("Next: docker compose up --build. In another terminal: cd frontend && npm ci && npm run dev");
+  console.log("Next: docker compose up --build, or node scripts/start-native.mjs after native Python setup. In another terminal: cd frontend && npm ci && npm run dev");
 }

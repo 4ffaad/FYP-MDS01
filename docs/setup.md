@@ -2,18 +2,23 @@
 
 ## Requirements
 
-- Docker Desktop with Linux containers (or Docker Engine plus Compose v2 on Linux).
 - Node.js 22 or newer, which includes npm.
 - Run commands from the repository root unless a block changes directory.
 - Use a local checkout; keep real patient EEG/video data outside it.
 
-That is everything required to run the demo. Python is included inside the
-backend image; teammates do not install Python, create a virtual environment,
-install backend packages, use an AI editor, or download agent skills.
+Choose either Docker or native mode:
+
+| Mode | Install locally | Database | Best for |
+| --- | --- | --- | --- |
+| Docker | Docker Desktop plus Node.js | PostgreSQL container | Reproducible team setup and VSViG |
+| Native | Python 3.12, FFmpeg plus Node.js | SQLite file | Fast single-laptop prototype work |
+
+Neither mode requires an AI editor or agent skills. Native mode does require a
+Python environment; Docker keeps those packages inside the image.
 
 The backend image uses Python 3.12 and `linux/amd64` for the bundled scientific/media dependencies. Docker Desktop can emulate it on Apple Silicon; the first build and H5 processing may be slow. Python dependencies are not yet fully locked, so retain build logs when comparing environments.
 
-## First run
+## First run: Docker
 
 Start Docker, then:
 
@@ -44,6 +49,34 @@ and a password of at least 12 characters. The API stores only a salted password
 hash and an opaque server-side session token. Sign out from the header when
 switching teammates.
 
+## First run: native
+
+From the repository root:
+
+```sh
+node scripts/setup.mjs
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements-dev.txt
+node scripts/start-native.mjs
+```
+
+In another terminal:
+
+```sh
+cd frontend
+npm ci
+npm run dev
+```
+
+The native runner loads `.env` without printing it, defaults to SQLite and
+local encrypted storage, applies migrations, and starts FastAPI on
+`127.0.0.1:8000`. Set `PYTHON=/absolute/path/to/python` when the virtualenv is
+not at `.venv`. Do not set `DATABASE_URL` if you want the SQLite default.
+
+The native path is intentionally a single-process prototype profile. Keep the
+Docker profile for the official VSViG runtime when PyTorch, MediaPipe, pose
+weights, or platform-specific wheels are not already verified on the host.
+
 ## Runtime choices
 
 | Mode | Configuration | What it tests |
@@ -54,7 +87,9 @@ switching teammates.
 | Unauthenticated backend test mode | Root `.env`: `AUTH_MODE=local` | API/service tests only; never expose this mode to a network |
 | Browser-only stub | Frontend test config: `NEXT_PUBLIC_USE_API_STUB=true`, `NEXT_PUBLIC_AUTH_MODE=stub` | UI flows with synthetic browser data; no actual EEG/video processing |
 
-After changing backend settings, run `docker compose up --build` again.
+After changing backend settings, restart the selected backend. Docker settings
+require `docker compose up --build`; native settings require restarting
+`node scripts/start-native.mjs`.
 After changing frontend settings, restart `npm run dev` (or rebuild a production frontend).
 An existing checkout retains its current mode; setup does not silently switch it.
 
@@ -117,6 +152,12 @@ Python 3.12 to match Docker:
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r backend/requirements-dev.txt
 .venv/bin/python -m unittest discover -s backend/tests
+```
+
+Native runner safety check:
+
+```sh
+node --test scripts/start-native.test.mjs
 ```
 
 PowerShell equivalents:

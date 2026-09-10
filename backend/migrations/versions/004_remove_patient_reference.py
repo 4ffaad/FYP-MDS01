@@ -14,8 +14,8 @@ def upgrade() -> None:
     """Drop plaintext patient references and normalize the control default."""
 
     op.execute("UPDATE sessions SET privacy_method = 'control' WHERE privacy_method = 'raw-control'")
-    op.alter_column("sessions", "privacy_method", server_default="control")
     with op.batch_alter_table("sessions") as batch_op:
+        batch_op.alter_column("privacy_method", server_default="control")
         batch_op.drop_column("patient_reference")
 
 
@@ -24,4 +24,4 @@ def downgrade() -> None:
 
     with op.batch_alter_table("sessions") as batch_op:
         batch_op.add_column(sa.Column("patient_reference", sa.String(), nullable=True))
-    op.alter_column("sessions", "privacy_method", server_default="raw-control")
+        batch_op.alter_column("privacy_method", server_default="raw-control")

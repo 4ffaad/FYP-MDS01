@@ -1,8 +1,8 @@
 # Backend internals
 
-The backend is a FastAPI application backed by PostgreSQL and private
-session-scoped storage. Routes receive requests; services own the workflow;
-repositories own database queries.
+The backend is a FastAPI application backed by SQLite in native prototype mode
+or PostgreSQL in Docker/team mode, plus private session-scoped storage. Routes
+receive requests; services own the workflow; repositories own database queries.
 
 ```mermaid
 flowchart TD
@@ -21,7 +21,7 @@ flowchart TD
     Processing --> ML[ml/]
     Repository --> Models[database/models/eeg.py]
     Migrations[migrations/versions/] --> Models
-    Processing --> PostgreSQL[(PostgreSQL results)]
+    Processing --> Database[(SQLite native / PostgreSQL Docker results)]
     Storage --> Files[(Temporary private EEG files)]
 ```
 

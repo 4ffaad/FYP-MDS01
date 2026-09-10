@@ -1,6 +1,24 @@
 # Architecture
 
-MDS01 has a browser interface, one FastAPI process, PostgreSQL and a private filesystem volume. EEG and video share infrastructure, not analysis pipelines.
+MDS01 has a browser interface, one FastAPI process, a small database and a private filesystem. The database is SQLite in native prototype mode and PostgreSQL in the Docker/team mode. EEG and video share infrastructure, not analysis pipelines.
+
+## Deployment profiles
+
+```mermaid
+flowchart LR
+    Browser[Next.js] --> API[FastAPI]
+    API --> Native[(SQLite + local encrypted files)]
+    API --> Docker[(PostgreSQL + encrypted volume)]
+    API --> Worker[Background subprocess]
+    Worker --> VSViG[External VSViG bundle]
+```
+
+Native mode is the smallest useful architecture for one laptop: two local
+processes, SQLite, encrypted files, and FastAPI BackgroundTasks. Docker is a
+packaging choice, not a domain boundary; it exists to make scientific/media
+dependencies and the VSViG runtime reproducible. Do not split this prototype
+into microservices or add Redis/a durable queue until processing volume or
+multi-host deployment requires it.
 
 ## Authentication boundary
 
@@ -9,7 +27,7 @@ sequenceDiagram
     participant Browser
     participant Auth as FastAPI auth routes
     participant API as Protected API
-    participant DB as PostgreSQL
+    participant DB as SQLite native or PostgreSQL Docker
     Browser->>Auth: Register or sign in with email/password
     Auth->>DB: Store password hash and session-token hash
     Auth-->>Browser: HttpOnly, SameSite=Lax cookie

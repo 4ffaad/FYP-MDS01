@@ -21,7 +21,8 @@ def upgrade() -> None:
         "UPDATE sessions SET privacy_method = 'signal-obfuscation' "
         "WHERE privacy_method = 'cancellable-signal-projection'"
     )
-    op.alter_column("sessions", "privacy_method", server_default="metadata-scrub")
+    with op.batch_alter_table("sessions") as batch_op:
+        batch_op.alter_column("privacy_method", server_default="metadata-scrub")
     with op.batch_alter_table("recordings") as batch_op:
         batch_op.add_column(sa.Column("retained_artifact_path", sa.String(), nullable=True))
     with op.batch_alter_table("predictions") as batch_op:
@@ -42,7 +43,8 @@ def downgrade() -> None:
         "UPDATE sessions SET privacy_method = 'cancellable-signal-projection' "
         "WHERE privacy_method = 'signal-obfuscation'"
     )
-    op.alter_column("sessions", "privacy_method", server_default="control")
+    with op.batch_alter_table("sessions") as batch_op:
+        batch_op.alter_column("privacy_method", server_default="control")
     with op.batch_alter_table("predictions") as batch_op:
         batch_op.drop_column("calibration_method")
         batch_op.drop_column("score_type")

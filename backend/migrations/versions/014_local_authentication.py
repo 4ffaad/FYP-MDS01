@@ -48,25 +48,23 @@ def upgrade() -> None:
     op.create_index("ix_auth_sessions_user_id", "auth_sessions", ["user_id"], unique=False)
 
     for table in ("sessions", "upload_drafts", "video_privacy_jobs"):
-        op.add_column(
-            table,
-            sa.Column("owner_user_id", sa.Integer(), nullable=True),
-        )
-        op.create_foreign_key(
-            f"fk_{table}_owner_user_id",
-            table,
-            "users",
-            ["owner_user_id"],
-            ["id"],
-        )
-        op.create_index(f"ix_{table}_owner_user_id", table, ["owner_user_id"], unique=False)
+        with op.batch_alter_table(table) as batch_op:
+            batch_op.add_column(sa.Column("owner_user_id", sa.Integer(), nullable=True))
+            batch_op.create_foreign_key(
+                f"fk_{table}_owner_user_id",
+                "users",
+                ["owner_user_id"],
+                ["id"],
+            )
+            batch_op.create_index(f"ix_{table}_owner_user_id", ["owner_user_id"], unique=False)
 
 
 def downgrade() -> None:
     for table in ("sessions", "upload_drafts", "video_privacy_jobs"):
-        op.drop_index(f"ix_{table}_owner_user_id", table_name=table)
-        op.drop_constraint(f"fk_{table}_owner_user_id", table_name=table, type_="foreignkey")
-        op.drop_column(table, "owner_user_id")
+        with op.batch_alter_table(table) as batch_op:
+            batch_op.drop_index(f"ix_{table}_owner_user_id")
+            batch_op.drop_constraint(f"fk_{table}_owner_user_id", type_="foreignkey")
+            batch_op.drop_column("owner_user_id")
     op.drop_index("ix_auth_sessions_user_id", table_name="auth_sessions")
     op.drop_index("ix_auth_sessions_token_hash", table_name="auth_sessions")
     op.drop_table("auth_sessions")
