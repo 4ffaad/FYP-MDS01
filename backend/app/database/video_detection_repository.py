@@ -14,4 +14,3 @@ def list_jobs(db: Session, owner: int) -> list[VideoDetectionJob]:
     return list(db.exec(select(VideoDetectionJob).where(
         VideoDetectionJob.owner_user_id == owner,
     ).order_by(VideoDetectionJob.created_at.desc())).all())
-

@@ -4,6 +4,7 @@
 !backend/**/
 !backend/**/*.py
 !backend/Dockerfile
+!backend/requirements-video-detection.txt
 !backend/Dockerfile.video-detection
 !backend/requirements*.txt
 !backend/alembic.ini

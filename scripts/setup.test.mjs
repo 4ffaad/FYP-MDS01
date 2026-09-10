@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -30,4 +30,20 @@ test("setup generates independent keys and preserves both existing config files"
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("setup repairs a missing password without rotating existing keys", () => {
+  const root = mkdtempSync(join(tmpdir(), "mds01-setup-repair-test-"));
+  try {
+    mkdirSync(join(root, "frontend"));
+    for (const template of [".env.example", "frontend/.env.example"]) copyFileSync(new URL(`../${template}`, import.meta.url), join(root, template));
+    setup(root);
+    const envPath = join(root, ".env");
+    const before = readFileSync(envPath, "utf8").replace(/^POSTGRES_PASSWORD=.*$/m, "");
+    writeFileSync(envPath, before, { mode: 0o600 });
+    assert.deepEqual(setup(root), ["Kept existing .env", "Kept existing frontend/.env.local"]);
+    const repaired = readFileSync(envPath, "utf8");
+    assert.match(repaired, /^POSTGRES_PASSWORD=[a-f0-9]{48}$/m);
+    assert.equal(repaired.replace(/^POSTGRES_PASSWORD=.*$/m, "").trimEnd(), before.trimEnd());
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

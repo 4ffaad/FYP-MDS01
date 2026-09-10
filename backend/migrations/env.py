@@ -9,6 +9,7 @@ from backend.app.core.config import DATABASE_URL
 from backend.app.database.models import auth  # noqa: F401
 from backend.app.database.models import eeg  # noqa: F401
 from backend.app.database.models import video  # noqa: F401
+from backend.app.database.models import video_detection  # noqa: F401
 from sqlmodel import SQLModel
 
 

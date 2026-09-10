@@ -1,5 +1,0 @@
-FROM mds01-backend:local
-USER root
-COPY backend/requirements-video-detection.txt /tmp/requirements-video-detection.txt
-RUN pip install --no-cache-dir -r /tmp/requirements-video-detection.txt
-USER mds01

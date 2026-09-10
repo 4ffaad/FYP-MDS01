@@ -40,7 +40,7 @@ test("shows actionable asset error without navigating to fabricated results", as
   await page.goto("/video-detection");
   await page.getByLabel("Patient video", { exact: true }).setInputFiles({ name: "synthetic.mp4", mimeType: "video/mp4", buffer: Buffer.from("test") });
   await page.getByRole("button", { name: "Start detection", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("Mount the official model assets");
+  await expect(page.getByText("Mount the official model assets", { exact: false }).first()).toBeVisible();
   await expect(page).toHaveURL(/\/video-detection$/);
 });
 

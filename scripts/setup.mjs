@@ -22,6 +22,15 @@ export function setup(root) {
       return `Created ${destination}`;
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
+      // Repair older local files without rotating existing secrets.
+      if (destination === ".env") {
+        const existing = readFileSync(resolve(root, destination), "utf8");
+        const additions = [];
+        if (!/^POSTGRES_PASSWORD=/m.test(existing)) additions.push(`POSTGRES_PASSWORD=${randomBytes(24).toString("hex")}`);
+        if (!/^MDS01_STORAGE_KEY=/m.test(existing)) additions.push(`MDS01_STORAGE_KEY=${randomBytes(32).toString("base64")}`);
+        if (!/^MDS01_TEMPLATE_KEY=/m.test(existing)) additions.push(`MDS01_TEMPLATE_KEY=${randomBytes(32).toString("base64")}`);
+        if (additions.length) writeFileSync(resolve(root, destination), `${existing.trimEnd()}\n${additions.join("\n")}\n`, { mode: 0o600 });
+      }
       return `Kept existing ${destination}`;
     }
   });

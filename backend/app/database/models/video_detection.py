@@ -21,4 +21,3 @@ class VideoDetectionJob(SQLModel, table=True):
     error_code: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     retention_expires_at: datetime
-

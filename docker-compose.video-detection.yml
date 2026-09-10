@@ -3,7 +3,9 @@ services:
     image: mds01-video-detection:local
     build:
       context: .
-      dockerfile: backend/Dockerfile.video-detection
+      dockerfile: backend/Dockerfile
+      args:
+        INSTALL_VIDEO_DETECTION: "true"
     environment:
       VIDEO_DETECTION_ENABLED: "true"
       VSVIG_ASSET_DIR: /opt/vsvig

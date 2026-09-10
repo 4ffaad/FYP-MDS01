@@ -15,6 +15,13 @@ RUN case "$INSTALL_RESEARCH" in \
       *) echo "Building without research model dependencies" ;; \
     esac
 
+ARG INSTALL_VIDEO_DETECTION=false
+COPY backend/requirements-video-detection.txt /tmp/requirements-video-detection.txt
+RUN case "$INSTALL_VIDEO_DETECTION" in \
+      1|true|TRUE|yes|YES) pip install --no-cache-dir -r /tmp/requirements-video-detection.txt ;; \
+      *) echo "Building without VSViG video model dependencies" ;; \
+    esac
+
 # MediaPipe also installs OpenCV's contrib wheel, which needs these shared libraries.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 ffmpeg \
