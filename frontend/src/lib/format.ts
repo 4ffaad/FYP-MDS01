@@ -1,8 +1,10 @@
+const SUBMITTED_AT_FORMATTER = new Intl.DateTimeFormat("en", {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+
 export function formatSubmittedAt(value: string): string {
-  return new Intl.DateTimeFormat("en", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
+  return SUBMITTED_AT_FORMATTER.format(new Date(value));
 }
 
 export function formatBytes(bytes: number): string {

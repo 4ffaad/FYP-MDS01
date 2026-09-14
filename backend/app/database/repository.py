@@ -46,6 +46,15 @@ def list_video_jobs(db: Session, owner_user_id: int | None = None) -> list[Video
     return list(db.exec(statement).all())
 
 
+def count_video_jobs(db: Session, owner_user_id: int | None = None) -> int:
+    """Count video jobs without materializing their rows."""
+
+    statement = select(func.count()).select_from(VideoPrivacyJob)
+    if owner_user_id is not None:
+        statement = statement.where(VideoPrivacyJob.owner_user_id == owner_user_id)
+    return int(db.exec(statement).one())
+
+
 def list_expired_upload_drafts(db: Session, now: datetime) -> list[UploadDraft]:
     """Return staged uploads whose expiry time has passed."""
 

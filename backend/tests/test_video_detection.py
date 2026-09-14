@@ -1,7 +1,7 @@
 """Video-only contract, ownership, ciphertext, range playback, and cleanup checks."""
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import io
 import json
 import os
@@ -106,6 +106,16 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertFalse((self.storage.root / job_id).exists())
         self.assertEqual(self.alice.get(f"/api/video-detection/jobs/{job_id}/video").status_code, 409)
         self.assertEqual(self.alice.get(f"/api/video-detection/jobs/{job_id}/predictions").status_code, 409)
+
+    def test_expiry_converts_aware_non_utc_timestamps_before_comparing(self):
+        job = VideoDetectionJob(
+            job_id="VID-timezone",
+            owner_user_id=1,
+            retention_expires_at=datetime.now(timezone.utc).astimezone(
+                timezone(timedelta(hours=2))
+            ) - timedelta(seconds=1),
+        )
+        self.assertTrue(service.expired(job))
 
     def test_missing_or_unreviewed_contract_fails_before_storage(self):
         for code in ("assets_missing", "contract_unreviewed", "asset_mismatch"):

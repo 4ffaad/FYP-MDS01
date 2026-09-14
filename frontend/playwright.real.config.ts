@@ -14,6 +14,7 @@ export default defineConfig({
   webServer: {
     command: "npm run dev -- --hostname 127.0.0.1 --port 3002",
     env: {
+      NODE_ENV: "development",
       NEXT_DIST_DIR: ".next-real",
       NEXT_TSCONFIG_PATH: "tsconfig.e2e.json",
       NEXT_PUBLIC_API_BASE_URL: "http://127.0.0.1:18000",

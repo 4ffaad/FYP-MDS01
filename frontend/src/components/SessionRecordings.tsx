@@ -39,23 +39,40 @@ function isAnalysisReady(session: Session): boolean {
 
 /** Render the recordings in one session without exposing submitted filenames. */
 export function SessionRecordings({ session }: { session: Session }) {
-  const processedRecordings = session.recordings.filter(
-    (recording) =>
-      recording.status === "inferred" || recording.status === "failed",
-  );
-  const completedRecordings = processedRecordings.filter(
-    (recording) => recording.status === "inferred",
-  );
-  const alertRecordings = completedRecordings.filter(
-    (recording) => recording.modelAlertWindowCount > 0,
-  );
-  const alertCount = alertRecordings.length;
-  const development = completedRecordings.some(
-    (recording) => recording.scoreType === "development_score",
-  );
-  const calibrated = completedRecordings.some(
-    (recording) => recording.scoreType === "calibrated_probability",
-  );
+  const {
+    processedRecordings,
+    failedRecordings,
+    completedRecordings,
+    alertRecordings,
+    alertCount,
+    development,
+    calibrated,
+  } = useMemo(() => {
+    const processed = session.recordings.filter(
+      (recording) =>
+        recording.status === "inferred" || recording.status === "failed",
+    );
+    const failed = processed.filter((recording) => recording.status === "failed");
+    const completed = processed.filter(
+      (recording) => recording.status === "inferred",
+    );
+    const alerts = completed.filter(
+      (recording) => recording.modelAlertWindowCount > 0,
+    );
+    return {
+      processedRecordings: processed,
+      failedRecordings: failed,
+      completedRecordings: completed,
+      alertRecordings: alerts,
+      alertCount: alerts.length,
+      development: completed.some(
+        (recording) => recording.scoreType === "development_score",
+      ),
+      calibrated: completed.some(
+        (recording) => recording.scoreType === "calibrated_probability",
+      ),
+    };
+  }, [session.recordings]);
   const alertLabel = development
     ? "Development flags"
     : calibrated
@@ -100,11 +117,7 @@ export function SessionRecordings({ session }: { session: Session }) {
             >
               Needs review{" "}
               <span className="font-mono tabular-nums">
-                {
-                  processedRecordings.filter(
-                    (recording) => recording.status === "failed",
-                  ).length
-                }
+                {failedRecordings.length}
               </span>
             </TabsTrigger>
             <TabsTrigger

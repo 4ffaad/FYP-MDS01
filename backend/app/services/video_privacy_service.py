@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import UploadFile
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from backend.app.core.config import VIDEO_RETENTION_SECONDS
 from backend.app.database.db import engine
@@ -20,7 +20,7 @@ from backend.app.database.models.video import (
     VideoPrivacyStatus,
     utc_now,
 )
-from backend.app.database.repository import get_video_job
+from backend.app.database.repository import count_video_jobs, get_video_job
 from backend.app.services.video_storage_service import VideoStorage
 from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProcessorError
 
@@ -126,10 +126,7 @@ async def create_video_job(
     """Create metadata and encrypt the source before queueing processing."""
 
     content_type = _safe_content_type(upload)
-    count_statement = select(VideoPrivacyJob)
-    if owner_user_id is not None:
-        count_statement = count_statement.where(VideoPrivacyJob.owner_user_id == owner_user_id)
-    upload_number = len(list(db.exec(count_statement).all())) + 1
+    upload_number = count_video_jobs(db, owner_user_id) + 1
     job = VideoPrivacyJob(
         owner_user_id=owner_user_id,
         job_id=new_video_job_id(),
@@ -265,7 +262,11 @@ def _expire_if_needed(db: Session, job: VideoPrivacyJob, storage: VideoStorage |
 def _is_expired(value) -> bool:
     """Compare SQLite's naive timestamps and PostgreSQL's aware timestamps uniformly."""
 
-    normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    normalized = (
+        value.astimezone(timezone.utc)
+        if value.tzinfo is not None
+        else value.replace(tzinfo=timezone.utc)
+    )
     return normalized <= utc_now()
 
 

@@ -214,6 +214,7 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
   useEffect(() => {
     const controller = new AbortController();
     let mounted = true;
+    let timeoutId: number | undefined;
     const load = async () => {
       try {
         const next = await getVideoPrivacyJob(jobId, controller.signal);
@@ -223,7 +224,7 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
           ["ready", "needs_review", "failed", "expired"].includes(next.status)
         )
           return;
-        window.setTimeout(() => void load(), 700);
+        timeoutId = window.setTimeout(() => void load(), 700);
       } catch (loadError) {
         if (mounted && (loadError as Error).name !== "AbortError")
           setError(
@@ -237,6 +238,7 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
     return () => {
       mounted = false;
       controller.abort();
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     };
   }, [jobId]);
 

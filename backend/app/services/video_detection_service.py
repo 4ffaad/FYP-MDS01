@@ -47,7 +47,13 @@ UPLOAD_LOCK = asyncio.Lock()
 
 
 def expired(job) -> bool:
-    return job.retention_expires_at.replace(tzinfo=timezone.utc) <= utc_now()
+    value = job.retention_expires_at
+    normalized = (
+        value.astimezone(timezone.utc)
+        if value.tzinfo is not None
+        else value.replace(tzinfo=timezone.utc)
+    )
+    return normalized <= utc_now()
 
 
 def expire_job(db, job, storage):
@@ -140,7 +146,13 @@ def process_job(job_id: str):
             if not privacy.usable:
                 raise DetectionError("privacy_transform_failed")
             output = storage.work_path(job_id, "predictions.json")
-            remaining = lambda: min(3600, (job.retention_expires_at.replace(tzinfo=timezone.utc) - utc_now()).total_seconds())
+            expires_at = job.retention_expires_at
+            normalized_expiry = (
+                expires_at.astimezone(timezone.utc)
+                if expires_at.tzinfo is not None
+                else expires_at.replace(tzinfo=timezone.utc)
+            )
+            remaining = lambda: min(3600, (normalized_expiry - utc_now()).total_seconds())
             execute([sys.executable, "-m", "backend.app.video_detection.runtime", str(protected_input), str(output)], remaining())
             result = json.loads(output.read_text())
             if not result.get("predictions"):
@@ -191,7 +203,8 @@ def sweep(*, startup=False):
         return
     with Session(engine) as db:
         storage = VideoStorage()
-        for job in repository.list_unexpired_jobs(db):
+        jobs = repository.list_unexpired_jobs(db) if startup else repository.list_expired_jobs(db, utc_now())
+        for job in jobs:
             if startup and job.status in {"queued", "processing"}:
                 storage.delete_job(job.job_id)
                 job.original_path = job.video_path = job.predictions_path = None
