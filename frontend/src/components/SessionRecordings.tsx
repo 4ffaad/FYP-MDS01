@@ -52,7 +52,9 @@ export function SessionRecordings({ session }: { session: Session }) {
       (recording) =>
         recording.status === "inferred" || recording.status === "failed",
     );
-    const failed = processed.filter((recording) => recording.status === "failed");
+    const failed = processed.filter(
+      (recording) => recording.status === "failed",
+    );
     const completed = processed.filter(
       (recording) => recording.status === "inferred",
     );
