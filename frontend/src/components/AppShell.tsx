@@ -103,8 +103,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         Skip to main content
       </a>
 
-      <header className="relative z-40 shrink-0 border-b border-rule bg-surface">
-        <div className="site-container flex min-h-[4.25rem] flex-wrap items-center gap-x-8">
+      <header className="app-header">
+        <div className="app-header-inner site-container flex flex-wrap items-center gap-x-8">
           <Link
             className="inline-flex min-h-11 min-w-0 items-center rounded-lg focus-visible:ring-2 focus-visible:ring-teal focus-visible:ring-offset-2"
             href="/dashboard"
@@ -140,10 +140,6 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Icon name="activity" className="size-4" />
               Workspace
             </NavLink>
-            <NavLink href="/video-privacy">
-              <Icon name="shield" className="size-4" />
-              Video privacy
-            </NavLink>
             <NavLink href="/video-detection">
               <Icon name="activity" className="size-4" />
               Video detection
@@ -151,11 +147,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           </nav>
 
           <div className="ml-auto flex items-center gap-3">
-            <span className="text-xs text-ink-faint">Research prototype</span>
+            <span className="hidden rounded-full border border-rule bg-white/70 px-3 py-1.5 text-[0.68rem] font-semibold tracking-wide text-ink-faint sm:inline-flex">
+              Research workspace
+            </span>
             {user && (
-              <div className="hidden items-center gap-2 border-l border-rule pl-3 sm:flex">
+              <div className="hidden items-center gap-2 border-l border-rule pl-4 sm:flex">
                 <span
-                  className="max-w-48 truncate text-xs text-ink-muted"
+                  className="max-w-48 truncate text-xs font-medium text-ink-muted"
                   title={user.email}
                 >
                   {user.email}
@@ -203,13 +201,6 @@ export function AppShell({ children }: { children: ReactNode }) {
             <NavLink href="/dashboard" onNavigate={() => setMenuOpen(false)}>
               <Icon name="activity" className="size-4" />
               Workspace
-            </NavLink>
-            <NavLink
-              href="/video-privacy"
-              onNavigate={() => setMenuOpen(false)}
-            >
-              <Icon name="shield" className="size-4" />
-              Video privacy
             </NavLink>
             {user && (
               <div className="mt-2 flex items-center justify-between border-t border-rule px-3 pt-3 lg:hidden">
@@ -259,7 +250,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               ? "Privacy transforms do not guarantee anonymity."
               : "Model output is not a diagnosis."}{" "}
             {isVideoDetection
-              ? "Patient video is available only to its owner during retention."
+              ? "Protected video is not retained; only model results are available."
               : "Original uploads are never displayed."}
           </p>
         </div>

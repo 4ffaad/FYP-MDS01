@@ -2,14 +2,6 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { AppShell } from "@/components/AppShell";
 import "./globals.css";
-import { Inter } from "next/font/google";
-
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-sans",
-  display: "swap",
-});
-
 export const metadata: Metadata = {
   applicationName: "MDS01",
   title: {
@@ -17,7 +9,7 @@ export const metadata: Metadata = {
     template: "%s · MDS01",
   },
   description:
-    "A research workspace for privacy-aware EEG analysis and standalone patient-video privacy transformation.",
+    "A premium research workspace for privacy-aware EEG analysis and integrated patient-video model review.",
   authors: [{ name: "MDS01 Project Group" }],
   robots: { index: false, follow: false },
 };
@@ -29,7 +21,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={inter.variable}>
+    <html lang="en">
       <body>
         <AppShell>{children}</AppShell>
       </body>

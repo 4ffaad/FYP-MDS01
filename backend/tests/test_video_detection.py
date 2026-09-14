@@ -60,9 +60,6 @@ class VideoDetectionTests(unittest.TestCase):
         with Session(self.engine) as db:
             job = VideoDetectionJob(owner_user_id=self.owner, job_id="VID-" + os.urandom(16).hex(), status=status,
                                     duration_seconds=10, fps=30, retention_expires_at=utc_now() + timedelta(hours=1))
-            path = self.storage.work_path(job.job_id, "review.mp4")
-            path.write_bytes(b"synthetic-public-test-video")
-            job.video_path = str(self.storage.store_artifact(job.job_id, path, "review.mp4"))
             results = self.storage.work_path(job.job_id, "predictions.json")
             results.write_text(json.dumps(validate_predictions([
                 {"start_time": 0, "end_time": 2, "raw_score": 0.8},
@@ -73,7 +70,7 @@ class VideoDetectionTests(unittest.TestCase):
 
     def test_auth_ownership_and_no_private_metadata(self):
         job_id = self.seed()
-        for suffix in ("", "/predictions", "/video"):
+        for suffix in ("", "/predictions"):
             self.assertEqual(self.bob.get(f"/api/video-detection/jobs/{job_id}{suffix}").status_code, 404)
             with TestClient(app) as anon:
                 self.assertEqual(anon.get(f"/api/video-detection/jobs/{job_id}{suffix}").status_code, 401)
@@ -83,18 +80,10 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertNotIn("path", response.text)
         self.assertNotIn(self.temp.name, response.text)
 
-    def test_range_playback_is_private_and_plaintext_removed(self):
+    def test_range_playback_is_not_published(self):
         job_id = self.seed()
-        response = self.alice.get(f"/api/video-detection/jobs/{job_id}/video", headers={"Range": "bytes=0-8"})
-        self.assertEqual(response.status_code, 206)
-        self.assertEqual(response.content, b"synthetic")
-        self.assertIn("no-store", response.headers["cache-control"])
-        self.assertEqual(list((self.storage.root / job_id / "work").glob("*")), [])
-        response = self.alice.get(f"/api/video-detection/jobs/{job_id}/video", headers={"Range": "bytes=900-999"})
-        self.assertEqual(response.status_code, 416)
-        self.assertEqual(list((self.storage.root / job_id / "work").glob("*")), [])
-        ciphertext = (self.storage.root / job_id / "retained/review.mp4.enc").read_bytes()
-        self.assertNotIn(b"synthetic-public-test-video", ciphertext)
+        for suffix in ("/video", "/video?range=bytes=0-8"):
+            self.assertEqual(self.alice.get(f"/api/video-detection/jobs/{job_id}{suffix}").status_code, 404)
 
     def test_expiry_sweep_removes_video_and_predictions_without_a_visit(self):
         job_id = self.seed()
@@ -104,7 +93,7 @@ class VideoDetectionTests(unittest.TestCase):
             db.add(job); db.commit()
         service.sweep()
         self.assertFalse((self.storage.root / job_id).exists())
-        self.assertEqual(self.alice.get(f"/api/video-detection/jobs/{job_id}/video").status_code, 409)
+        self.assertEqual(self.alice.get(f"/api/video-detection/jobs/{job_id}/video").status_code, 404)
         self.assertEqual(self.alice.get(f"/api/video-detection/jobs/{job_id}/predictions").status_code, 409)
 
     def test_expiry_converts_aware_non_utc_timestamps_before_comparing(self):
@@ -173,7 +162,7 @@ class VideoDetectionTests(unittest.TestCase):
             saved = db.exec(select(VideoDetectionJob).where(VideoDetectionJob.job_id == job.job_id)).one()
             self.assertEqual(saved.status, "ready")
             self.assertIsNone(saved.original_path)
-            self.assertTrue(saved.video_path.endswith(".enc"))
+            self.assertIsNone(saved.video_path)
             self.assertTrue(saved.predictions_path.endswith(".enc"))
         runtime = next(command for command in commands if "backend.app.video_detection.runtime" in command)
         self.assertTrue(runtime[-2].endswith("model-input.mp4"))

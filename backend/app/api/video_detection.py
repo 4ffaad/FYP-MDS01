@@ -1,4 +1,4 @@
-"""Authenticated video detection and response-scoped private playback."""
+"""Authenticated video detection and owner-scoped results."""
 
 import asyncio
 import json
@@ -7,7 +7,6 @@ from pathlib import Path
 import secrets
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
 from sqlmodel import Session
 
 from backend.app.core.security import require_api_auth
@@ -86,27 +85,3 @@ def predictions(job_id: str, owner: int = Depends(account), db: Session = Depend
     finally:
         if path:
             storage.delete_work_file(path)
-
-
-class PrivateVideoResponse(FileResponse):
-    async def __call__(self, scope, receive, send):
-        try:
-            await super().__call__(scope, receive, send)
-        finally:
-            Path(self.path).unlink(missing_ok=True)
-
-
-@router.get("/jobs/{job_id}/video")
-async def playback(job_id: str, owner: int = Depends(account), db: Session = Depends(get_session)):
-    storage = VideoStorage()
-    job = owned(job_id, owner, db, storage)
-    if job.status != "ready" or not job.video_path:
-        raise HTTPException(409, "Review video is unavailable or expired.")
-    try:
-        path = await asyncio.to_thread(storage.materialize_artifact, job_id, Path(job.video_path), f"playback-{secrets.token_hex(16)}.mp4")
-    except Exception as exc:
-        raise HTTPException(409, "Review video is unavailable.") from exc
-    return PrivateVideoResponse(path, media_type="video/mp4", headers={
-        "Cache-Control": "no-store, private", "Pragma": "no-cache",
-        "Content-Disposition": "inline", "Vary": "Cookie, Origin",
-    })

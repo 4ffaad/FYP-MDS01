@@ -74,7 +74,7 @@ def public_job(db, job, storage):
         "status": job.status, "current_stage": job.current_stage,
         "duration_seconds": job.duration_seconds, "fps": job.fps,
         "created_at": job.created_at, "retention_expires_at": job.retention_expires_at,
-        "video_available": bool(job.video_path) and job.status == "ready",
+        "video_available": False,
         "error": ERRORS.get(job.error_code), "research_only": True,
     }
 
@@ -165,23 +165,13 @@ def process_job(job_id: str):
                 "review_required": privacy.needs_review,
             }
             output.write_text(json.dumps(result, allow_nan=False))
-            job.current_stage = "review-video"
-            db.add(job)
-            db.commit()
-            # The review file is the exact face-redacted model input. Strip
-            # audio and container metadata before it becomes an owner-only artifact.
-            playable = storage.work_path(job_id, "review.mp4")
-            execute(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(protected_input),
-                     "-map", "0:v:0", "-an", "-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1",
-                     "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
-                     "-movflags", "+faststart", str(playable)], remaining())
             if expired(job):
                 expire_job(db, job, storage)
                 return
             job.predictions_path = str(storage.store_artifact(job_id, output, "predictions.json"))
-            job.video_path = str(storage.store_artifact(job_id, playable, "review.mp4"))
             storage.cleanup(job_id, keep_retained=True)
             job.original_path = None
+            job.video_path = None
             job.status, job.current_stage = "ready", "complete"
         except Exception as exc:
             code = str(exc) if isinstance(exc, DetectionError) else "processing_failed"

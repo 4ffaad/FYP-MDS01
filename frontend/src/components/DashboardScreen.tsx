@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { deleteSession, getSessions, toDisplayStatus } from "@/lib/api";
 import type { DisplayStatus, Session } from "@/lib/types";
@@ -259,17 +260,9 @@ export function DashboardScreen() {
               icon="activity"
               eyebrow="Modality two"
               title="Video detection"
-              description="Face-redacted frames → VSViG scores → clickable evidence intervals."
+              description="Face-redacted frames → VSViG scores → evidence intervals, with no processed video retained."
               href="/video-detection"
               action="Open video detection"
-            />
-            <WorkflowCard
-              icon="shield"
-              eyebrow="Separate workflow"
-              title="Video privacy"
-              description="Face-redact a video and retain original audio only in the encrypted owner-only output."
-              href="/video-privacy"
-              action="Open video privacy"
             />
           </aside>
         </div>
@@ -325,7 +318,11 @@ function WorkflowCard({
   action: string;
 }) {
   return (
-    <section className="glass-panel rounded-2xl border border-rule p-5 sm:p-6">
+    <motion.section
+      className="premium-card p-5 sm:p-6"
+      whileHover={{ y: -3 }}
+      transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+    >
       <Icon name={icon} className="size-6 text-teal" weight="bold" />
       <p className="eyebrow mt-5">{eyebrow}</p>
       <h2 className="mt-1 text-lg font-bold">{title}</h2>
@@ -337,7 +334,7 @@ function WorkflowCard({
         {action}
         <Icon name="arrow" className="size-4" />
       </Link>
-    </section>
+    </motion.section>
   );
 }
 

@@ -1,4 +1,4 @@
-import { getJson, uploadJson, videoPrivacyAssetUrl } from "./api";
+import { getJson, uploadJson } from "./api";
 
 export interface DetectionJob {
   job_id: string;
@@ -84,8 +84,4 @@ export const getDetectionResults = (id: string, signal?: AbortSignal) =>
   getJson<DetectionResult>(
     `/api/video-detection/jobs/${encodeURIComponent(id)}/predictions`,
     signal,
-  );
-export const detectionVideoUrl = (id: string) =>
-  videoPrivacyAssetUrl(
-    `/api/video-detection/jobs/${encodeURIComponent(id)}/video`,
   );

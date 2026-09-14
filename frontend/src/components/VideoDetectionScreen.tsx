@@ -2,11 +2,10 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/button";
 import {
-  detectionVideoUrl,
   getDetection,
   getDetectionResults,
   listDetections,
@@ -18,8 +17,7 @@ import {
 const stageNames: Record<string, string> = {
   preflight: "Checking video",
   "pose-and-inference": "Extracting poses and scoring windows",
-  "review-video": "Preparing review video",
-  complete: "Ready for review",
+  complete: "Ready for analysis",
   failed: "Processing stopped",
   expired: "Retention expired",
 };
@@ -113,8 +111,8 @@ export function VideoDetectionUploadScreen() {
           </div>
 
           <p className="text-sm leading-6 text-ink-muted">
-            The source is encrypted immediately. The detector receives
-            face-redacted frames and review playback is face-redacted and muted.
+            The source is encrypted immediately. Face-redacted frames are sent
+            directly to the model; no processed video is retained or returned.
           </p>
           {error && (
             <p role="alert" className="text-sm text-red">
@@ -175,9 +173,6 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
   const [job, setJob] = useState<DetectionJob | null>(null);
   const [result, setResult] = useState<DetectionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [playbackError, setPlaybackError] = useState(false);
-  const [position, setPosition] = useState(0);
-  const video = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -215,13 +210,6 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
       clearTimeout(timer);
     };
   }, [jobId]);
-
-  function seek(seconds: number) {
-    if (!video.current) return;
-    video.current.currentTime = seconds;
-    setPosition(seconds);
-    video.current.focus();
-  }
 
   const duration = job?.duration_seconds || 1;
 
@@ -262,37 +250,22 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
             )}
             {job.status === "expired" && (
               <p className="mt-5 text-sm">
-                The retention period ended. Video and results have been removed.
+                The retention period ended. Source video and results have been
+                removed.
               </p>
             )}
-
-            <VideoReview
-              job={job}
-              jobId={jobId}
-              playbackError={playbackError}
-              video={video}
-              onPlaybackError={() => {
-                setPlaybackError(true);
-                void getDetection(jobId).catch(() => {});
-              }}
-              onPositionChange={setPosition}
-            />
 
             {result && (
               <>
                 <PrivacyTreatment privacy={result.privacy} />
-                <ScoreTimeline
-                  result={result}
-                  duration={duration}
-                  position={position}
-                />
-                <FlaggedIntervals intervals={result.intervals} onSeek={seek} />
+                <ScoreTimeline result={result} duration={duration} />
+                <FlaggedIntervals intervals={result.intervals} />
                 <VideoEvidence
                   prediction={result.predictions.find(
                     (prediction) => prediction.model_evidence,
                   )}
                 />
-                <WindowScores predictions={result.predictions} onSeek={seek} />
+                <WindowScores predictions={result.predictions} />
                 <ModelDetails model={result.model} />
               </>
             )}
@@ -302,52 +275,6 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
         <ResearchOnlyNotice />
       </div>
     </div>
-  );
-}
-
-function VideoReview({
-  job,
-  jobId,
-  playbackError,
-  video,
-  onPlaybackError,
-  onPositionChange,
-}: {
-  job: DetectionJob;
-  jobId: string;
-  playbackError: boolean;
-  video: React.RefObject<HTMLVideoElement | null>;
-  onPlaybackError: () => void;
-  onPositionChange: (seconds: number) => void;
-}) {
-  if (!job.video_available || job.status !== "ready") return null;
-
-  return (
-    <section className="mt-7" aria-label="Private video review">
-      <video
-        ref={video}
-        src={detectionVideoUrl(jobId) ?? undefined}
-        crossOrigin="use-credentials"
-        controls
-        preload="metadata"
-        muted
-        playsInline
-        aria-label="Patient video review"
-        className="aspect-video w-full rounded-lg bg-black"
-        onTimeUpdate={() => onPositionChange(video.current?.currentTime ?? 0)}
-        onError={onPlaybackError}
-      />
-      {playbackError && (
-        <p role="alert" className="mt-2 text-sm text-red">
-          Playback is unavailable. Refresh to check your session and the video
-          retention period.
-        </p>
-      )}
-      <p className="mt-2 text-xs text-ink-muted">
-        Face-redacted private review · Audio removed · Available until{" "}
-        {new Date(job.retention_expires_at).toLocaleString()}
-      </p>
-    </section>
   );
 }
 
@@ -365,8 +292,8 @@ function PrivacyTreatment({
         <>
           <p className="mt-2 text-sm leading-6 text-ink-muted">
             Face redaction ran before pose extraction and VSViG scoring. The
-            model and this review video use the protected frames; the source
-            remains encrypted and is removed after processing.
+            model receives only the protected frames; the source is encrypted
+            and removed after processing. The protected video is not retained.
           </p>
           {privacy.quality_flags.length ? (
             <p className="mt-3 rounded-md bg-amber-soft px-3 py-2 text-xs leading-5 text-amber">
@@ -384,7 +311,7 @@ function PrivacyTreatment({
       ) : (
         <p className="mt-2 text-sm leading-6 text-amber">
           Privacy provenance is unavailable for this legacy job. Do not treat
-          its review video as de-identified.
+          its result as de-identified.
         </p>
       )}
     </section>
@@ -394,11 +321,9 @@ function PrivacyTreatment({
 function ScoreTimeline({
   result,
   duration,
-  position,
 }: {
   result: DetectionResult;
   duration: number;
-  position: number;
 }) {
   const { model, predictions } = result;
   const flaggedWindows = predictions.filter(
@@ -455,14 +380,7 @@ function ScoreTimeline({
             )
             .join(" ")}
         />
-        <line
-          x1={35 + (position / duration) * 840}
-          x2={35 + (position / duration) * 840}
-          y1="20"
-          y2="160"
-          stroke="currentColor"
-          opacity="0.6"
-        />
+
         <text x="35" y="185" fontSize="12" fill="currentColor">
           0:00
         </text>
@@ -486,10 +404,8 @@ function ScoreTimeline({
 
 function FlaggedIntervals({
   intervals,
-  onSeek,
 }: {
   intervals: DetectionResult["intervals"];
-  onSeek: (seconds: number) => void;
 }) {
   return (
     <section className="mt-7" aria-labelledby="interval-heading">
@@ -497,19 +413,19 @@ function FlaggedIntervals({
         Flagged intervals
       </h2>
       <p className="mt-2 text-sm text-ink-muted">
-        Select an interval to review the corresponding video.
+        Intervals where the model score crossed the configured research
+        threshold.
       </p>
       <div className="mt-4 flex flex-wrap gap-3">
         {intervals.length ? (
           intervals.map((interval, index) => (
-            <Button
-              variant="outline"
+            <span
               key={interval.start_time}
-              onClick={() => onSeek(interval.start_time)}
+              className="rounded-md border border-rule px-3 py-2 text-sm"
             >
               Event {index + 1} · {formatTime(interval.start_time)}–
               {formatTime(interval.end_time)}
-            </Button>
+            </span>
           ))
         ) : (
           <p className="text-sm text-ink-muted">
@@ -524,10 +440,8 @@ function FlaggedIntervals({
 
 function WindowScores({
   predictions,
-  onSeek,
 }: {
   predictions: DetectionResult["predictions"];
-  onSeek: (seconds: number) => void;
 }) {
   return (
     <details className="mt-7 border-y border-rule py-4">
@@ -547,13 +461,10 @@ function WindowScores({
             {predictions.map((prediction) => (
               <tr key={prediction.start_time} className="border-t border-rule">
                 <td>
-                  <button
-                    className="min-h-11 text-teal hover:underline"
-                    onClick={() => onSeek(prediction.start_time)}
-                  >
+                  <span className="text-ink-muted">
                     {formatTime(prediction.start_time)}–
                     {formatTime(prediction.end_time)}
-                  </button>
+                  </span>
                 </td>
                 <td>{prediction.score.toFixed(3)}</td>
                 <td>{prediction.seizure_detected ? "Yes" : "No"}</td>
