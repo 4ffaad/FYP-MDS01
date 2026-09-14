@@ -12,4 +12,5 @@ cryptography
 PyJWT[crypto]>=2.10,<3
 opencv-python-headless>=4.10,<5
 # The processor uses the bundled legacy solutions.pose API.
-mediapipe==0.10.14
+# MediaPipe 0.10.14 publishes no native Apple Silicon wheel; Docker/Linux installs it.
+mediapipe==0.10.14; sys_platform != "darwin" or platform_machine != "arm64"
