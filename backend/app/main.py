@@ -1,9 +1,8 @@
 """FastAPI application entry point."""
 
-from contextlib import asynccontextmanager
 import asyncio
-from contextlib import suppress
 import os
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,8 +34,8 @@ async def lifespan(_: FastAPI):
     # Migrations run before Uvicorn; recovery removes interrupted video work.
     # Tests that do not provision a database use their existing lifespan fixture.
     cleanup_task = None
+    await asyncio.to_thread(sweep, startup=True)
     if os.environ.get("VIDEO_DETECTION_ENABLED", "false").lower() == "true":
-        await asyncio.to_thread(sweep, startup=True)
         cleanup_task = asyncio.create_task(retention_loop())
     try:
         yield

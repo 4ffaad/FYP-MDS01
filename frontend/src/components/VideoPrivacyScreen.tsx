@@ -9,32 +9,11 @@ import {
   getVideoPrivacyJob,
   submitVideoPrivacy,
 } from "@/lib/api";
-import type { VideoPrivacyJob, VideoPrivacyProfile } from "@/lib/types";
+import type { VideoPrivacyJob } from "@/lib/types";
 import { formatBytes } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Icon } from "./Icon";
-
-const PROFILES: Array<{
-  id: VideoPrivacyProfile;
-  title: string;
-  description: string;
-  detail: string;
-}> = [
-  {
-    id: "face-redacted",
-    title: "Face redaction",
-    description: "Blur detected faces and keep the surrounding scene visible.",
-    detail: "Useful when reviewers need to see scene context.",
-  },
-  {
-    id: "pose-only",
-    title: "Pose-only",
-    description:
-      "Replace the scene with pose landmarks on a non-identifying background.",
-    detail: "Useful when movement is the only visual evidence needed.",
-  },
-];
 
 const STAGE_LABELS: Record<string, string> = {
   preflight: "Preflight",
@@ -46,7 +25,6 @@ const STAGE_LABELS: Record<string, string> = {
 export function VideoPrivacyUploadScreen() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
-  const [profile, setProfile] = useState<VideoPrivacyProfile>("face-redacted");
   const [progress, setProgress] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +44,7 @@ export function VideoPrivacyUploadScreen() {
     setSubmitting(true);
     setError(null);
     try {
-      const job = await submitVideoPrivacy(file, profile, setProgress);
+      const job = await submitVideoPrivacy(file, setProgress);
       router.push(`/video-privacy/${encodeURIComponent(job.jobId)}`);
     } catch (submissionError) {
       setSubmitting(false);
@@ -86,8 +64,8 @@ export function VideoPrivacyUploadScreen() {
             Protect a patient video before review
           </h1>
           <p className="mt-3 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
-            Upload a video, choose a privacy transform, and review the protected
-            output. Video is processed separately from EEG analysis.
+            Upload a video and review a face-redacted protected output. Video is
+            processed separately from EEG analysis.
           </p>
         </div>
 
@@ -181,51 +159,25 @@ export function VideoPrivacyUploadScreen() {
             </div>
           </section>
 
-          <section className="min-w-0" aria-labelledby="profile-heading">
+          <section
+            className="panel min-w-0 overflow-hidden"
+            aria-labelledby="privacy-policy-heading"
+          >
             <div className="border-b border-rule px-5 py-5 sm:px-7">
-              <h2 id="profile-heading" className="text-base font-bold">
-                Choose a privacy profile
+              <h2 id="privacy-policy-heading" className="text-base font-bold">
+                Face redaction
               </h2>
               <p className="mt-1 text-sm leading-6 text-ink-muted">
-                Select one transform for this job.
+                Detected faces are blurred. If the detector loses a face, that
+                frame is blurred fully and the output needs review.
               </p>
             </div>
-            <div
-              className="space-y-3 px-5 py-6 sm:px-7"
-              role="radiogroup"
-              aria-labelledby="profile-heading"
-            >
-              {PROFILES.map((item) => {
-                const selected = profile === item.id;
-                return (
-                  <label
-                    key={item.id}
-                    className={`block cursor-pointer rounded-lg border px-4 py-4 transition-colors ${selected ? "border-teal bg-teal-soft/50" : "border-rule bg-surface hover:border-rule-strong"}`}
-                  >
-                    <span className="flex items-start gap-3">
-                      <input
-                        className="mt-1 size-4 accent-teal"
-                        type="radio"
-                        name="video-privacy-profile"
-                        value={item.id}
-                        checked={selected}
-                        onChange={() => setProfile(item.id)}
-                      />
-                      <span>
-                        <span className="block text-sm font-bold text-ink">
-                          {item.title}
-                        </span>
-                        <span className="mt-1 block text-xs leading-5 text-ink-muted">
-                          {item.description}
-                        </span>
-                        <span className="mt-2 block text-xs font-semibold text-teal-dark">
-                          {item.detail}
-                        </span>
-                      </span>
-                    </span>
-                  </label>
-                );
-              })}
+            <div className="space-y-4 px-5 py-6 sm:px-7">
+              <div className="rounded-md border border-amber/30 bg-amber-soft px-3.5 py-3 text-xs leading-5 text-ink-muted">
+                <span className="font-semibold text-ink">Sensitive audio:</span>{" "}
+                original audio is retained when present for private review and
+                may contain identifying speech.
+              </div>
               <div className="rounded-md border border-amber/30 bg-amber-soft px-3.5 py-3 text-xs leading-5 text-ink-muted">
                 <span className="font-semibold text-ink">Important:</span> this
                 is a research privacy transform, not a guarantee of anonymity.
@@ -462,7 +414,7 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
                     </p>
                   </div>
                   <div className="space-y-3 px-5 py-5 text-sm">
-                    <PolicyRow label="Audio" value="Removed" />
+                    <PolicyRow label="Audio" value="Retained when present" />
                     <PolicyRow label="Metadata" value="Scrubbed" />
                     <PolicyRow
                       label="Retention"
@@ -479,6 +431,10 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
                   </div>
                   {job.downloadAvailable && job.downloadUrl && (
                     <div className="border-t border-rule px-5 py-5">
+                      <p className="mb-3 text-xs leading-5 text-ink-muted">
+                        Audio is encrypted at rest and available only in this
+                        protected download. It may contain identifying speech.
+                      </p>
                       <Button asChild className="w-full" size="lg">
                         <a href={job.downloadUrl} download>
                           <Icon name="arrow" className="size-4" />

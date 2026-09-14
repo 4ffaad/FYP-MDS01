@@ -13,13 +13,16 @@ import type { AuthUser } from "@/lib/types";
 /** Provide the shared MDS01 workspace chrome and persistent privacy boundary. */
 export function AppShell({ children }: { children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [authStatus, setAuthStatus] = useState<"loading" | "authenticated" | "unauthenticated">("loading");
+  const [authStatus, setAuthStatus] = useState<
+    "loading" | "authenticated" | "unauthenticated"
+  >("loading");
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const isVideoPrivacy = pathname.startsWith("/video-privacy");
   const isVideoDetection = pathname.startsWith("/video-detection");
+  const isDashboard = pathname.startsWith("/dashboard") || pathname === "/";
   const isLogin = pathname === "/login";
 
   useEffect(() => {
@@ -50,7 +53,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       if (pathname !== "/login") router.replace("/login");
     };
     window.addEventListener("mds01:auth-expired", redirectToLogin);
-    return () => window.removeEventListener("mds01:auth-expired", redirectToLogin);
+    return () =>
+      window.removeEventListener("mds01:auth-expired", redirectToLogin);
   }, [pathname, router]);
 
   useEffect(() => {
@@ -75,7 +79,10 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   if (authStatus === "loading" && isLogin) {
     return (
-      <main className="grid min-h-screen place-items-center bg-canvas px-6" aria-live="polite">
+      <main
+        className="grid min-h-screen place-items-center bg-canvas px-6"
+        aria-live="polite"
+      >
         <p className="text-sm text-ink-muted">Checking workspace access…</p>
       </main>
     );
@@ -83,7 +90,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   if (authStatus === "unauthenticated" && !isLogin) return null;
   if (authStatus === "authenticated" && isLogin) return null;
   if (isLogin) {
-    return <main className="min-h-screen bg-canvas" tabIndex={-1}>{children}</main>;
+    return (
+      <main className="min-h-screen bg-canvas" tabIndex={-1}>
+        {children}
+      </main>
+    );
   }
 
   return (
@@ -98,11 +109,27 @@ export function AppShell({ children }: { children: ReactNode }) {
             className="inline-flex min-h-11 min-w-0 items-center rounded-lg focus-visible:ring-2 focus-visible:ring-teal focus-visible:ring-offset-2"
             href="/dashboard"
             aria-label={
-              isVideoDetection ? "MDS01 video detection" : isVideoPrivacy ? "MDS01 video privacy" : "MDS01 EEG analysis"
+              isVideoDetection
+                ? "MDS01 video detection"
+                : isVideoPrivacy
+                  ? "MDS01 video privacy"
+                  : isDashboard
+                    ? "MDS01 analysis workspace"
+                    : "MDS01 EEG analysis"
             }
             onClick={() => setMenuOpen(false)}
           >
-            <Mds01Logo context={isVideoDetection ? "detection" : isVideoPrivacy ? "video" : "eeg"} />
+            <Mds01Logo
+              context={
+                isVideoDetection
+                  ? "detection"
+                  : isVideoPrivacy
+                    ? "video"
+                    : isDashboard
+                      ? "workspace"
+                      : "eeg"
+              }
+            />
           </Link>
 
           <nav
@@ -111,7 +138,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <NavLink href="/dashboard">
               <Icon name="activity" className="size-4" />
-              EEG analysis
+              Workspace
             </NavLink>
             <NavLink href="/video-privacy">
               <Icon name="shield" className="size-4" />
@@ -127,7 +154,12 @@ export function AppShell({ children }: { children: ReactNode }) {
             <span className="text-xs text-ink-faint">Research prototype</span>
             {user && (
               <div className="hidden items-center gap-2 border-l border-rule pl-3 sm:flex">
-                <span className="max-w-48 truncate text-xs text-ink-muted" title={user.email}>{user.email}</span>
+                <span
+                  className="max-w-48 truncate text-xs text-ink-muted"
+                  title={user.email}
+                >
+                  {user.email}
+                </span>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -170,7 +202,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <NavLink href="/dashboard" onNavigate={() => setMenuOpen(false)}>
               <Icon name="activity" className="size-4" />
-              EEG analysis
+              Workspace
             </NavLink>
             <NavLink
               href="/video-privacy"
@@ -181,13 +213,24 @@ export function AppShell({ children }: { children: ReactNode }) {
             </NavLink>
             {user && (
               <div className="mt-2 flex items-center justify-between border-t border-rule px-3 pt-3 lg:hidden">
-                <span className="max-w-52 truncate text-xs text-ink-muted">{user.email}</span>
-                <Button variant="ghost" size="sm" type="button" onClick={() => void handleLogout()} disabled={loggingOut}>
+                <span className="max-w-52 truncate text-xs text-ink-muted">
+                  {user.email}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  type="button"
+                  onClick={() => void handleLogout()}
+                  disabled={loggingOut}
+                >
                   {loggingOut ? "Signing out…" : "Sign out"}
                 </Button>
               </div>
             )}
-            <NavLink href="/video-detection" onNavigate={() => setMenuOpen(false)}>
+            <NavLink
+              href="/video-detection"
+              onNavigate={() => setMenuOpen(false)}
+            >
               <Icon name="activity" className="size-4" />
               Video detection
             </NavLink>
@@ -196,8 +239,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       </header>
 
       <main id="main-content" className="flex-1" tabIndex={-1}>
-        {authStatus === "authenticated" ? children : (
-          <div className="grid min-h-[50vh] place-items-center px-6" aria-live="polite">
+        {authStatus === "authenticated" ? (
+          children
+        ) : (
+          <div
+            className="grid min-h-[50vh] place-items-center px-6"
+            aria-live="polite"
+          >
             <p className="text-sm text-ink-muted">Checking workspace access…</p>
           </div>
         )}
@@ -210,7 +258,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             {isVideoPrivacy
               ? "Privacy transforms do not guarantee anonymity."
               : "Model output is not a diagnosis."}{" "}
-            {isVideoDetection ? "Patient video is available only to its owner during retention." : "Original uploads are never displayed."}
+            {isVideoDetection
+              ? "Patient video is available only to its owner during retention."
+              : "Original uploads are never displayed."}
           </p>
         </div>
       </footer>

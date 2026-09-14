@@ -13,14 +13,14 @@ backend/database/
 frontend/node_modules/
 frontend/.env.local
 frontend/.next/
-frontend/.next-e2e/
-frontend/.next-real/
+frontend/.next-*/
 frontend/next-env.d.ts
 frontend/playwright-report/
 frontend/test-results/
 *.tsbuildinfo
 .DS_Store
 .cache/
+.keras/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

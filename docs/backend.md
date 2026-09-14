@@ -1,5 +1,9 @@
 # Backend internals
 
+Use this after [setup](setup.md) and [architecture](architecture.md). It is the
+implementation reference for API, persistence, processing and EEG research
+tools. Video-detection runtime setup lives in [video-detection.md](video-detection.md).
+
 The backend is a FastAPI application backed by SQLite in native prototype mode
 or PostgreSQL in Docker/team mode, plus private session-scoped storage. Routes
 receive requests; services own the workflow; repositories own database queries.
@@ -321,8 +325,10 @@ hashes.
 ## Video privacy boundary
 
 Patient-video processing is a separate subsystem, not another EEG recording
-stage. Its flow is `video → selected privacy pipeline(s) → encrypted output`
-with no H5 inference, action analysis, or clinical model call.
+stage. Its flow is `video → face redaction → metadata removal + first audio
+stream → encrypted output` with no H5 inference, action analysis, or clinical
+model call. Audio remains sensitive and owner-only; it is encrypted at rest but
+not de-identified.
 
 ## Database tables
 
@@ -399,6 +405,3 @@ migrations or using `create_all()` in the Docker runtime.
 9. `app/ml/` — stub and reviewed H5 adapter.
 10. `app/database/models/eeg.py` and `app/database/repository.py` — persistence.
 11. `migrations/versions/` — database history.
-# Video detection
-
-`app/video_detection` validates a reviewed, hash-checked external VSViG bundle and runs pose/patch/model inference. The separate video detection service owns the job lifecycle; its repository enforces ownership. Migration 015 is additive. See [runtime setup and limitations](video-detection.md). No weights are fetched automatically and missing preprocessing evidence fails closed.

@@ -43,10 +43,11 @@ requests require a configured `Origin`. `local` is an explicit unauthenticated
 test mode. Cloudflare Access remains the remote-deployment path; its verified
 subject is mapped to the same ownership table.
 
-## Two independent workflows
+## Shared analysis entry, separate processing paths
 
 ```mermaid
 flowchart TB
+    UploadEntry[Unified upload entry] --> Choose{EEG, video, or both}
     subgraph EEG[EEG analysis]
         ZIP[EDF ZIP] --> Draft[Encrypted upload draft]
         Draft --> Session[Finalize privacy selection and create session]
@@ -58,10 +59,18 @@ flowchart TB
         Inference --> Scores[Persist window scores and explanations]
         Scores --> Review[Timeline, flagged intervals and optional waveform]
     end
+    Choose --> ZIP
+    subgraph Detection[Video seizure review]
+        DetectionUpload[Video upload] --> DetectionPrivacy[Face redaction]
+        DetectionPrivacy --> DetectionModel[VSViG scoring]
+        DetectionModel --> DetectionReview[Evidence timeline]
+    end
+    Choose --> DetectionUpload
     subgraph Video[Video privacy]
         Upload[MP4, MOV or WebM] --> Job[Encrypted upload and video job]
-        Job --> Transform[Face redaction OR pose-only]
-        Transform --> Check[Validate transformed output]
+        Job --> Transform[Face redaction with full-frame fallback]
+        Transform --> Audio[Keep first audio stream; remove metadata]
+        Audio --> Check[Validate transformed output]
         Check --> Output[Encrypted video and preview frame]
         Output --> Download[Review caveats and download]
     end
@@ -69,7 +78,11 @@ flowchart TB
     Check --> VideoCleanup[Delete original and transient video files]
 ```
 
-One ZIP creates one session containing multiple recordings. A malformed recording can fail while its siblings complete. A video job accepts one profile; it does not run H5, seizure detection or action classification.
+One ZIP creates one session containing multiple recordings. A malformed recording can fail while its siblings complete. New video privacy jobs use face redaction only; original audio is retained in the encrypted, owner-only output and is not de-identified. Video privacy does not run H5, seizure detection or action classification.
+The unified `/upload` screen selects the existing EEG and video-detection paths.
+A paired upload does not create a combined backend entity: `/analysis` polls the
+owner-scoped jobs and links to their full reviews. Video detection is visual-only
+and does not use the retained-audio video-privacy output.
 
 ## Where to change code
 
@@ -149,6 +162,3 @@ The UI distinguishes development scores, uncalibrated H5 scores and estimated **
 Keep each profile's calibration/evaluation separate. The fixed research split is train `chb01–chb06`, calibration `chb07–chb08`, test `chb09–chb10`. This evaluator split does not establish the supplied model's original training provenance; review that before making held-out performance claims.
 
 See [backend details](backend.md) for the API and research tools, [frontend details](frontend.md) for screen behavior, and [setup](setup.md) for runnable checks. Historical security and research reports are retained as evidence, not current validation certificates.
-# Independent video detection
-
-Video detection adds `VideoDetectionJob` (migration 015) alongside the existing EEG and privacy job tables. Its routes live under `/api/video-detection`; its service schedules an isolated CPU subprocess through FastAPI BackgroundTasks. [Video architecture and retention](video-detection.md#architecture-and-data-handling) describes encrypted inputs, owner-filtered playback, scoring and cleanup. There are no changes to the EEG model-input contract or EEG processing routes.

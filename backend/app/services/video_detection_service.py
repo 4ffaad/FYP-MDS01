@@ -11,15 +11,17 @@ import sys
 import threading
 
 from fastapi import UploadFile
-from sqlmodel import Session, select
+from sqlalchemy import inspect
+from sqlmodel import Session
 
 from backend.app.core.config import VIDEO_RETENTION_SECONDS, VIDEO_MAX_DURATION_SECONDS
 from backend.app.database.db import engine
-from backend.app.database.models.video import utc_now
+from backend.app.database.models.video import VideoPrivacyProfile, utc_now
 from backend.app.database.models.video_detection import VideoDetectionJob
+from backend.app.database import video_detection_repository as repository
 from backend.app.services.video_storage_service import VideoStorage
 from backend.app.video_detection.contract import DetectionError, load_contract
-from backend.app.video_privacy.processor import VideoPrivacyProcessor
+from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProcessorError
 
 ERRORS = {
     "assets_missing": "Mount the official model assets before starting detection.",
@@ -34,6 +36,7 @@ ERRORS = {
     "invalid_model_output": "The model returned invalid scores. No detection result was published.",
     "no_usable_windows": "The clip is too short for a complete model window.",
     "truncated_video": "The video could not be decoded completely.",
+    "privacy_transform_failed": "The video could not be face-redacted safely. No detection result was published.",
     "processing_failed": "Video processing failed. Try a shorter supported clip or check the local runtime.",
     "interrupted": "Processing was interrupted by a server restart. Submit the video again.",
 }
@@ -114,8 +117,8 @@ def execute(command: list[str], timeout: float) -> subprocess.CompletedProcess:
 
 def process_job(job_id: str):
     with PROCESS_LOCK, Session(engine) as db:
-        job = db.exec(select(VideoDetectionJob).where(VideoDetectionJob.job_id == job_id)).first()
-        if job is None or job.status != "queued":
+        job = repository.get_queued_job(db, job_id)
+        if job is None:
             return
         storage = VideoStorage()
         if expired(job):
@@ -126,19 +129,37 @@ def process_job(job_id: str):
             db.add(job)
             db.commit()
             source = storage.materialize_original(job_id, Path(job.original_path))
+            protected_input = storage.work_path(job_id, "model-input.mp4")
+            preview = storage.work_path(job_id, "model-input-preview.jpg")
+            try:
+                privacy = VideoPrivacyProcessor().process(
+                    source, protected_input, preview, VideoPrivacyProfile.FACE_REDACTED
+                )
+            except VideoProcessorError as exc:
+                raise DetectionError("privacy_transform_failed") from exc
+            if not privacy.usable:
+                raise DetectionError("privacy_transform_failed")
             output = storage.work_path(job_id, "predictions.json")
             remaining = lambda: min(3600, (job.retention_expires_at.replace(tzinfo=timezone.utc) - utc_now()).total_seconds())
-            execute([sys.executable, "-m", "backend.app.video_detection.runtime", str(source), str(output)], remaining())
+            execute([sys.executable, "-m", "backend.app.video_detection.runtime", str(protected_input), str(output)], remaining())
             result = json.loads(output.read_text())
             if not result.get("predictions"):
                 raise DetectionError("no_usable_windows")
+            result["privacy"] = {
+                "method": "face-redaction",
+                "model_input": "face-redacted video",
+                "face_detection_coverage": privacy.detected_frames / max(privacy.frame_count, 1),
+                "quality_flags": privacy.quality_flags,
+                "review_required": privacy.needs_review,
+            }
+            output.write_text(json.dumps(result, allow_nan=False))
             job.current_stage = "review-video"
             db.add(job)
             db.commit()
-            # Keep patient appearance for the explicitly authorized review flow,
-            # but strip audio, container metadata, subtitles, and attachments.
+            # The review file is the exact face-redacted model input. Strip
+            # audio and container metadata before it becomes an owner-only artifact.
             playable = storage.work_path(job_id, "review.mp4")
-            execute(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(source),
+            execute(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(protected_input),
                      "-map", "0:v:0", "-an", "-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1",
                      "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
                      "-movflags", "+faststart", str(playable)], remaining())
@@ -166,9 +187,11 @@ def process_job(job_id: str):
 
 def sweep(*, startup=False):
     """Remove expired ciphertext without requiring someone to visit the job."""
+    if not inspect(engine).has_table(VideoDetectionJob.__tablename__):
+        return
     with Session(engine) as db:
         storage = VideoStorage()
-        for job in db.exec(select(VideoDetectionJob).where(VideoDetectionJob.status != "expired")).all():
+        for job in repository.list_unexpired_jobs(db):
             if startup and job.status in {"queued", "processing"}:
                 storage.delete_job(job.job_id)
                 job.original_path = job.video_path = job.predictions_path = None

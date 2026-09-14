@@ -66,11 +66,16 @@ GET  /api/recordings/{record_id}
 GET  /api/recordings/{record_id}/prediction
 GET  /api/recordings/{record_id}/explanation
 GET  /api/recordings/{record_id}/signal
+POST /api/video-detection/jobs
+GET  /api/video-detection/jobs
+GET  /api/video-detection/jobs/{job_id}
+GET  /api/video-detection/jobs/{job_id}/predictions
+GET  /api/video-detection/jobs/{job_id}/video
 ```
 
-The old `/api/v1` prototype routes have been removed. New backend changes must
-use only the asynchronous session and recording API described in the route list
-above.
+The old `/api/v1` prototype routes have been removed. EEG changes use the
+asynchronous session and recording API; video detection remains an independent,
+owner-filtered workflow.
 
 ## Development rules
 

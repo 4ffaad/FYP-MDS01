@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -21,7 +22,8 @@ from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.main import app
 from backend.app.services import video_detection_service as service
 from backend.app.services.video_storage_service import VideoStorage
-from backend.app.video_detection.contract import DetectionError, load_contract, validate_predictions
+from backend.app.video_detection.contract import DetectionError, digest, load_contract, validate_predictions
+from backend.app.video_privacy.processor import VideoProcessingResult
 
 
 class VideoDetectionTests(unittest.TestCase):
@@ -129,6 +131,55 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(self.alice.post("/api/video-detection/jobs", files={"video": ("a.mp4", b"x", "video/mp4")}, headers={"Origin": "https://wrong.invalid"}).status_code, 403)
 
+    def test_processing_success_encrypts_results_and_removes_plaintext(self):
+        with patch.object(service, "load_contract", return_value=(Path(self.temp.name), {})), patch.object(
+            service.VideoPrivacyProcessor, "preflight", return_value={"fps": 30, "frame_count": 300},
+        ):
+            with Session(self.engine) as db:
+                video = UploadFile(filename="patient.mp4", file=io.BytesIO(b"private-source"), headers={"content-type": "video/mp4"})
+                job = asyncio.run(service.create_job(db, self.storage, video, self.owner))
+
+        commands = []
+
+        def fake_execute(command, timeout):
+            commands.append(command)
+            target = Path(command[-1])
+            if "backend.app.video_detection.runtime" in command:
+                target.write_text(json.dumps({"predictions": [{"start_time": 0, "end_time": 2, "raw_score": 0.8}]}))
+            else:
+                target.write_bytes(b"review-video")
+            return subprocess.CompletedProcess(command, 0)
+
+        protected = VideoProcessingResult(
+            duration_seconds=10, fps=30, width=1920, height=1080, frame_count=300,
+            detected_frames=270, quality_flags=["intermittent_detection"], usable=True, needs_review=True,
+        )
+        with patch.object(service, "execute", side_effect=fake_execute), patch.object(
+            service.VideoPrivacyProcessor, "process", return_value=protected,
+        ):
+            service.process_job(job.job_id)
+
+        with Session(self.engine) as db:
+            saved = db.exec(select(VideoDetectionJob).where(VideoDetectionJob.job_id == job.job_id)).one()
+            self.assertEqual(saved.status, "ready")
+            self.assertIsNone(saved.original_path)
+            self.assertTrue(saved.video_path.endswith(".enc"))
+            self.assertTrue(saved.predictions_path.endswith(".enc"))
+        runtime = next(command for command in commands if "backend.app.video_detection.runtime" in command)
+        self.assertTrue(runtime[-2].endswith("model-input.mp4"))
+        result = self.alice.get(f"/api/video-detection/jobs/{job.job_id}/predictions").json()
+        self.assertEqual(result["privacy"]["method"], "face-redaction")
+        self.assertTrue(result["privacy"]["review_required"])
+        self.assertEqual(list((self.storage.root / job.job_id / "work").glob("*")), [])
+
+    def test_contract_manifest_requires_an_external_hash(self):
+        root = Path(self.temp.name)
+        contract = root / "contract.json"
+        contract.write_text('{"reviewed": true}')
+        with patch.dict(os.environ, {"VSVIG_CONTRACT_SHA256": "0" * 64}):
+            with self.assertRaisesRegex(DetectionError, "contract_unreviewed"):
+                load_contract(root)
+
     def test_scores_preserve_support_and_merge_intervals(self):
         result = validate_predictions([
             {"start_time": 0, "end_time": 2, "raw_score": 0.6},
@@ -138,6 +189,14 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertEqual(result["intervals"], [{"start_time": 0, "end_time": 3}])
         self.assertFalse(result["recording_probability_available"])
         self.assertEqual(result["predictions"][0]["score_type"], "uncalibrated_model_score")
+        evidence = {"method": "patch-occlusion", "patches": [
+            {"patch_index": index, "score_change": index / 100} for index in range(15)
+        ]}
+        explained = validate_predictions(
+            [{"start_time": 0, "end_time": 2, "raw_score": 0.6, "model_evidence": evidence}],
+            4, {"threshold": 0.5},
+        )
+        self.assertEqual(explained["predictions"][0]["model_evidence"]["method"], "patch-occlusion")
         for value in (float("nan"), 1.01, -0.1):
             with self.assertRaises(DetectionError):
                 validate_predictions([{"start_time": 0, "end_time": 2, "raw_score": value}], 4, {"threshold": 0.5})
@@ -150,8 +209,9 @@ class VideoDetectionTests(unittest.TestCase):
         with self.assertRaisesRegex(DetectionError, "contract_unreviewed"):
             load_contract(root)
         (root / "contract.json").write_text('{"reviewed": true, "upstream_commit": "wrong"}')
-        with self.assertRaisesRegex(DetectionError, "asset_mismatch"):
-            load_contract(root)
+        with patch.dict(os.environ, {"VSVIG_CONTRACT_SHA256": digest(root / "contract.json")}):
+            with self.assertRaisesRegex(DetectionError, "asset_mismatch"):
+                load_contract(root)
 
 
 if __name__ == "__main__":

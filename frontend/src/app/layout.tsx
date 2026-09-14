@@ -16,7 +16,8 @@ export const metadata: Metadata = {
     default: "MDS01 · EEG Analysis & Video Privacy",
     template: "%s · MDS01",
   },
-  description: "A research workspace for privacy-aware EEG analysis and standalone patient-video privacy transformation.",
+  description:
+    "A research workspace for privacy-aware EEG analysis and standalone patient-video privacy transformation.",
   authors: [{ name: "MDS01 Project Group" }],
   robots: { index: false, follow: false },
 };

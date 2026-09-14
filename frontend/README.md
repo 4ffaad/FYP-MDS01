@@ -1,6 +1,7 @@
 # MDS01 frontend
 
-Next.js interface for separate EEG analysis and video privacy workflows.
+Next.js interface for the shared EEG/video analysis workspace and the separate
+video privacy workflow.
 From this directory, after completing [root setup](../docs/setup.md):
 
 ```sh

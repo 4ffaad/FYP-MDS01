@@ -28,11 +28,23 @@ export default function globalSetup() {
   });
   execFileSync(
     "docker",
-    [...compose, "exec", "-T", "backend", "python", "backend/tests/generate_e2e_archive.py", containerArchive],
+    [
+      ...compose,
+      "exec",
+      "-T",
+      "backend",
+      "python",
+      "backend/tests/generate_e2e_archive.py",
+      containerArchive,
+    ],
     { cwd: root, stdio: "inherit" },
   );
-  execFileSync("docker", [...compose, "cp", `backend:${containerArchive}`, hostArchive], {
-    cwd: root,
-    stdio: "inherit",
-  });
+  execFileSync(
+    "docker",
+    [...compose, "cp", `backend:${containerArchive}`, hostArchive],
+    {
+      cwd: root,
+      stdio: "inherit",
+    },
+  );
 }

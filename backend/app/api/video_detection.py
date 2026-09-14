@@ -8,12 +8,11 @@ import secrets
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from backend.app.core.security import require_api_auth
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
-from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.database import video_detection_repository as repository
 from backend.app.services import video_detection_service as service
 from backend.app.services.video_storage_service import VideoStorage
@@ -43,8 +42,7 @@ async def create(background_tasks: BackgroundTasks, video: UploadFile = File(...
         if os.environ.get("VIDEO_DETECTION_ENABLED", "false").lower() != "true":
             raise HTTPException(503, "Enable the local video detection runtime using the setup guide.")
         async with service.UPLOAD_LOCK:
-            active = db.exec(select(VideoDetectionJob.id).where(VideoDetectionJob.status.in_(["queued", "processing"]))).first()
-            if active is not None:
+            if repository.has_active_job(db):
                 raise HTTPException(409, "A video is already processing. Try again after it finishes.")
             job = await service.create_job(db, VideoStorage(), video, owner)
         background_tasks.add_task(service.process_job, job.job_id)

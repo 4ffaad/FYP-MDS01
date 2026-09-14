@@ -134,6 +134,7 @@ def get_preview(
         materialized,
         media_type="image/jpeg",
         filename=f"protected-preview-{job.job_id}.jpg",
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache", "Vary": "Cookie, Origin"},
         background=background_tasks,
     )
 
@@ -160,5 +161,6 @@ def download_output(
         materialized,
         media_type="video/mp4",
         filename=f"protected-video-{job.job_id}.mp4",
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache", "Vary": "Cookie, Origin"},
         background=background_tasks,
     )

@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   deleteUploadDraft,
@@ -9,6 +10,7 @@ import {
   PRIVACY_METHODS,
   stageUpload,
 } from "@/lib/api";
+import { uploadDetection } from "@/lib/video-detection";
 import type { UploadDraft } from "@/lib/types";
 import { formatBytes } from "@/lib/format";
 import { Icon } from "./Icon";
@@ -20,18 +22,21 @@ const DRAFT_STORAGE_KEY = "mds01.active-upload-draft";
 
 type UploadStep = "select" | "staging" | "configure";
 
-/** Render the staged-upload and privacy-selection workflow. */
+/** Join the two modality upload paths without creating a second backend workflow. */
 export function UploadScreen() {
   const router = useRouter();
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const eegInputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<UploadStep>("select");
   const [draft, setDraft] = useState<UploadDraft | null>(null);
-  const [fileSize, setFileSize] = useState<number | null>(null);
+  const [eegSize, setEegSize] = useState<number | null>(null);
+  const [videoFile, setVideoFile] = useState<File | null>(null);
   const [signalObfuscation, setSignalObfuscation] = useState(false);
   const [progress, setProgress] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [partialSessionId, setPartialSessionId] = useState<string | null>(null);
 
+  const hasData = Boolean(draft || videoFile);
   const selectedMethod = signalObfuscation
     ? PRIVACY_METHODS[1]
     : PRIVACY_METHODS[0];
@@ -41,22 +46,18 @@ export function UploadScreen() {
     if (!saved) return;
     let mounted = true;
     void Promise.resolve().then(async () => {
-      if (!mounted) return;
       try {
         const parsed = JSON.parse(saved) as {
           draftId: string;
           fileSize?: number;
         };
-        setStep("staging");
-        setFileSize(parsed.fileSize ?? null);
         const activeDraft = await getUploadDraft(parsed.draftId);
         if (!mounted) return;
         setDraft(activeDraft);
+        setEegSize(parsed.fileSize ?? null);
         setStep("configure");
       } catch {
-        if (!mounted) return;
-        window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
-        setStep("select");
+        if (mounted) window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
       }
     });
     return () => {
@@ -64,76 +65,110 @@ export function UploadScreen() {
     };
   }, []);
 
-  /** Encrypt the selected ZIP into a temporary backend draft. */
-  async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const nextFile = event.target.files?.[0] ?? null;
-    if (!nextFile) return;
+  async function handleEegChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) return;
     setStep("staging");
     setProgress(0);
-    setFileSize(nextFile.size);
-    setDraft(null);
+    setEegSize(file.size);
     setError(null);
     try {
-      const nextDraft = await stageUpload(nextFile, setProgress);
+      const nextDraft = await stageUpload(file, setProgress);
       setDraft(nextDraft);
       window.sessionStorage.setItem(
         DRAFT_STORAGE_KEY,
-        JSON.stringify({ draftId: nextDraft.draftId, fileSize: nextFile.size }),
+        JSON.stringify({ draftId: nextDraft.draftId, fileSize: file.size }),
       );
       setStep("configure");
-    } catch (stagingError) {
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      setStep("select");
+    } catch (uploadError) {
+      if (eegInputRef.current) eegInputRef.current.value = "";
+      setStep(videoFile ? "configure" : "select");
       setError(
-        stagingError instanceof Error
-          ? stagingError.message
-          : "The archive could not be secured.",
+        uploadError instanceof Error
+          ? uploadError.message
+          : "The EEG archive could not be secured.",
       );
     }
   }
 
-  /** Remove the staged archive and return to the single-card upload state. */
+  function handleVideoChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) return;
+    setVideoFile(file);
+    setError(null);
+    if (step !== "staging") setStep("configure");
+  }
+
   async function handleReset() {
     if (draft) {
       try {
         await deleteUploadDraft(draft.draftId);
       } catch {
-        /* The draft may already have expired. */
+        // The temporary draft may already have expired.
       }
     }
     window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
-    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (eegInputRef.current) eegInputRef.current.value = "";
     setDraft(null);
-    setFileSize(null);
+    setEegSize(null);
+    setVideoFile(null);
     setProgress(0);
     setError(null);
+    setPartialSessionId(null);
     setStep("select");
   }
 
-  /** Finalize the selected privacy method and open the processing session. */
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!draft) {
-      setError("Secure an EEG ZIP archive before choosing a privacy method.");
+    if (!hasData || step === "staging") {
+      setError(
+        "Choose an EEG archive, a patient video, or both before continuing.",
+      );
       return;
     }
+
     setSubmitting(true);
     setError(null);
+    setPartialSessionId(null);
+    let sessionId: string | null = null;
+    let videoJobId: string | null = null;
+
     try {
-      const result = await finalizeUploadDraft(
-        draft.draftId,
-        signalObfuscation
-          ? ["metadata-scrub", "signal-obfuscation"]
-          : ["metadata-scrub"],
-      );
+      if (draft) {
+        const result = await finalizeUploadDraft(
+          draft.draftId,
+          signalObfuscation
+            ? ["metadata-scrub", "signal-obfuscation"]
+            : ["metadata-scrub"],
+        );
+        sessionId = result.sessionId;
+      }
+
+      if (videoFile) {
+        setProgress(0);
+        const result = await uploadDetection(videoFile, setProgress);
+        videoJobId = result.job.job_id;
+      }
+
       window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
-      router.push(`/sessions/${encodeURIComponent(result.sessionId)}`);
+      if (sessionId && videoJobId) {
+        router.push(
+          `/analysis?sessionId=${encodeURIComponent(sessionId)}&videoJobId=${encodeURIComponent(videoJobId)}`,
+        );
+      } else if (sessionId) {
+        router.push(`/sessions/${encodeURIComponent(sessionId)}`);
+      } else if (videoJobId) {
+        router.push(`/video-detection/${encodeURIComponent(videoJobId)}`);
+      }
     } catch (submissionError) {
+      if (sessionId) setPartialSessionId(sessionId);
       setSubmitting(false);
       setError(
-        submissionError instanceof Error
-          ? submissionError.message
-          : "The analysis could not be submitted.",
+        sessionId
+          ? "The EEG analysis was submitted, but the video could not be started. You can still review the EEG below."
+          : submissionError instanceof Error
+            ? submissionError.message
+            : "The analysis could not be submitted.",
       );
     }
   }
@@ -141,102 +176,64 @@ export function UploadScreen() {
   if (step === "select" || step === "staging") {
     return (
       <div className="page-frame">
-        <div className="mx-auto max-w-2xl animate-enter-up">
+        <div className="animate-enter-up">
           <SetupSteps current="upload" />
-          <h1 className="mt-7 text-[clamp(2rem,5vw,2.25rem)] font-semibold leading-[1.08] tracking-[-0.03em] text-ink">
-            Upload an EEG archive
-          </h1>
-          <p className="mt-5 max-w-xl text-[0.98rem] leading-7 text-ink-muted">
-            The archive is encrypted and staged privately first. You will choose
-            how the analysis should handle the signal next.
-          </p>
+          <div className="mt-7 max-w-3xl">
+            <p className="eyebrow">New review</p>
+            <h1 className="mt-3 text-[clamp(2rem,5vw,2.8rem)] font-semibold leading-[1.06] tracking-[-0.045em] text-ink">
+              Upload the data for one analysis
+            </h1>
+            <p className="mt-4 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
+              Add EEG, video, or both. MDS01 detects what you provide and keeps
+              each modality on its own privacy-first processing path.
+            </p>
+          </div>
 
-          <section
-            className="panel mt-10 overflow-hidden"
-            aria-labelledby="upload-heading"
-          >
-            <div className="px-5 py-7 sm:px-8 sm:py-9">
-              <div className="flex items-start gap-4">
-                <span className="grid size-11 shrink-0 place-items-center rounded-lg bg-teal-soft text-teal-dark">
-                  <Icon name="upload" className="size-5" weight="bold" />
-                </span>
-                <div>
-                  <h2
-                    id="upload-heading"
-                    className="text-lg font-bold tracking-[-0.02em]"
-                  >
-                    Secure an EEG ZIP archive
-                  </h2>
-                  <p className="mt-2 text-sm leading-6 text-ink-muted">
-                    Choose one ZIP containing the EDF recordings for this
-                    analysis session.
-                  </p>
-                </div>
+          <div className="mt-10 grid gap-5 lg:grid-cols-2">
+            <ModalityPicker
+              id="eeg-file"
+              title="EEG archive"
+              description="A ZIP containing EDF recordings. The archive is encrypted and staged before you choose the signal treatment."
+              accept=".zip,application/zip"
+              icon="activity"
+              busy={step === "staging"}
+              selected={Boolean(draft) || step === "staging"}
+              selectedLabel={
+                step === "staging"
+                  ? "Securing archive…"
+                  : "Archive staged privately"
+              }
+              inputRef={eegInputRef}
+              onChange={(event) => void handleEegChange(event)}
+            />
+            <ModalityPicker
+              id="video-file"
+              title="Patient video"
+              description="An MP4, MOV, or WebM clip. Face redaction runs before VSViG pose extraction and visual scoring."
+              accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm"
+              icon="activity"
+              busy={step === "staging"}
+              selected={Boolean(videoFile)}
+              selectedLabel="Video ready to submit"
+              onChange={handleVideoChange}
+            />
+          </div>
+
+          {step === "staging" && (
+            <div className="mt-6 max-w-xl" aria-live="polite">
+              <div className="flex justify-between text-xs text-ink-muted">
+                <span>Securing temporary EEG upload</span>
+                <span className="font-mono tabular-nums">{progress}%</span>
               </div>
-
-              <label
-                className="mt-8 flex min-h-44 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-rule-strong bg-surface-soft px-6 py-8 text-center outline-none transition-colors hover:border-teal hover:bg-teal-soft/40 focus-within:border-teal focus-within:ring-4 focus-within:ring-teal/20"
-                htmlFor="eeg-file"
-              >
-                <Icon
-                  name={step === "staging" ? "spinner" : "file"}
-                  className={`size-8 text-teal ${step === "staging" ? "animate-spin" : ""}`}
-                />
-                <span className="mt-4 text-sm font-bold text-ink">
-                  {step === "staging"
-                    ? "Encrypting archive…"
-                    : "Choose an EEG ZIP archive"}
-                </span>
-                <span className="mt-1 text-xs text-ink-muted">
-                  Original filenames are not shown in this workspace.
-                </span>
-                <Button asChild size="sm" className="mt-5">
-                  <span>Browse files</span>
-                </Button>
-                <input
-                  ref={fileInputRef}
-                  className="sr-only"
-                  id="eeg-file"
-                  aria-label="EEG ZIP archive"
-                  type="file"
-                  accept=".zip,application/zip"
-                  onChange={(event) => void handleFileChange(event)}
-                  disabled={step === "staging"}
-                />
-              </label>
-
-              {step === "staging" && (
-                <div className="mt-6" aria-live="polite">
-                  <div className="flex justify-between text-xs text-ink-muted">
-                    <span>Securing temporary upload</span>
-                    <span className="font-mono tabular-nums">{progress}%</span>
-                  </div>
-                  <Progress
-                    value={progress}
-                    className="mt-2 h-1.5 bg-surface-muted [&_[data-slot=progress-indicator]]:bg-teal"
-                    aria-label="Archive encryption progress"
-                  />
-                </div>
-              )}
-              {error && (
-                <div
-                  className="mt-6 flex items-start gap-2.5 rounded-md border border-red/30 bg-red-soft px-3.5 py-3 text-sm text-red"
-                  role="alert"
-                >
-                  <Icon name="alert" className="mt-0.5 size-4 shrink-0" />
-                  <span>{error}</span>
-                </div>
-              )}
+              <Progress
+                value={progress}
+                className="mt-2 h-1.5 bg-surface-muted [&_[data-slot=progress-indicator]]:bg-teal"
+                aria-label="Archive encryption progress"
+              />
             </div>
-            <div className="flex items-start gap-3 border-t border-rule bg-surface-soft px-5 py-5 text-xs leading-5 text-ink-muted sm:px-8">
-              <Icon name="lock" className="mt-0.5 size-4 shrink-0 text-teal" />
-              <p>
-                <span className="font-semibold text-ink">Private staging.</span>{" "}
-                The ZIP is encrypted before the backend waits for your privacy
-                selection.
-              </p>
-            </div>
-          </section>
+          )}
+          {error && <ErrorNotice message={error} />}
+          <PipelinePreview />
         </div>
       </div>
     );
@@ -251,16 +248,18 @@ export function UploadScreen() {
           onClick={() => void handleReset()}
         >
           <Icon name="back" className="size-4" />
-          Choose a different archive
+          Choose different data
         </button>
         <div className="mt-5 max-w-3xl">
           <SetupSteps current="privacy" />
-          <h1 className="mt-7 text-[clamp(2rem,5vw,2.25rem)] font-semibold leading-[1.08] tracking-[-0.03em] text-ink">
-            Choose the privacy treatment
+          <p className="eyebrow mt-7">Review the pipeline</p>
+          <h1 className="mt-3 text-[clamp(2rem,5vw,2.8rem)] font-semibold leading-[1.06] tracking-[-0.045em] text-ink">
+            Set privacy before processing
           </h1>
-          <p className="mt-5 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
-            Metadata protection is always on. Add signal obfuscation when you
-            want an additional transformation before model scoring.
+          <p className="mt-4 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
+            The selected modality determines the privacy treatment and model
+            path. A combined upload creates one review page with separate EEG
+            and video status.
           </p>
         </div>
 
@@ -269,81 +268,85 @@ export function UploadScreen() {
           onSubmit={(event) => void handleSubmit(event)}
         >
           <section
-            className="panel overflow-hidden"
-            aria-labelledby="privacy-heading"
+            className="panel glass-panel overflow-hidden"
+            aria-labelledby="pipeline-heading"
           >
             <div className="border-b border-rule px-5 py-5 sm:px-7">
-              <h2 id="privacy-heading" className="text-base font-bold">
-                Privacy configuration
+              <h2 id="pipeline-heading" className="text-base font-bold">
+                Selected pipelines
               </h2>
               <p className="mt-1 text-sm leading-6 text-ink-muted">
-                The selected configuration is applied before the model receives
-                the data.
+                Privacy runs before model input for both modalities.
               </p>
             </div>
             <div className="space-y-3 px-5 py-6 sm:px-7">
-              <div className="rounded-lg border border-teal bg-teal-soft/40 px-4 py-4">
-                <div className="flex items-start gap-3">
-                  <Icon
-                    name="lock"
-                    className="mt-0.5 size-4 shrink-0 text-teal-dark"
+              {draft && !videoFile && (
+                <AdditionalPicker
+                  id="video-file"
+                  label="Add a patient video too"
+                  accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm"
+                  onChange={handleVideoChange}
+                />
+              )}
+              {videoFile && !draft && (
+                <AdditionalPicker
+                  id="eeg-file"
+                  label="Add an EEG archive too"
+                  accept=".zip,application/zip"
+                  inputRef={eegInputRef}
+                  onChange={(event) => void handleEegChange(event)}
+                />
+              )}
+              {draft && (
+                <div className="rounded-xl border border-teal bg-teal-soft/40 px-4 py-4">
+                  <PipelineRow
+                    icon="activity"
+                    title="EEG analysis"
+                    detail={`Encrypt → metadata scrub${signalObfuscation ? " → signal obfuscation" : ""} → H5 model → report`}
                   />
-                  <div>
-                    <p className="text-sm font-bold text-ink">
-                      Metadata scrub{" "}
-                      <span className="ml-1 text-xs font-semibold text-teal-dark">
-                        Required baseline
-                      </span>
-                    </p>
-                    <p className="mt-1 text-xs leading-5 text-ink-muted">
-                      Identifying EDF header fields are removed. The waveform
-                      shape is preserved.
-                    </p>
-                  </div>
-                </div>
-              </div>
-              <label
-                className={`block cursor-pointer rounded-lg border px-4 py-4 transition-colors ${signalObfuscation ? "border-teal bg-teal-soft/50" : "border-rule bg-surface hover:border-rule-strong"}`}
-              >
-                <span className="flex items-start gap-3">
-                  <input
-                    className="mt-1 size-4 accent-teal"
-                    type="checkbox"
-                    name="signal-obfuscation"
-                    checked={signalObfuscation}
-                    onChange={(event) =>
-                      setSignalObfuscation(event.target.checked)
-                    }
-                  />
-                  <span>
-                    <span className="block text-sm font-bold text-ink">
-                      Signal obfuscation
-                    </span>
-                    <span className="mt-1 block text-xs leading-5 text-ink-muted">
-                      {PRIVACY_METHODS[1].description}
-                    </span>
-                  </span>
-                </span>
-              </label>
-              <p className="rounded-md bg-surface-soft px-3 py-2 text-xs leading-5 text-ink-muted">
-                <span className="font-semibold text-ink">
-                  Selected pipeline:
-                </span>{" "}
-                metadata scrub →{" "}
-                {signalObfuscation
-                  ? "signal obfuscation (Apply both)"
-                  : "no additional transformation"}
-                .
-              </p>
-              {error && (
-                <div
-                  className="flex items-start gap-2.5 rounded-md border border-red/30 bg-red-soft px-3.5 py-3 text-sm text-red"
-                  role="alert"
-                >
-                  <Icon name="alert" className="mt-0.5 size-4 shrink-0" />
-                  <span>{error}</span>
+                  <p className="mt-2 pl-8 text-xs font-semibold text-teal-dark">
+                    Required baseline
+                  </p>
                 </div>
               )}
+              {videoFile && (
+                <div className="rounded-xl border border-cyan/40 bg-cyan-soft/40 px-4 py-4">
+                  <PipelineRow
+                    icon="activity"
+                    title="Video seizure review"
+                    detail="Encrypt → face redaction → VSViG model → evidence timeline"
+                  />
+                  <p className="mt-3 pl-8 text-xs leading-5 text-ink-muted">
+                    Audio is excluded from this visual-only detection workflow.
+                  </p>
+                </div>
+              )}
+              {draft && (
+                <label
+                  className={`block cursor-pointer rounded-xl border px-4 py-4 transition-colors ${signalObfuscation ? "border-teal bg-teal-soft/50" : "border-rule bg-surface hover:border-rule-strong"}`}
+                >
+                  <span className="flex items-start gap-3">
+                    <input
+                      className="mt-1 size-4 accent-teal"
+                      type="checkbox"
+                      name="signal-obfuscation"
+                      checked={signalObfuscation}
+                      onChange={(event) =>
+                        setSignalObfuscation(event.target.checked)
+                      }
+                    />
+                    <span>
+                      <span className="block text-sm font-bold text-ink">
+                        Signal obfuscation
+                      </span>
+                      <span className="mt-1 block text-xs leading-5 text-ink-muted">
+                        {PRIVACY_METHODS[1].description}
+                      </span>
+                    </span>
+                  </span>
+                </label>
+              )}
+              {error && <ErrorNotice message={error} />}
             </div>
             <div className="border-t border-rule bg-surface-soft px-5 py-5 sm:px-7">
               <div className="flex items-start gap-3 text-xs leading-5 text-ink-muted">
@@ -353,19 +356,27 @@ export function UploadScreen() {
                 />
                 <p>
                   <span className="font-semibold text-ink">
-                    {fileSize === null
-                      ? "Archive staged"
-                      : `${formatBytes(fileSize)} staged privately`}
+                    {draft
+                      ? `${formatBytes(eegSize ?? 0)} EEG archive staged`
+                      : "Video selected"}
                     .
                   </span>{" "}
-                  Draft expires {formatExpiry(draft?.expiresAt)}.
+                  Files remain owner-scoped.
                 </p>
               </div>
+              {partialSessionId && (
+                <Link
+                  className="mt-3 block text-sm font-semibold text-teal-dark underline underline-offset-4"
+                  href={`/sessions/${encodeURIComponent(partialSessionId)}`}
+                >
+                  Open the submitted EEG analysis
+                </Link>
+              )}
               <Button
                 className="mt-5 w-full"
                 size="lg"
                 type="submit"
-                disabled={submitting || !selectedMethod}
+                disabled={submitting}
               >
                 {submitting ? (
                   <Icon name="spinner" className="size-4 animate-spin" />
@@ -377,13 +388,230 @@ export function UploadScreen() {
             </div>
           </section>
 
-          {selectedMethod && (
+          {draft && (
             <div className="min-w-0 [&_.overflow-x-auto]:overflow-x-hidden [&_.overflow-x-auto>div]:!min-w-0">
               <PrivacyPreview method={selectedMethod} />
             </div>
           )}
+          {videoFile && !draft && <VideoPrivacySummary />}
         </form>
       </div>
+    </div>
+  );
+}
+
+function ModalityPicker({
+  id,
+  title,
+  description,
+  accept,
+  icon,
+  busy,
+  selected,
+  selectedLabel,
+  inputRef,
+  onChange,
+}: {
+  id: string;
+  title: string;
+  description: string;
+  accept: string;
+  icon: "activity";
+  busy: boolean;
+  selected: boolean;
+  selectedLabel: string;
+  inputRef?: React.RefObject<HTMLInputElement | null>;
+  onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+}) {
+  return (
+    <section
+      className={`glass-panel rounded-2xl border p-5 transition-colors sm:p-6 ${selected ? "border-teal bg-teal-soft/35" : "border-rule bg-surface/80 hover:border-rule-strong"}`}
+      aria-labelledby={`${id}-heading`}
+    >
+      <div className="flex items-start gap-4">
+        <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-ink text-white">
+          <Icon name={icon} className="size-6" weight="bold" />
+        </span>
+        <div className="min-w-0">
+          <h2
+            id={`${id}-heading`}
+            className="text-lg font-bold tracking-[-0.02em]"
+          >
+            {title}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-ink-muted">{description}</p>
+        </div>
+      </div>
+      <label
+        className="mt-6 flex min-h-32 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-rule-strong bg-surface-soft px-5 py-6 text-center outline-none transition-colors hover:border-teal hover:bg-teal-soft/35 focus-within:border-teal focus-within:ring-4 focus-within:ring-teal/20"
+        htmlFor={id}
+      >
+        <Icon
+          name={busy ? "spinner" : selected ? "check" : "upload"}
+          className={`size-7 text-teal ${busy ? "animate-spin" : ""}`}
+          weight="bold"
+        />
+        <span className="mt-3 text-sm font-bold text-ink">
+          {selected ? selectedLabel : `Choose ${title.toLowerCase()}`}
+        </span>
+        <span className="mt-1 text-xs text-ink-muted">
+          {selected
+            ? "Ready for the next step"
+            : "Your local filename is not shown in the workspace"}
+        </span>
+        <input
+          ref={inputRef}
+          className="sr-only"
+          id={id}
+          aria-label={title}
+          type="file"
+          accept={accept}
+          onChange={onChange}
+          disabled={busy}
+        />
+      </label>
+    </section>
+  );
+}
+
+function AdditionalPicker({
+  id,
+  label,
+  accept,
+  inputRef,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  accept: string;
+  inputRef?: React.RefObject<HTMLInputElement | null>;
+  onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+}) {
+  return (
+    <label
+      className="flex min-h-12 cursor-pointer items-center justify-between gap-4 rounded-xl border border-dashed border-rule-strong bg-surface-soft px-4 py-3 text-sm font-semibold text-teal-dark transition-colors hover:border-teal hover:bg-teal-soft/35 focus-within:ring-4 focus-within:ring-teal/20"
+      htmlFor={id}
+    >
+      <span className="flex items-center gap-2">
+        <Icon name="upload" className="size-4" />
+        {label}
+      </span>
+      <span className="text-xs font-medium text-ink-muted">Optional</span>
+      <input
+        ref={inputRef}
+        className="sr-only"
+        id={id}
+        aria-label={label}
+        type="file"
+        accept={accept}
+        onChange={onChange}
+      />
+    </label>
+  );
+}
+
+function PipelinePreview() {
+  return (
+    <section
+      className="glass-panel mt-8 rounded-2xl border border-rule px-5 py-5 sm:px-6"
+      aria-labelledby="pipeline-preview-heading"
+    >
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <p className="eyebrow">At a glance</p>
+          <h2
+            id="pipeline-preview-heading"
+            className="mt-1 text-base font-bold"
+          >
+            One upload, two protected paths
+          </h2>
+        </div>
+        <Icon name="lock" className="size-6 text-teal" />
+      </div>
+      <div className="mt-5 grid gap-3 text-xs font-semibold text-ink-muted sm:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] sm:items-center">
+        {(["Upload", "Privacy", "Model", "Review"] as const).map(
+          (label, index) => (
+            <span key={label} className="contents">
+              <span className="rounded-lg bg-surface-soft px-3 py-2 text-center text-ink">
+                {label}
+              </span>
+              {index < 3 && (
+                <span className="hidden text-center text-teal sm:block">→</span>
+              )}
+            </span>
+          ),
+        )}
+      </div>
+      <p className="mt-4 text-xs leading-5 text-ink-muted">
+        EEG uses the reviewed H5 contract. Video uses face-redacted frames with
+        a separate VSViG review output. Both remain research-only.
+      </p>
+    </section>
+  );
+}
+
+function PipelineRow({
+  icon,
+  title,
+  detail,
+}: {
+  icon: "activity";
+  title: string;
+  detail: string;
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <Icon
+        name={icon}
+        className="mt-0.5 size-5 shrink-0 text-teal-dark"
+        weight="bold"
+      />
+      <div>
+        <p className="text-sm font-bold text-ink">{title}</p>
+        <p className="mt-1 text-xs leading-5 text-ink-muted">{detail}</p>
+      </div>
+    </div>
+  );
+}
+
+function VideoPrivacySummary() {
+  return (
+    <section
+      className="panel glass-panel p-6"
+      aria-labelledby="video-privacy-summary-heading"
+    >
+      <div className="flex items-start gap-3">
+        <Icon
+          name="shield"
+          className="size-6 shrink-0 text-teal-dark"
+          weight="bold"
+        />
+        <div>
+          <h2
+            id="video-privacy-summary-heading"
+            className="text-base font-bold"
+          >
+            Video privacy is fixed for detection
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-ink-muted">
+            The detector receives face-redacted frames. Audio is excluded, and
+            the output is labeled as an uncalibrated model score until a video
+            calibration process is validated.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ErrorNotice({ message }: { message: string }) {
+  return (
+    <div
+      className="mt-5 flex items-start gap-2.5 rounded-xl border border-red/30 bg-red-soft px-3.5 py-3 text-sm leading-5 text-red"
+      role="alert"
+    >
+      <Icon name="alert" className="mt-0.5 size-4 shrink-0" />
+      <span>{message}</span>
     </div>
   );
 }
@@ -392,7 +620,7 @@ function SetupSteps({ current }: { current: "upload" | "privacy" }) {
   return (
     <ol
       className="flex max-w-md items-center gap-3 text-xs font-semibold"
-      aria-label="EEG analysis setup progress"
+      aria-label="Analysis setup progress"
     >
       <li className="flex items-center gap-2 text-teal-dark">
         <span className="grid size-6 place-items-center rounded-full bg-teal text-white">
@@ -402,7 +630,7 @@ function SetupSteps({ current }: { current: "upload" | "privacy" }) {
             "1"
           )}
         </span>
-        Upload
+        Data
       </li>
       <li className="h-px flex-1 bg-rule" aria-hidden="true" />
       <li
@@ -415,14 +643,13 @@ function SetupSteps({ current }: { current: "upload" | "privacy" }) {
         </span>
         Privacy
       </li>
+      <li className="h-px flex-1 bg-rule" aria-hidden="true" />
+      <li className="flex items-center gap-2 text-ink-muted">
+        <span className="grid size-6 place-items-center rounded-full border border-rule-strong bg-surface">
+          3
+        </span>
+        Review
+      </li>
     </ol>
   );
-}
-
-function formatExpiry(value?: string): string {
-  if (!value) return "soon";
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(value));
 }

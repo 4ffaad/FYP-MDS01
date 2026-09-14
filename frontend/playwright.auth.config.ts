@@ -6,7 +6,7 @@ export default defineConfig({
   workers: 1,
   reporter: "line",
   use: {
-    baseURL: "http://127.0.0.1:3003",
+    baseURL: "http://localhost:3003",
     trace: "retain-on-failure",
   },
   webServer: {
@@ -17,7 +17,7 @@ export default defineConfig({
       NEXT_PUBLIC_USE_API_STUB: "true",
       NEXT_PUBLIC_AUTH_MODE: "backend",
     },
-    url: "http://127.0.0.1:3003",
+    url: "http://localhost:3003",
     reuseExistingServer: false,
     timeout: 120_000,
   },

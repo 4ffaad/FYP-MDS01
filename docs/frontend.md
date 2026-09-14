@@ -1,7 +1,13 @@
 # Frontend internals
 
+Use this after [setup](setup.md) and [architecture](architecture.md). It covers
+browser responsibilities and the EEG/video-privacy screens. For the VSViG
+workflow and its evidence UI, use [video-detection.md](video-detection.md).
+
 The frontend is a small Next.js App Router application. It owns screens and
-browser state; the FastAPI backend owns sessions, processing, and results.
+browser state; the FastAPI backend owns sessions, processing, and results. The
+dashboard is the workspace home; `/upload` is the shared entry point for EEG,
+video, or both.
 
 MDS01 — EEG Research Review is a research workspace for clinicians and clinical
 researchers. Its job is to make upload state, privacy handling, and model
@@ -24,11 +30,16 @@ flowchart TD
 ```mermaid
 flowchart LR
     Login[/login] --> Auth[Backend session cookie]
-    Auth --> Upload[/upload]
-    Upload --> Stage[Encrypt and stage ZIP]
-    Stage --> Config[Choose privacy treatment]
-    Config --> Submit[Submit with metadata scrub plus optional obfuscation]
+    Auth --> Workspace[/dashboard]
+    Workspace --> Upload[/upload · EEG, video, or both]
+    Upload --> Stage[Encrypt/stage EEG when selected]
+    Upload --> Video[Hold video selection until submit]
+    Stage --> Config[Configure EEG privacy]
+    Video --> Config
+    Config --> Submit[Submit selected modalities]
     Submit --> Session[/sessions/{sessionId}]
+    Submit --> VideoJob[/video-detection/{jobId}]
+    Submit --> Combined[/analysis?sessionId=…&videoJobId=…]
     Session --> Dashboard[/dashboard]
     Dashboard --> Poll[Poll active sessions]
     Session --> Results[/results/{recordId}]
@@ -82,13 +93,15 @@ NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW=false
 
 ## Pages and components
 
-- `src/app/upload/page.tsx` renders the upload route.
+- `src/app/upload/page.tsx` renders the shared EEG/video upload route.
+- `src/app/analysis/page.tsx` renders the paired status/report hand-off.
 - `src/app/dashboard/page.tsx` renders session groups and every recording.
 - `src/app/sessions/[sessionId]/page.tsx` renders one session’s timestamp and recording list.
 - `src/app/results/[recordId]/page.tsx` renders one recording result.
 - `src/app/login/page.tsx` renders sign-in and self-registration.
-- `src/components/UploadScreen.tsx` owns file selection and submission.
-- `src/components/DashboardScreen.tsx` owns session grouping and active-session polling.
+- `src/components/UploadScreen.tsx` owns modality selection, EEG staging, privacy choices, and submission.
+- `src/components/CombinedAnalysisScreen.tsx` presents the two existing owner-scoped jobs together.
+- `src/components/DashboardScreen.tsx` owns the workspace home, session grouping, and active-session polling.
 - `src/components/SessionDetailScreen.tsx` owns one session’s summary and recording list.
 - `src/components/SessionRecordings.tsx` renders safe recording rows and result links.
 - `src/components/ResultScreen.tsx` owns session-scoped prediction and explanation review.
@@ -149,8 +162,9 @@ exists only on the upload configuration screen.
 7. `src/lib/api.ts` — stub/backend switch and API calls.
 8. `tests/e2e/mds01.spec.ts` — expected user-visible behavior.
 
-The shared header has two destinations: EEG analysis and Video privacy.
-The upload route stays within EEG analysis. Each screen keeps its primary action
+The shared header keeps the existing detailed destinations; the dashboard is the
+workspace home and **New analysis** is the single entry point for EEG/video.
+Video privacy remains a separate utility. Each screen keeps its primary action
 near its heading; model name/version and research-only status remain visible
 on results. Technical metadata stays collapsed until needed.
 
@@ -165,6 +179,3 @@ work aligned with that file instead of adding another design system.
 Patient-video privacy is a separate surface at `/video-privacy`. It uses the
 video-privacy API and renders privacy outputs without constructing URLs from
 backend storage paths.
-# Video detection review
-
-`/video-detection` uploads a clip and lists the signed-in user's jobs. `/video-detection/[jobId]` shows stages, owner-only source-appearance playback, score supports and clickable intervals. It reuses the current tokens and controls. Scores are labelled **Uncalibrated model score**, never whole-recording confidence. Private raw playback is an explicit exception to the privacy-transform screen's protected-output-only policy; see [video data handling](video-detection.md).

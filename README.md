@@ -1,10 +1,10 @@
 # MDS01
 
-A research prototype with three independent workflows:
+A research prototype with one shared analysis entry point and one separate privacy utility:
 
-- **EEG analysis:** upload an EDF archive, apply privacy preprocessing, review window scores and flagged intervals.
-- **Video privacy:** upload a video, choose face redaction or pose-only rendering, review and download protected output. Video never enters the EEG model.
-- **Video detection:** authenticated video review with VSViG window scores and flagged intervals. Requires external checkpoints and a reviewed preprocessing contract; see [video detection setup](docs/video-detection.md). The default installation does not produce video model scores.
+- **Unified analysis:** open **New analysis** and upload an EEG archive, a video, or both. EEG follows `privacy → H5 model → report`; video follows `face redaction → VSViG model → visual evidence review`. A paired upload has one status page with links to both modality reviews.
+- **Video privacy:** upload a video, apply face redaction, then review/download an encrypted protected output. Original audio is retained for owner-only review and may contain identifying speech. Video never enters the EEG model.
+- **Video detection:** authenticated face-redacted VSViG review with window scores, flagged intervals, and bounded model-input sensitivity. Requires external checkpoints and a reviewed preprocessing contract; see [video detection setup](docs/video-detection.md). The default installation does not produce video model scores.
 
 Model output is **not a diagnosis**. Privacy transforms do not guarantee anonymity.
 
@@ -72,7 +72,8 @@ flowchart LR
     Auth --> Cookie[HttpOnly session cookie]
     Cookie --> API[FastAPI auth dependency]
     API --> DB[(SQLite native / PostgreSQL Docker)]
-    API --> EEG[EEG processing]
+    API --> Workspace[Unified analysis workspace]
+    Workspace --> EEG[EEG processing]
     API --> Video[Video privacy processing]
     API --> Detection[Video detection: VSViG]
     Detection --> Files
@@ -97,15 +98,13 @@ flowchart LR
 | `backend/app/research/`, `backend/scripts/` | Offline evaluation and calibration |
 | `scripts/` | Local setup and its safety test |
 
-## Team reading order
+## Documentation
 
-1. [Setup and testing](docs/setup.md)
-2. [Architecture and code ownership](docs/architecture.md)
-3. [Frontend guide](docs/frontend.md) or [backend guide](docs/backend.md)
-4. [Design rules](DESIGN.md)
-5. [Privacy limitations](docs/privacy-research.md) and [deployment risks](docs/security-audit.md)
-
-The [EEG confidence research](docs/eeg-viewing-and-confidence-research.md) records the rationale for per-window calibration. It is background material, not a claim that calibration has been fitted. The checked-in H5 contract currently has no active calibrators.
+Use the [documentation map](docs/README.md) to find the one guide relevant to
+your task. It separates runnable setup and architecture from supporting
+research and security records. The checked-in H5 contract currently has no
+active calibrators; the EEG confidence document is background, not a
+performance claim.
 
 ## Repository hygiene
 

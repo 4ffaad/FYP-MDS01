@@ -10,7 +10,8 @@ from pathlib import Path
 def inventory(root: Path) -> dict:
     os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
     import cv2
-    cv2.setLogLevel(0)
+    if callable(getattr(cv2, "setLogLevel", None)):
+        cv2.setLogLevel(0)
     formats, rates, resolutions = Counter(), Counter(), Counter()
     readable, invalid, annotations, duration = 0, 0, 0, 0.0
     if not root.is_dir():

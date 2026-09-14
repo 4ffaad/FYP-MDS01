@@ -13,6 +13,30 @@ from types import SimpleNamespace
 from backend.app.video_detection.contract import DetectionError, load_contract, validate_predictions
 
 
+def _patch_occlusion_evidence(model, patches, coordinates, score):
+    """Measure bounded model sensitivity to each anonymous VSViG input patch."""
+
+    import torch
+
+    parts = []
+    with torch.inference_mode():
+        for patch_index in range(patches.shape[2]):
+            occluded = patches.clone()
+            occluded[:, :, patch_index] = 0
+            alternate = model(occluded, coordinates)
+            if alternate.numel() != 1:
+                raise DetectionError("invalid_model_output")
+            parts.append({
+                "patch_index": patch_index,
+                "score_change": float(score - alternate.item()),
+            })
+    return {
+        "method": "patch-occlusion",
+        "note": "Research sensitivity: each anonymous model input patch was replaced with neutral pixels. This is not a clinical explanation.",
+        "patches": sorted(parts, key=lambda item: abs(item["score_change"]), reverse=True),
+    }
+
+
 def module_from_file(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -57,6 +81,7 @@ def run(source: Path) -> dict:
         raise DetectionError("video_incompatible")
     duration = count / fps
     patches, coordinates, times, rows = [], [], [], []
+    strongest_flagged = None
     frame_index, next_sample = 0, 0
     # Upstream extractor drops neck and two eye points. Explicitly reorder its
     # input so the reviewed patch order is preserved independently of pose order.
@@ -112,7 +137,10 @@ def run(source: Path) -> dict:
                     result = model(tensor, k_tensor)
                     if result.numel() != 1:
                         raise DetectionError("invalid_model_output")
-                    rows.append({"start_time": times[0], "end_time": min(duration, times[-1] + 1 / p["sample_fps"]), "raw_score": result.item()})
+                    score = result.item()
+                    rows.append({"start_time": times[0], "end_time": min(duration, times[-1] + 1 / p["sample_fps"]), "raw_score": score})
+                    if score >= contract["threshold"] and (strongest_flagged is None or score > strongest_flagged[0]):
+                        strongest_flagged = (score, len(rows) - 1, tensor, k_tensor)
                     step = p["stride_frames"]
                     del patches[:step], coordinates[:step], times[:step]
     finally:
@@ -128,6 +156,9 @@ def run(source: Path) -> dict:
         "threshold": contract["threshold"], "calibrated": False,
         "window_frames": 30, "sample_fps": p["sample_fps"], "stride_frames": p["stride_frames"],
     }
+    if strongest_flagged is not None:
+        score, row_index, tensor, k_tensor = strongest_flagged
+        rows[row_index]["model_evidence"] = _patch_occlusion_evidence(model, tensor, k_tensor, score)
     return validate_predictions(rows, duration, metadata)
 
 

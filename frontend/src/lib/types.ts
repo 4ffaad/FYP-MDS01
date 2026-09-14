@@ -1,4 +1,9 @@
-export type DisplayStatus = "queued" | "processing" | "complete" | "partial" | "failed";
+export type DisplayStatus =
+  | "queued"
+  | "processing"
+  | "complete"
+  | "partial"
+  | "failed";
 
 export interface PrivacyMethod {
   id: string;
@@ -42,7 +47,14 @@ export interface TimeInterval {
   endSeconds: number;
 }
 
-export type RecordingStatus = "uploaded" | "validating" | "deidentified" | "processing" | "processed" | "inferred" | "failed";
+export type RecordingStatus =
+  | "uploaded"
+  | "validating"
+  | "deidentified"
+  | "processing"
+  | "processed"
+  | "inferred"
+  | "failed";
 
 export interface Recording {
   recordId: string;
@@ -65,7 +77,16 @@ export interface Recording {
   privacyMethods?: PrivacyMethod[];
 }
 
-export type SessionStatus = "queued" | "validating" | "deidentifying" | "preprocessing" | "inference" | "explaining" | "completed" | "completed_with_errors" | "failed";
+export type SessionStatus =
+  | "queued"
+  | "validating"
+  | "deidentifying"
+  | "preprocessing"
+  | "inference"
+  | "explaining"
+  | "completed"
+  | "completed_with_errors"
+  | "failed";
 
 export interface Session {
   sessionId: string;
@@ -119,7 +140,11 @@ export interface ResearchAttribution {
   threshold: number;
   topChannels: string[];
   channelScores: Array<{ label: string; meanAbsoluteAttribution: number }>;
-  timeBins: Array<{ startSeconds: number; endSeconds: number; channelScores: number[] }>;
+  timeBins: Array<{
+    startSeconds: number;
+    endSeconds: number;
+    channelScores: number[];
+  }>;
   note: string;
 }
 
@@ -143,7 +168,7 @@ export interface AnalysisResult {
   privacyMethods: PrivacyMethod[];
   recordingDurationSeconds: number;
   alertIntervals: TimeInterval[];
-  highestWindow: TimeInterval & { score: number } | null;
+  highestWindow: (TimeInterval & { score: number }) | null;
   predictionWindows: PredictionWindow[];
   explanationSummary: string;
   researchAttributions: ResearchAttribution[];
@@ -152,10 +177,20 @@ export interface AnalysisResult {
   nonClinical: boolean;
 }
 
-export interface ApiErrorPayload { detail?: string; }
+export interface ApiErrorPayload {
+  detail?: string;
+}
 
 export type VideoPrivacyProfile = "face-redacted" | "pose-only";
-export type VideoPrivacyStatus = "queued" | "preflight" | "processing" | "validating" | "ready" | "needs_review" | "failed" | "expired";
+export type VideoPrivacyStatus =
+  | "queued"
+  | "preflight"
+  | "processing"
+  | "validating"
+  | "ready"
+  | "needs_review"
+  | "failed"
+  | "expired";
 
 export interface VideoPrivacyStage {
   id: "preflight" | "privacy-transform" | "output-validation" | "cleanup";

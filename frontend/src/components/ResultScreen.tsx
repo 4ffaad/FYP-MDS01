@@ -234,8 +234,10 @@ function ResultContent({ recordId }: { recordId: string }) {
             />
           )}
 
-          {result.researchAttributions.length > 0 && (
+          {result.researchAttributions.length > 0 ? (
             <ResearchEvidence attributions={result.researchAttributions} />
+          ) : (
+            <ResearchEvidenceUnavailable modelName={result.modelName} />
           )}
 
           <section
@@ -423,6 +425,27 @@ function ResearchEvidence({
             explanation.
           </p>
         </div>
+      </div>
+    </section>
+  );
+}
+
+function ResearchEvidenceUnavailable({ modelName }: { modelName: string }) {
+  return (
+    <section
+      className="panel overflow-hidden"
+      aria-labelledby="evidence-heading"
+    >
+      <div className="px-5 py-5 sm:px-7">
+        <h2 id="evidence-heading" className="text-base font-bold">
+          Model evidence
+        </h2>
+        <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">
+          No input-sensitivity attribution is available for this result. The{" "}
+          {modelName} runtime still provides its thresholded window scores;
+          research attribution is only produced for a reviewed H5 model with a
+          profile-matched SHAP background.
+        </p>
       </div>
     </section>
   );

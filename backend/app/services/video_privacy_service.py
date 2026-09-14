@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import subprocess
 from datetime import timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -43,12 +44,60 @@ def new_video_job_id() -> str:
 
 
 def parse_profile(value: str | None) -> VideoPrivacyProfile:
-    """Parse one of the two approved profile identifiers."""
+    """Accept face redaction for new jobs; pose-only remains legacy-readable."""
+
+    if value == VideoPrivacyProfile.FACE_REDACTED.value:
+        return VideoPrivacyProfile.FACE_REDACTED
+    raise ValueError("Face redaction is the only available privacy transform.")
+
+
+def finalize_protected_video(source: Path, visual: Path, output: Path) -> None:
+    """Keep one source audio stream while removing non-review metadata."""
 
     try:
-        return VideoPrivacyProfile(value or "")
-    except ValueError as exc:
-        raise ValueError("Choose face-redacted or pose-only.") from exc
+        subprocess.run(
+            [
+                "ffmpeg", "-nostdin", "-v", "error", "-y",
+                "-i", str(visual), "-i", str(source),
+                "-map", "0:v:0", "-map", "1:a:0?",
+                "-c:v", "copy", "-c:a", "copy",
+                "-map_metadata", "-1", "-map_chapters", "-1", "-sn", "-dn",
+                "-movflags", "+faststart", str(output),
+            ],
+            check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        inspected = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries",
+                "format_tags:stream=codec_type:stream_tags", "-of", "json", str(output),
+            ],
+            check=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        details = json.loads(inspected.stdout)
+        streams = details.get("streams", [])
+        stream_types = [stream.get("codec_type") for stream in streams]
+        format_tags = details.get("format", {}).get("tags", {})
+        allowed_format_tags = {"major_brand", "minor_version", "compatible_brands", "encoder"}
+        allowed_stream_tags = {"language", "handler_name", "vendor_id"}
+        allowed_stream_tag_values = {
+            "language": {"und"},
+            "handler_name": {"VideoHandler", "SoundHandler"},
+            "vendor_id": {"[0][0][0][0]"},
+        }
+        if (
+            stream_types.count("video") != 1
+            or stream_types.count("audio") > 1
+            or any(kind not in {"video", "audio"} for kind in stream_types)
+            or set(format_tags) - allowed_format_tags
+            or any(set(stream.get("tags", {})) - allowed_stream_tags for stream in streams)
+            or any(
+                any(value not in allowed_stream_tag_values[tag] for tag, value in stream.get("tags", {}).items())
+                for stream in streams
+            )
+        ):
+            raise VideoProcessorError("Protected output did not meet the audio and metadata policy.")
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        raise VideoProcessorError("Protected output could not preserve audio safely.") from exc
 
 
 def _safe_content_type(upload: UploadFile) -> str:
@@ -151,12 +200,14 @@ def process_video_privacy_job(
                 raise VideoProcessorError("Video source is unavailable.")
             source = storage.materialize_original(job.job_id, Path(job.original_path))
             _set_stage(db, job, "privacy-transform", VideoPrivacyStatus.PROCESSING)
+            visual = storage.work_path(job.job_id, "video.visual.mp4")
             output = storage.work_path(job.job_id, "video.output.mp4")
             preview = storage.work_path(job.job_id, "video.preview.jpg")
-            result = processor.process(source, output, preview, job.profile)
+            result = processor.process(source, visual, preview, job.profile)
             _set_stage(db, job, "output-validation", VideoPrivacyStatus.VALIDATING)
             if not result.usable:
                 raise VideoProcessorError("Transformed output did not meet the privacy quality threshold.")
+            finalize_protected_video(source, visual, output)
             output_path = storage.store_artifact(job.job_id, output, "video.output.mp4")
             preview_path = storage.store_artifact(job.job_id, preview, "video.preview.jpg")
             job.output_path = str(output_path)

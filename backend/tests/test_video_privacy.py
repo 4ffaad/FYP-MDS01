@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import io
+import json
+import numpy as np
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -20,6 +23,8 @@ from backend.app.main import app
 from backend.app.services.video_privacy_service import (
     acknowledge_video_job,
     create_video_job,
+    finalize_protected_video,
+    parse_profile,
     process_video_privacy_job,
     public_video_job,
 )
@@ -60,6 +65,16 @@ class VideoPrivacyTests(unittest.TestCase):
         )
         self.preflight_patch.start()
         self.addCleanup(self.preflight_patch.stop)
+        self.finalize_patch = patch(
+            "backend.app.services.video_privacy_service.finalize_protected_video",
+            side_effect=self._finalize,
+        )
+        self.finalize_patch.start()
+        self.addCleanup(self.finalize_patch.stop)
+
+    @staticmethod
+    def _finalize(source: Path, visual: Path, output: Path) -> None:
+        output.write_bytes(visual.read_bytes() + b"-private-audio")
 
     def _database(self):
         database = create_engine("sqlite://", connect_args={"check_same_thread": False})
@@ -95,16 +110,21 @@ class VideoPrivacyTests(unittest.TestCase):
                     self.assertEqual(db.exec(select(VideoPrivacyJob)).all(), [])
             self.assertEqual(list((Path(directory) / "sessions").iterdir()), [])
 
-    def test_api_rejects_unknown_profile_without_echoing_filename(self) -> None:
+    def test_api_rejects_pose_only_for_new_jobs_without_echoing_filename(self) -> None:
         with TestClient(app) as client:
             response = client.post(
                 "/api/video-privacy/jobs",
-                data={"profile": "clinical-action-analysis"},
+                data={"profile": "pose-only"},
                 files={"video": ("patient-name.mp4", b"not a video", "video/mp4")},
             )
         self.assertEqual(response.status_code, 422)
         self.assertNotIn("patient-name.mp4", response.text)
         self.assertNotIn("original_path", response.text)
+
+    def test_face_redaction_is_the_only_new_profile(self) -> None:
+        self.assertEqual(parse_profile("face-redacted"), VideoPrivacyProfile.FACE_REDACTED)
+        with self.assertRaisesRegex(ValueError, "only available"):
+            parse_profile("pose-only")
 
     def test_processor_fails_closed_when_cv_runtime_is_missing(self) -> None:
         from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProcessorError
@@ -114,6 +134,45 @@ class VideoPrivacyTests(unittest.TestCase):
             with self.assertRaises(VideoProcessorError):
                 VideoPrivacyProcessor.preflight(Path("/private/input.mp4"))
         self.preflight_patch.start()
+
+    def test_face_redaction_keeps_context_and_blurs_detector_misses(self) -> None:
+        from backend.app.video_privacy.processor import VideoPrivacyProcessor
+
+        class Cv:
+            COLOR_BGR2GRAY = 1
+
+            @staticmethod
+            def cvtColor(frame, _):
+                return frame
+
+            @staticmethod
+            def GaussianBlur(frame, *_args, **_kwargs):
+                return np.full_like(frame, 255)
+
+        frame = np.zeros((4, 4, 3), dtype=np.uint8)
+
+        class FaceDetector:
+            @staticmethod
+            def detectMultiScale(*_args, **_kwargs):
+                return [(0, 0, 2, 2)]
+
+        transformed, detected = VideoPrivacyProcessor._transform_frame(
+            Cv, frame, VideoPrivacyProfile.FACE_REDACTED, face_detector=FaceDetector(), pose=None,
+        )
+        self.assertTrue(detected)
+        self.assertEqual(int(transformed[0, 0, 0]), 255)
+        self.assertEqual(int(transformed[3, 3, 0]), 0)
+
+        class MissingFace:
+            @staticmethod
+            def detectMultiScale(*_args, **_kwargs):
+                return []
+
+        transformed, detected = VideoPrivacyProcessor._transform_frame(
+            Cv, frame, VideoPrivacyProfile.FACE_REDACTED, face_detector=MissingFace(), pose=None,
+        )
+        self.assertFalse(detected)
+        self.assertTrue(np.all(transformed == 255))
 
     def test_processing_encrypts_outputs_and_removes_plaintext_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -138,6 +197,7 @@ class VideoPrivacyTests(unittest.TestCase):
             self.assertTrue((job_root / "retained" / "video.output.mp4.enc").exists())
             self.assertTrue((job_root / "retained" / "video.preview.jpg.enc").exists())
             self.assertNotEqual((job_root / "retained" / "video.output.mp4.enc").read_bytes(), b"transformed-video-without-audio")
+            self.assertNotIn(b"private-audio", (job_root / "retained" / "video.output.mp4.enc").read_bytes())
 
     def test_needs_review_requires_acknowledgement_before_download(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -175,7 +235,39 @@ class VideoPrivacyTests(unittest.TestCase):
                 public = public_video_job(db, job, storage)
                 self.assertEqual(public["status"], "expired")
                 self.assertFalse(public["preview_available"])
-            self.assertFalse((root / job_id).exists())
+                self.assertFalse((root / job_id).exists())
+
+    def test_finalizer_keeps_one_audio_stream_and_removes_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.mp4"
+            visual = Path(directory) / "visual.mp4"
+            output = Path(directory) / "protected.mp4"
+            source.write_bytes(b"source")
+            visual.write_bytes(b"visual")
+            calls = []
+
+            def run(command, **kwargs):
+                calls.append(command)
+                if command[0] == "ffmpeg":
+                    Path(command[-1]).write_bytes(b"protected")
+                    return subprocess.CompletedProcess(command, 0)
+                return subprocess.CompletedProcess(
+                    command, 0,
+                    stdout=json.dumps({"streams": [{"codec_type": "video"}, {"codec_type": "audio"}], "format": {}}).encode(),
+                )
+
+            self.finalize_patch.stop()
+            try:
+                with patch("backend.app.services.video_privacy_service.subprocess.run", side_effect=run):
+                    finalize_protected_video(source, visual, output)
+            finally:
+                self.finalize_patch.start()
+
+            ffmpeg = calls[0]
+            self.assertIn("1:a:0?", ffmpeg)
+            self.assertIn("-map_metadata", ffmpeg)
+            self.assertIn("-sn", ffmpeg)
+            self.assertIn("-dn", ffmpeg)
 
 
 if __name__ == "__main__":

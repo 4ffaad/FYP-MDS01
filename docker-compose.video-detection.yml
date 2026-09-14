@@ -9,6 +9,7 @@ services:
     environment:
       VIDEO_DETECTION_ENABLED: "true"
       VSVIG_ASSET_DIR: /opt/vsvig
+      VSVIG_CONTRACT_SHA256: ${VSVIG_CONTRACT_SHA256:?Set the reviewed contract SHA-256}
     volumes:
       - type: bind
         source: ${VSVIG_ASSET_DIR:?Set an absolute external model bundle directory}

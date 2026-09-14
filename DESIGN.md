@@ -21,7 +21,7 @@ The existing `teal` utility token names map to blue. Reuse them consistently; do
 ## Layout and hierarchy
 
 - Shared header and page frame align to a 1320px maximum. Horizontal gutters are 24px, reduced to 16px on small screens.
-- Two top-level destinations: **EEG analysis** and **Video privacy**. Upload is an EEG action, not a third workspace.
+- Three top-level destinations: **EEG analysis**, **Video privacy**, and **Video detection**. Upload is an EEG action, not a fourth workspace.
 - Left-align headings, explanatory text and empty states. Use one clear primary action.
 - Use space and dividers for structure. Reserve bordered panels for interactive data, upload targets and independently reviewable content.
 - Keep form options visible together; avoid panels nested inside panels, decorative icon tiles, redundant badges and repeated warnings.

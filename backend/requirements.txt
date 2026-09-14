@@ -1,4 +1,5 @@
 fastapi
+httpx2>=2,<3
 uvicorn[standard]
 python-multipart
 pyedflib

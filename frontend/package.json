@@ -2,12 +2,16 @@
   "name": "mds01-frontend",
   "version": "0.1.0",
   "private": true,
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"tests/**/*.{ts,tsx}\" \"*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"tests/**/*.{ts,tsx}\" \"*.mjs\"",
     "test:e2e": "playwright test",
     "test:e2e:auth": "playwright test --config=playwright.auth.config.ts",
     "test:e2e:real": "playwright test --config=playwright.real.config.ts"
@@ -17,6 +21,7 @@
     "@hugeicons/react": "^1.1.10",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "motion": "^13.2.0",
     "next": "^16.3.1",
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
@@ -32,6 +37,7 @@
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.1",
     "eslint-config-next": "^16.3.1",
+    "prettier": "^3.6.2",
     "tailwindcss": "^4.3.3",
     "typescript": "5.7.2"
   }

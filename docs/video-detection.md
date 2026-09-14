@@ -59,12 +59,19 @@ Add absolute paths to the existing ignored `.env` (Windows Docker Desktop also a
 ```dotenv
 VSVIG_ASSET_DIR=/absolute/path/to/external-model-bundle
 VIDEO_DATA_DIR=/absolute/path/to/approved-videos
+VSVIG_CONTRACT_SHA256=the-reviewed-sha256-of-contract-json
 ```
 
 Generate an **unreviewed** manifest template on stdout; save it as `contract.json` in the external bundle, outside this repository:
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.video-detection.yml run --rm --no-deps backend python -m backend.scripts.video_contract /opt/vsvig
+```
+
+After review, calculate the contract's SHA-256 and place that value in the ignored root `.env`. This separate value is required: a modified mounted bundle cannot approve its own altered manifest.
+
+```sh
+shasum -a 256 /absolute/path/to/external-model-bundle/contract.json
 ```
 
 The runtime image must be built before the command above on a fresh machine:
@@ -99,6 +106,38 @@ docker compose -f docker-compose.yml -f docker-compose.video-detection.yml exec 
 
 This command prints aggregate counts, durations, frame rates and resolutions without filenames, paths or file contents. It identifies possible annotation files by extension only; it does not validate labels. Empty/unreadable input exits with code 2. MP4, MOV and WebM are accepted by the app; other formats require a separately reviewed conversion. The last inspected patient folder had no videos; inventory it again when data arrives.
 
+## Local computer-vision inspection
+
+Use the diagnostic script to see what the detectors find on one approved clip.
+It prints per-frame counts and writes an annotated video to a path outside Git.
+The output contains the source appearance, so keep it local and delete it when
+the review is finished.
+
+```sh
+mkdir -p /tmp/mds01-vision-check
+docker compose -f docker-compose.yml -f docker-compose.video-detection.yml run --rm --no-deps \
+  -v /tmp/mds01-vision-check:/out backend \
+  python -m backend.scripts.inspect_video_vision \
+  /private-video-data/Normal/<approved-clip>.mp4 \
+  --mode both --output /out/face-detector-comparison.mp4
+```
+
+The `both` mode compares the current OpenCV Haar detector with MediaPipe Face
+Detection. To draw the pose-landmark view used for visual inspection:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.video-detection.yml run --rm --no-deps \
+  -v /tmp/mds01-vision-check:/out backend \
+  python -m backend.scripts.inspect_video_vision \
+  /private-video-data/Seizure/<approved-clip>.mp4 \
+  --mode pose --output /out/pose-landmarks.mp4
+```
+
+This is a detector-coverage check, not an accuracy score. Accuracy requires
+reviewed frame-level face boxes or landmarks. The inspection script does not
+change the production transform: new privacy jobs still use the fail-closed
+face-redaction path.
+
 ## Architecture and data handling
 
 ```mermaid
@@ -124,7 +163,27 @@ Endpoints are `POST /api/video-detection/jobs`, `GET /api/video-detection/jobs`,
 
 Jobs move through queued, processing, ready, failed or expired. Scores carry checkpoint hashes, model version, preprocessing version and threshold. Adjacent/overlapping positive window supports merge into event intervals. Raw sigmoid scores remain uncalibrated model scores. `recording_probability_available` stays false. The timeline positions points at window centers and the table preserves exact supports.
 
-Source appearance is retained for the explicitly requested private review. Playback strips audio, container metadata, chapters, subtitles and attachments but does **not** remove identifiers burned into pixels. Patient appearance therefore remains sensitive. No raw video URL bypasses ownership checks. Range requests are authenticated; decrypted response files are removed in `finally`, including unsuccessful responses. API/browser responses use `Cache-Control: no-store`.
+Before pose extraction and VSViG scoring, the source is face-redacted. The model receives the redacted video; the owner-only review output is that same redacted video with audio, container metadata, chapters, subtitles and attachments removed. A face-detector miss falls back to full-frame blur and is surfaced as a review warning. This reduces visual identity exposure but is not a guarantee of anonymity. No raw video URL bypasses ownership checks. Range requests are authenticated; decrypted response files are removed in `finally`, including unsuccessful responses. API/browser responses use `Cache-Control: no-store`.
+
+For the highest flagged window, the runtime can neutralise each of its 15 anonymous VSViG input patches once and report the score change. This patch-occlusion result is bounded model-input sensitivity only; it does not identify anatomy, establish seizure cause, or provide a diagnosis. It must not be used to claim that privacy preservation maintained clinical performance. That requires a separate patient-disjoint evaluation with approved labelled video and seizure onset/offset annotations.
+
+Run that comparison outside the application container. The manifest stays outside Git and contains only dataset-relative paths, pseudonymous subject IDs, a fixed split, and reviewed `[start_seconds, end_seconds]` seizure intervals:
+
+```bash
+python backend/scripts/evaluate_video_privacy.py /approved/video-data /approved/video-manifest.json \
+  --split test --output reports/video-face-redaction.json
+```
+
+The report contains only aggregate raw-versus-face-redacted metrics, score drift, and threshold agreement. It never writes video paths, subject IDs, frames, poses, or audio.
+
+If an approved dataset uses `Normal/` and `Seizure/` MP4 folders and every Seizure clip is labelled positive for its full duration, create that external manifest first:
+
+```bash
+python backend/scripts/create_video_evaluation_manifest.py /approved/video-data /approved/video-manifest.json \
+  --seizure-folder-is-fully-positive
+```
+
+Do not use this helper if a Seizure clip contains pre- or post-event footage; provide reviewed onset/offset intervals instead.
 
 After processing, the encrypted upload and temporary files are removed; encrypted review video and results remain for `VIDEO_RETENTION_SECONDS` (default 24 hours). A background sweep deletes expired artifacts within 30 seconds while the backend is running. Access after expiry is denied immediately. Restart clears interrupted jobs and leftover playback plaintext. While the laptop/backend is off, physical deletion resumes on startup; do not describe retention as an always-running external deletion guarantee.
 

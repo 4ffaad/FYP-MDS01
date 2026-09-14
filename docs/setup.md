@@ -114,13 +114,13 @@ docker compose cp backend:/tmp/mds01-demo.zip ./mds01-demo.zip
 
 The generated archive contains synthetic signals and explicit test identifiers, not patient data. ZIP files are ignored by Git.
 
-1. Open **EEG analysis → New EEG analysis** and choose `mds01-demo.zip`.
+1. Open **Workspace → New analysis** and choose `mds01-demo.zip`.
 2. Select metadata scrub, optionally adding signal obfuscation.
 3. Submit and wait for the session to finish.
 4. Open a recording to review its timeline, threshold, flagged windows and model version.
 5. Delete the completed session through the confirmation dialog when finished.
 
-For video, use a short synthetic or appropriately consented MP4, MOV or WebM. Open **Video privacy**, select a profile, then review the transformed output. The browser stub does not validate the actual privacy transform. Docker builds smoke-test both video adapters as the unprivileged application user. Pose-only uses MediaPipe's bundled full model without a first-upload download. Face detection can miss frames; missing/failed transforms must not return source video.
+For analysis, open **New analysis** and choose an EEG ZIP, a video, or both. EEG is encrypted and follows the selected EEG privacy path before H5 scoring. Video is encrypted, face-redacted, and sent to the visual-only VSViG path when its external assets are mounted. A paired upload opens one status page with links to the EEG session and video review. To create a protected video with original audio retained for owner-only review, use the separate **Video privacy** page. The browser stub does not validate the actual privacy transform. Docker builds smoke-test both video adapters as the unprivileged application user. Face detection can miss frames; affected frames use full-frame blur and missing/failed transforms must not return source video.
 
 ## Enable waveform review for a local prototype
 
@@ -173,6 +173,7 @@ Frontend checks, from `frontend/`:
 ```sh
 npm ci
 npx playwright install chromium
+npm run format:check
 npm run lint
 npx next typegen
 npx tsc --noEmit

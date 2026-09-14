@@ -202,14 +202,15 @@ class VideoPrivacyProcessor:
         if profile == VideoPrivacyProfile.FACE_REDACTED:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             faces = face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(24, 24))
-            # Keep the face profile fail-closed: detector misses must not let
-            # an unblurred face pass through merely because another face was
-            # detected in the same frame.
-            transformed = cv2.GaussianBlur(frame, (0, 0), sigmaX=19, sigmaY=19)
+            # Keep the face profile fail-closed: a detector miss must not
+            # publish an unprotected face.
+            if len(faces) == 0:
+                return cv2.GaussianBlur(frame, (0, 0), sigmaX=19, sigmaY=19), False
+            transformed = frame.copy()
             for x, y, w, h in faces:
-                roi = transformed[y : y + h, x : x + w]
+                roi = frame[y : y + h, x : x + w]
                 transformed[y : y + h, x : x + w] = cv2.GaussianBlur(roi, (0, 0), sigmaX=25, sigmaY=25)
-            return transformed, len(faces) > 0
+            return transformed, True
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = pose.process(rgb)

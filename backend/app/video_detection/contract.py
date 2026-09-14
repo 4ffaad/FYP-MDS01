@@ -25,7 +25,13 @@ def digest(path: Path) -> str:
 def load_contract(root: Path | None = None) -> tuple[Path, dict]:
     root = root or Path(os.environ.get("VSVIG_ASSET_DIR", "/opt/vsvig"))
     try:
-        contract = json.loads((root / "contract.json").read_text())
+        contract_path = root / "contract.json"
+        if not contract_path.is_file():
+            raise DetectionError("assets_missing")
+        expected_contract_hash = os.environ.get("VSVIG_CONTRACT_SHA256", "")
+        if len(expected_contract_hash) != 64 or digest(contract_path) != expected_contract_hash:
+            raise DetectionError("contract_unreviewed")
+        contract = json.loads(contract_path.read_text())
         if contract.get("reviewed") is not True:
             raise DetectionError("contract_unreviewed")
         if contract["upstream_commit"] != UPSTREAM_COMMIT:
@@ -77,8 +83,28 @@ def validate_predictions(rows: list, duration: float, model: dict) -> dict:
             raise DetectionError("invalid_model_output")
         previous = start
         flagged = score >= model["threshold"]
-        windows.append({"start_time": start, "end_time": end, "raw_score": score, "score": score,
-                        "score_type": "uncalibrated_model_score", "seizure_detected": flagged, **model})
+        window = {"start_time": start, "end_time": end, "raw_score": score, "score": score,
+                  "score_type": "uncalibrated_model_score", "seizure_detected": flagged, **model}
+        evidence = row.get("model_evidence")
+        if evidence is not None:
+            patches = evidence.get("patches") if isinstance(evidence, dict) else None
+            if (
+                not isinstance(evidence, dict)
+                or evidence.get("method") != "patch-occlusion"
+                or not isinstance(patches, list)
+                or len(patches) != 15
+                or {item.get("patch_index") for item in patches if isinstance(item, dict)} != set(range(15))
+                or any(
+                    not isinstance(item, dict)
+                    or type(item.get("patch_index")) is not int
+                    or not 0 <= item["patch_index"] < 15
+                    or not math.isfinite(float(item.get("score_change", float("nan"))))
+                    for item in patches
+                )
+            ):
+                raise DetectionError("invalid_model_output")
+            window["model_evidence"] = evidence
+        windows.append(window)
         if flagged:
             if intervals and start <= intervals[-1]["end_time"]:
                 intervals[-1]["end_time"] = max(end, intervals[-1]["end_time"])
