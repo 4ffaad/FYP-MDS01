@@ -2,6 +2,7 @@ import { getJson, uploadJson } from "./api";
 
 export interface DetectionJob {
   job_id: string;
+  case_id: string | null;
   label: string;
   status: "queued" | "processing" | "ready" | "failed" | "expired";
   current_stage: string;
@@ -52,9 +53,11 @@ export interface DetectionResult {
 export async function uploadDetection(
   file: File,
   progress: (value: number) => void,
+  caseId?: string,
 ) {
   const data = new FormData();
   data.append("video", file);
+  if (caseId) data.append("case_id", caseId);
   try {
     return await uploadJson<{ job: DetectionJob }>(
       "/api/video-detection/jobs",

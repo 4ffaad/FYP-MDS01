@@ -14,6 +14,7 @@ from backend.app.api.sessions import router as sessions_router
 from backend.app.api.uploads import router as uploads_router
 from backend.app.api.video_privacy import router as video_privacy_router
 from backend.app.api.video_detection import router as video_detection_router
+from backend.app.api.cases import router as cases_router
 from backend.app.core.config import CORS_ORIGINS, MODEL_RUNTIME, auth_configuration
 from backend.app.core.security import require_api_auth
 from backend.app.ml.model_loader import get_inference_service
@@ -82,3 +83,4 @@ app.include_router(recordings_router, dependencies=api_dependencies)
 app.include_router(uploads_router, dependencies=api_dependencies)
 app.include_router(video_privacy_router, dependencies=api_dependencies)
 app.include_router(video_detection_router, dependencies=api_dependencies)
+app.include_router(cases_router, dependencies=api_dependencies)

@@ -28,6 +28,7 @@ export function UploadScreen() {
   const eegInputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<UploadStep>("select");
   const [draft, setDraft] = useState<UploadDraft | null>(null);
+  const [caseId, setCaseId] = useState<string | null>(null);
   const [eegSize, setEegSize] = useState<number | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [signalObfuscation, setSignalObfuscation] = useState(false);
@@ -110,6 +111,7 @@ export function UploadScreen() {
     window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
     if (eegInputRef.current) eegInputRef.current.value = "";
     setDraft(null);
+    setCaseId(null);
     setEegSize(null);
     setVideoFile(null);
     setProgress(0);
@@ -132,6 +134,7 @@ export function UploadScreen() {
     setPartialSessionId(null);
     let sessionId: string | null = null;
     let videoJobId: string | null = null;
+    let analysisCaseId = caseId;
 
     try {
       if (draft) {
@@ -140,15 +143,24 @@ export function UploadScreen() {
           signalObfuscation
             ? ["metadata-scrub", "signal-obfuscation"]
             : ["metadata-scrub"],
+          analysisCaseId ?? undefined,
         );
         sessionId = result.sessionId;
+        analysisCaseId = result.caseId;
       }
 
       if (videoFile) {
         setProgress(0);
-        const result = await uploadDetection(videoFile, setProgress);
+        const result = await uploadDetection(
+          videoFile,
+          setProgress,
+          analysisCaseId ?? undefined,
+        );
         videoJobId = result.job.job_id;
+        analysisCaseId = result.job.case_id ?? analysisCaseId;
       }
+
+      setCaseId(analysisCaseId);
 
       window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
       if (sessionId && videoJobId) {

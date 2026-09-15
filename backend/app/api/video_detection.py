@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import secrets
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from sqlmodel import Session
 
 from backend.app.core.security import require_api_auth
@@ -36,14 +36,20 @@ def owned(job_id, owner, db, storage):
 
 @router.post("/jobs", status_code=202)
 async def create(background_tasks: BackgroundTasks, video: UploadFile = File(...),
+                 case_id: str | None = Form(None),
                  owner: int = Depends(account), db: Session = Depends(get_session)):
+    case_id = case_id if isinstance(case_id, str) and case_id else None
     try:
         if os.environ.get("VIDEO_DETECTION_ENABLED", "false").lower() != "true":
             raise HTTPException(503, "Enable the local video detection runtime using the setup guide.")
         async with service.UPLOAD_LOCK:
             if repository.has_active_job(db):
                 raise HTTPException(409, "A video is already processing. Try again after it finishes.")
-            job = await service.create_job(db, VideoStorage(), video, owner)
+            job = (
+                await service.create_job(db, VideoStorage(), video, owner, case_id)
+                if case_id
+                else await service.create_job(db, VideoStorage(), video, owner)
+            )
         background_tasks.add_task(service.process_job, job.job_id)
         return {"job": service.public_job(db, job, VideoStorage())}
     except DetectionError as exc:

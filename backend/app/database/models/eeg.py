@@ -74,6 +74,7 @@ class EEGSession(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     owner_user_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     session_id: str = Field(index=True, unique=True)
+    case_id: str | None = Field(default=None, index=True, max_length=64)
     privacy_method: str = Field(default="metadata-scrub", max_length=64)
     original_filename: str = ""
     original_path: str = ""

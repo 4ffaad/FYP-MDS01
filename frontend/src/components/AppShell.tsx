@@ -140,9 +140,13 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Icon name="activity" className="size-4" />
               Workspace
             </NavLink>
-            <NavLink href="/video-detection">
-              <Icon name="activity" className="size-4" />
-              Video detection
+            <NavLink href="/upload">
+              <Icon name="upload" className="size-4" />
+              New analysis
+            </NavLink>
+            <NavLink href="/cases">
+              <Icon name="list" className="size-4" />
+              Cases
             </NavLink>
           </nav>
 
@@ -218,12 +222,13 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </Button>
               </div>
             )}
-            <NavLink
-              href="/video-detection"
-              onNavigate={() => setMenuOpen(false)}
-            >
-              <Icon name="activity" className="size-4" />
-              Video detection
+            <NavLink href="/upload" onNavigate={() => setMenuOpen(false)}>
+              <Icon name="upload" className="size-4" />
+              New analysis
+            </NavLink>
+            <NavLink href="/cases" onNavigate={() => setMenuOpen(false)}>
+              <Icon name="list" className="size-4" />
+              Cases
             </NavLink>
           </nav>
         </div>

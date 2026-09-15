@@ -77,6 +77,29 @@ export interface Recording {
   privacyMethods?: PrivacyMethod[];
 }
 
+export interface CaseSummary {
+  caseId: string;
+  modalities: Array<"eeg" | "video">;
+  analysisCount: number;
+  latestCreatedAt: string;
+  status: "processing" | "complete" | "needs_review";
+  flaggedIntervalCount: number;
+  explanationReady: boolean;
+}
+
+export interface CaseAnalysis {
+  id: string;
+  modality: "eeg" | "video";
+  status: "processing" | "complete" | "needs_review";
+  createdAt: string;
+  reviewReady: boolean;
+}
+
+export interface CaseDetail {
+  caseId: string;
+  analyses: CaseAnalysis[];
+}
+
 export type SessionStatus =
   | "queued"
   | "validating"
@@ -90,6 +113,7 @@ export type SessionStatus =
 
 export interface Session {
   sessionId: string;
+  caseId: string | null;
   privacyMethod: PrivacyMethod;
   privacyMethods: PrivacyMethod[];
   status: SessionStatus;

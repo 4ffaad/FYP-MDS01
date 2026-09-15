@@ -11,6 +11,7 @@ class VideoDetectionJob(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     owner_user_id: int = Field(foreign_key="users.id", index=True)
     job_id: str = Field(unique=True, index=True, max_length=64)
+    case_id: str | None = Field(default=None, index=True, max_length=64)
     status: str = Field(default="queued", max_length=32)
     current_stage: str = Field(default="preflight", max_length=32)
     duration_seconds: float = 0

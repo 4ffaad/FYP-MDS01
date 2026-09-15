@@ -29,6 +29,7 @@ async def upload_session(
     archive: UploadFile = File(...),
     privacy_method: str = Form("metadata-scrub"),
     privacy_methods: str | None = Form(None),
+    case_id: str | None = Form(None),
     db: Session = Depends(get_session),
     current_user: User | None = Depends(require_api_auth),
 ) -> dict:
@@ -60,6 +61,7 @@ async def upload_session(
 
     if not archive.filename or not archive.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Upload one ZIP archive containing EDF files.")
+    case_id = case_id if isinstance(case_id, str) and case_id else None
     try:
         selected_methods = normalize_privacy_methods(
             privacy_methods if isinstance(privacy_methods, str) else None,
@@ -76,6 +78,8 @@ async def upload_session(
         create_kwargs = {}
         if (current_owner_id := owner_id(current_user)) is not None:
             create_kwargs["owner_user_id"] = current_owner_id
+        if case_id:
+            create_kwargs["case_id"] = case_id
         session = await create_session(db, SessionStorage(), archive, privacy_profile, **create_kwargs)
     except StorageError as exc:
         processing_capacity.release()
@@ -85,10 +89,13 @@ async def upload_session(
         raise
 
     background_tasks.add_task(processing_capacity.run_reserved, session.session_id)
-    return {
+    payload = {
         "session_id": session.session_id,
         "status": session.status.value,
     }
+    if session.case_id:
+        payload["case_id"] = session.case_id
+    return payload
 
 
 @router.get("/sessions")

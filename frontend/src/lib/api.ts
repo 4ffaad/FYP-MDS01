@@ -1,5 +1,8 @@
 import type {
   AnalysisResult,
+  CaseSummary,
+  CaseDetail,
+  CaseAnalysis,
   AuthUser,
   ApiErrorPayload,
   DisplayStatus,
@@ -415,6 +418,7 @@ function methodsForProfile(
 
 type BackendSession = {
   session_id: string;
+  case_id?: string | null;
   privacy_method: string;
   privacy_methods?: string[];
   status: string;
@@ -625,6 +629,7 @@ function recordingFromBackend(
 function sessionFromBackend(session: BackendSession): Session {
   return {
     sessionId: session.session_id,
+    caseId: session.case_id ?? null,
     privacyMethod: methodForId(session.privacy_method),
     privacyMethods: methodsForProfile(
       session.privacy_method,
@@ -676,6 +681,7 @@ function stubSessionFromJob(job: StubJob): Session {
     status === "completed" ? createStubResult(job).flaggedWindowCount : 0;
   return {
     sessionId: job.jobId,
+    caseId: `CASE-${job.jobId.slice(-8)}`,
     privacyMethod: job.privacyMethod,
     privacyMethods: methodsForProfile(job.privacyMethod.id),
     status,
@@ -863,6 +869,73 @@ export async function getSessions(signal?: AbortSignal): Promise<Session[]> {
   }
   const sessions = await getJson<BackendSession[]>("/api/sessions", signal);
   return sessions.map(sessionFromBackend);
+}
+
+type BackendCaseSummary = {
+  case_id: string;
+  modalities: Array<"eeg" | "video">;
+  analysis_count: number;
+  latest_created_at: string;
+  status: CaseSummary["status"];
+  flagged_interval_count: number;
+  explanation_ready: boolean;
+};
+
+export async function getCases(signal?: AbortSignal): Promise<CaseSummary[]> {
+  if (USE_STUB) {
+    const sessions = await getSessions(signal);
+    return sessions.map((session) => ({
+      caseId: session.caseId ?? `CASE-${session.sessionId.slice(-8)}`,
+      modalities: ["eeg"],
+      analysisCount: 1,
+      latestCreatedAt: session.createdAt,
+      status:
+        toDisplayStatus(session.status) === "failed" ||
+        toDisplayStatus(session.status) === "partial"
+          ? "needs_review"
+          : toDisplayStatus(session.status) === "complete"
+            ? "complete"
+            : "processing",
+      flaggedIntervalCount: session.summary.modelAlertRecordings,
+      explanationReady: toDisplayStatus(session.status) === "complete",
+    }));
+  }
+  const cases = await getJson<BackendCaseSummary[]>("/api/cases", signal);
+  return cases.map((item) => ({
+    caseId: item.case_id,
+    modalities: item.modalities,
+    analysisCount: item.analysis_count,
+    latestCreatedAt: item.latest_created_at,
+    status: item.status,
+    flaggedIntervalCount: item.flagged_interval_count,
+    explanationReady: item.explanation_ready,
+  }));
+}
+
+export async function getCase(
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<CaseDetail> {
+  const response = await getJson<{
+    case_id: string;
+    analyses: Array<{
+      id: string;
+      modality: "eeg" | "video";
+      status: CaseAnalysis["status"];
+      created_at: string;
+      review_ready: boolean;
+    }>;
+  }>(`/api/cases/${encodeURIComponent(caseId)}`, signal);
+  return {
+    caseId: response.case_id,
+    analyses: response.analyses.map((analysis) => ({
+      id: analysis.id,
+      modality: analysis.modality,
+      status: analysis.status,
+      createdAt: analysis.created_at,
+      reviewReady: analysis.review_ready,
+    })),
+  };
 }
 
 /** Return the backend asset URL for a protected video response. */
@@ -1087,8 +1160,9 @@ export async function getUploadDraft(
 export async function finalizeUploadDraft(
   draftId: string,
   privacySelection: string | string[],
+  caseId?: string,
   signal?: AbortSignal,
-): Promise<{ sessionId: string }> {
+): Promise<{ sessionId: string; caseId: string | null }> {
   const methodIds = normalizePrivacySelection(privacySelection);
   if (USE_STUB) {
     await wait(160);
@@ -1110,16 +1184,24 @@ export async function finalizeUploadDraft(
       readStubDrafts().filter((item) => item.draftId !== draftId),
     );
     writeStubJobs([job, ...readStubJobs()]);
-    return { sessionId: job.jobId };
+    return {
+      sessionId: job.jobId,
+      caseId: caseId ?? `CASE-${job.jobId.slice(-8)}`,
+    };
   }
   const formData = new FormData();
   formData.append("privacy_methods", JSON.stringify(methodIds));
-  const response = await postFormJson<{ session_id: string; status: string }>(
+  if (caseId) formData.append("case_id", caseId);
+  const response = await postFormJson<{
+    session_id: string;
+    case_id?: string | null;
+    status: string;
+  }>(
     `/api/uploads/drafts/${encodeURIComponent(draftId)}/finalize`,
     formData,
     signal,
   );
-  return { sessionId: response.session_id };
+  return { sessionId: response.session_id, caseId: response.case_id ?? null };
 }
 
 export async function deleteUploadDraft(
@@ -1147,7 +1229,7 @@ export async function submitAnalysis(
   signal?: AbortSignal,
 ): Promise<{ sessionId: string }> {
   const draft = await stageUpload(file, onProgress, signal);
-  return finalizeUploadDraft(draft.draftId, privacyMethodId, signal);
+  return finalizeUploadDraft(draft.draftId, privacyMethodId, undefined, signal);
 }
 
 export async function getResult(

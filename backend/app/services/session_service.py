@@ -23,6 +23,7 @@ from backend.app.database.repository import (
     list_expired_upload_drafts,
 )
 from backend.app.services.storage_service import SessionStorage
+from backend.app.services.case_service import new_case_id
 from backend.app.database.models.eeg import AnalysisStatus
 from backend.app.privacy.methods import (
     canonical_privacy_profile,
@@ -129,6 +130,7 @@ def finalize_upload_draft(
     privacy_method: str = "metadata-scrub",
     privacy_methods: Iterable[str] | None = None,
     owner_user_id: int | None = None,
+    case_id: str | None = None,
 ) -> EEGSession:
     """Convert one encrypted draft into a queued analysis session.
 
@@ -149,6 +151,7 @@ def finalize_upload_draft(
     session = EEGSession(
         owner_user_id=owner_user_id,
         session_id=new_session_id(),
+        case_id=case_id or new_case_id(),
         privacy_method=profile,
         original_filename="",
         original_path="",
@@ -177,6 +180,7 @@ async def create_session(
     privacy_method: str = "metadata-scrub",
     privacy_methods: Iterable[str] | None = None,
     owner_user_id: int | None = None,
+    case_id: str | None = None,
 ) -> EEGSession:
     """Persist an upload session and stream its ZIP into private storage.
 
@@ -206,6 +210,7 @@ async def create_session(
     session = EEGSession(
         owner_user_id=owner_user_id,
         session_id=new_session_id(),
+        case_id=case_id or new_case_id(),
         privacy_method=profile,
         original_filename="",
         original_path="",
@@ -329,6 +334,7 @@ def _public_session_payload(
     canonical_profile = canonical_privacy_profile(methods_from_profile(session.privacy_method))
     return {
         "session_id": session.session_id,
+        "case_id": session.case_id,
         "privacy_method": canonical_profile,
         "privacy_methods": list(methods_from_profile(canonical_profile)),
         "status": session.status.value,

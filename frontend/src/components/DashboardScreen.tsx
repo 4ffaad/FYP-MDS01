@@ -3,7 +3,12 @@
 import Link from "next/link";
 import { motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { deleteSession, getSessions, toDisplayStatus } from "@/lib/api";
+import {
+  deleteSession,
+  getCases,
+  getSessions,
+  toDisplayStatus,
+} from "@/lib/api";
 import type { DisplayStatus, Session } from "@/lib/types";
 import { Icon } from "./Icon";
 import { SessionGroup } from "./SessionRecordings";
@@ -19,9 +24,10 @@ const ACTIVE_SESSION_STATUSES = new Set([
 ]);
 const POLL_INTERVAL_MS = 4000;
 
-/** Home for both modalities; detailed review stays in the existing workflow routes. */
+/** Home for all analyses; detailed review stays in the case history. */
 export function DashboardScreen() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [caseCount, setCaseCount] = useState(0);
   const [filter, setFilter] = useState<"all" | DisplayStatus>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -31,13 +37,17 @@ export function DashboardScreen() {
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const requestNumber = ++latestRequest.current;
     try {
-      const nextSessions = await getSessions(signal);
+      const [nextSessions, nextCases] = await Promise.all([
+        getSessions(signal),
+        getCases(signal),
+      ]);
       if (signal?.aborted || requestNumber !== latestRequest.current) return;
       setSessions(
         nextSessions.filter(
           (session) => !deletedSessionIds.current.has(session.sessionId),
         ),
       );
+      setCaseCount(nextCases.length);
       setError(null);
     } catch (refreshError) {
       if (
@@ -155,19 +165,19 @@ export function DashboardScreen() {
           </div>
           <div className="mt-8 grid gap-3 sm:grid-cols-3">
             <Metric
-              label="EEG sessions"
-              value={sessions.length}
-              detail="Owner-scoped"
-              icon="activity"
+              label="Cases"
+              value={caseCount}
+              detail="Privacy-safe history"
+              icon="list"
             />
             <Metric
-              label="Recordings"
+              label="EEG recordings"
               value={recordingCount}
               detail={`${completedCount} complete`}
               icon="file"
             />
             <Metric
-              label="Review paths"
+              label="Modalities"
               value="2"
               detail="EEG + video"
               icon="shield"
@@ -257,12 +267,12 @@ export function DashboardScreen() {
 
           <aside className="space-y-5">
             <WorkflowCard
-              icon="activity"
-              eyebrow="Modality two"
-              title="Video detection"
-              description="Face-redacted frames → VSViG scores → evidence intervals, with no processed video retained."
-              href="/video-detection"
-              action="Open video detection"
+              icon="list"
+              eyebrow="Longitudinal review"
+              title="Follow a case"
+              description="See EEG and video analyses together with privacy status, model evidence, and explanation readiness."
+              href="/cases"
+              action="Open cases"
             />
           </aside>
         </div>
@@ -284,7 +294,7 @@ function Metric({
   label: string;
   value: string | number;
   detail: string;
-  icon: "activity" | "file" | "shield";
+  icon: "activity" | "file" | "shield" | "list";
 }) {
   return (
     <div className="rounded-2xl border border-rule bg-surface/70 px-4 py-4">
@@ -310,7 +320,7 @@ function WorkflowCard({
   href,
   action,
 }: {
-  icon: "activity" | "shield";
+  icon: "activity" | "shield" | "list";
   eyebrow: string;
   title: string;
   description: string;

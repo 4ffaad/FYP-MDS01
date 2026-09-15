@@ -97,6 +97,7 @@ def finalize_staged_upload(
     background_tasks: BackgroundTasks,
     privacy_method: str | None = Form(None),
     privacy_methods: str | None = Form(None),
+    case_id: str | None = Form(None),
     db: Session = Depends(get_session),
     current_user: User | None = Depends(require_api_auth),
 ) -> dict:
@@ -125,6 +126,7 @@ def finalize_staged_upload(
         503 when the staged archive cannot be promoted.
     """
 
+    case_id = case_id if isinstance(case_id, str) and case_id else None
     try:
         selected_methods = normalize_privacy_methods(
             privacy_methods if isinstance(privacy_methods, str) else None,
@@ -142,6 +144,8 @@ def finalize_staged_upload(
         finalize_kwargs = {}
         if (current_owner_id := owner_id(current_user)) is not None:
             finalize_kwargs["owner_user_id"] = current_owner_id
+        if case_id:
+            finalize_kwargs["case_id"] = case_id
         session = finalize_upload_draft(db, storage, draft_id, privacy_profile, **finalize_kwargs)
     except ValueError as exc:
         processing_capacity.release()
@@ -153,7 +157,7 @@ def finalize_staged_upload(
         processing_capacity.release()
         raise
     background_tasks.add_task(processing_capacity.run_reserved, session.session_id)
-    return {"session_id": session.session_id, "status": session.status.value}
+    return {"session_id": session.session_id, "case_id": session.case_id, "status": session.status.value}
 
 
 @router.delete("/drafts/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -20,6 +20,7 @@ from backend.app.database.models.video import VideoPrivacyProfile, utc_now
 from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.database import video_detection_repository as repository
 from backend.app.services.video_storage_service import VideoStorage
+from backend.app.services.case_service import new_case_id
 from backend.app.video_detection.contract import DetectionError, load_contract
 from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProcessorError
 
@@ -70,7 +71,8 @@ def expire_job(db, job, storage):
 def public_job(db, job, storage):
     expire_job(db, job, storage)
     return {
-        "job_id": job.job_id, "label": "Video detection " + job.job_id[-6:],
+        "job_id": job.job_id, "case_id": job.case_id,
+        "label": "Video detection " + job.job_id[-6:],
         "status": job.status, "current_stage": job.current_stage,
         "duration_seconds": job.duration_seconds, "fps": job.fps,
         "created_at": job.created_at, "retention_expires_at": job.retention_expires_at,
@@ -79,14 +81,20 @@ def public_job(db, job, storage):
     }
 
 
-async def create_job(db: Session, storage: VideoStorage, upload: UploadFile, owner: int):
+async def create_job(
+    db: Session,
+    storage: VideoStorage,
+    upload: UploadFile,
+    owner: int,
+    case_id: str | None = None,
+):
     if Path(upload.filename or "").suffix.lower() not in {".mp4", ".mov", ".webm"}:
         raise DetectionError("video_incompatible")
     if upload.content_type not in {"video/mp4", "video/quicktime", "video/webm", "application/octet-stream"}:
         raise DetectionError("video_incompatible")
     # Verify the expensive assets off the event loop, before accepting patient bytes.
     await asyncio.to_thread(load_contract)
-    job = VideoDetectionJob(owner_user_id=owner, job_id=f"VID-{secrets.token_hex(16).upper()}",
+    job = VideoDetectionJob(owner_user_id=owner, case_id=case_id or new_case_id(), job_id=f"VID-{secrets.token_hex(16).upper()}",
                             retention_expires_at=utc_now() + timedelta(seconds=VIDEO_RETENTION_SECONDS))
     db.add(job)
     db.commit()
