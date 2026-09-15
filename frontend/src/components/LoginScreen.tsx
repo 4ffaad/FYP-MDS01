@@ -207,12 +207,29 @@ export function LoginScreen() {
 
 function WorkflowDiagram() {
   return (
-    <div className="relative mt-10 flex-1 py-8">
-      <div
-        className="absolute left-7 top-10 bottom-10 w-px bg-gradient-to-b from-teal/10 via-teal/70 to-teal/10"
-        aria-hidden="true"
-      />
-      <div className="space-y-4">
+    <motion.div
+      className="workflow-diagram relative mt-10 flex flex-1 items-center justify-center py-8"
+      initial="hidden"
+      animate="visible"
+      variants={{
+        hidden: {},
+        visible: {
+          transition: { delayChildren: 0.15, staggerChildren: 0.1 },
+        },
+      }}
+    >
+      <div className="workflow-nodes relative grid w-full max-w-[38rem] grid-cols-4 gap-3">
+        <motion.div
+          className="workflow-connector absolute left-[8%] right-[8%] top-10 h-px bg-gradient-to-r from-teal/10 via-teal/70 to-teal/10"
+          initial={{ opacity: 0, scaleX: 0 }}
+          animate={{ opacity: 1, scaleX: 1 }}
+          transition={{
+            delay: 0.1,
+            duration: 0.7,
+            ease: [0.22, 1, 0.36, 1],
+          }}
+          aria-hidden="true"
+        />
         <WorkflowNode
           icon="upload"
           title="Upload"
@@ -234,7 +251,7 @@ function WorkflowDiagram() {
           detail="Evidence in context"
         />
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -248,14 +265,28 @@ function WorkflowNode({
   detail: string;
 }) {
   return (
-    <div className="relative flex items-center gap-4">
-      <span className="relative z-10 grid size-14 shrink-0 place-items-center rounded-2xl border border-white/90 bg-white/85 text-teal shadow-sm backdrop-blur">
+    <motion.div
+      className="workflow-node relative flex min-w-0 flex-col items-center gap-3 text-center"
+      variants={{
+        hidden: { opacity: 0, y: 12 },
+        visible: {
+          opacity: 1,
+          y: 0,
+          transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] },
+        },
+      }}
+    >
+      <motion.span
+        className="relative z-10 grid size-14 shrink-0 place-items-center rounded-2xl border border-white/90 bg-white/85 text-teal shadow-sm backdrop-blur"
+        whileHover={{ y: -3, scale: 1.04 }}
+        transition={{ duration: 0.2, ease: "easeOut" }}
+      >
         <Icon name={icon} className="size-6" weight="bold" />
-      </span>
-      <div className="rounded-xl border border-white/70 bg-white/50 px-4 py-2.5 backdrop-blur">
+      </motion.span>
+      <div className="min-w-0">
         <p className="text-sm font-bold text-ink">{title}</p>
-        <p className="mt-0.5 text-xs text-ink-muted">{detail}</p>
+        <p className="mt-1 text-xs leading-5 text-ink-muted">{detail}</p>
       </div>
-    </div>
+    </motion.div>
   );
 }

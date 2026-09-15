@@ -5,27 +5,28 @@ type Mds01LogoProps = {
 /** Render the MDS01 monogram and research workspace wordmark. */
 export function Mds01Logo({ context = "eeg" }: Mds01LogoProps) {
   return (
-    <span className="inline-flex min-w-0 items-center gap-2.5">
+    <span className="logo-link group/logo inline-flex min-w-0 items-center gap-3">
       <svg
-        className="size-9 shrink-0"
-        viewBox="0 0 36 36"
+        className="logo-mark size-10 shrink-0"
+        viewBox="0 0 40 40"
         fill="none"
-        aria-hidden="true"
+        role="img"
+        aria-label="MDS01 EEG signal mark"
       >
-        <rect x="1" y="1" width="34" height="34" rx="9" fill="#1D1D1F" />
         <path
-          d="M9 25V11L18 21.5L27 11V25"
-          stroke="white"
-          strokeWidth="2.5"
+          d="M5.5 22.5c5.2 0 5.2-10.5 10.3-10.5 5.2 0 5.2 17.2 10.4 17.2 5.1 0 5.1-10.7 8.3-10.7"
+          stroke="#111318"
+          strokeWidth="4.6"
           strokeLinecap="round"
-          strokeLinejoin="round"
         />
+        <circle cx="5.5" cy="22.5" r="3.15" fill="#1473e6" />
+        <circle cx="34.5" cy="18.5" r="3.15" fill="#1473e6" />
       </svg>
       <span className="min-w-0 leading-none">
-        <span className="block text-[0.96rem] font-bold tracking-[-0.035em] text-ink">
+        <span className="block text-[1rem] font-bold tracking-[-0.04em] text-ink">
           MDS<span className="text-teal">01</span>
         </span>
-        <span className="mt-1 block truncate text-[0.57rem] font-semibold uppercase tracking-[0.13em] text-ink-faint">
+        <span className="mt-1 block truncate text-[0.57rem] font-semibold uppercase tracking-[0.14em] text-ink-faint">
           {context === "detection"
             ? "Video Detection"
             : context === "video"

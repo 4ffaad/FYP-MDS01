@@ -161,6 +161,17 @@ select {
   min-height: 4.5rem;
 }
 
+.logo-mark {
+  transition:
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 240ms ease;
+}
+
+.logo-link:hover .logo-mark {
+  filter: drop-shadow(0 5px 10px rgb(20 115 230 / 0.16));
+  transform: translateY(-1px) rotate(-2deg);
+}
+
 .premium-card {
   border: 1px solid rgb(229 231 235 / 0.9);
   border-radius: 1.25rem;
@@ -247,6 +258,11 @@ select {
   filter: blur(12px);
 }
 
+.workflow-node p:last-child {
+  max-width: 8.5rem;
+  margin-inline: auto;
+}
+
 @media (max-width: 800px) {
   .login-layout {
     grid-template-columns: 1fr;
@@ -256,6 +272,23 @@ select {
   }
   .login-form-column {
     min-height: 620px;
+  }
+  .workflow-connector {
+    left: 12%;
+    right: 12%;
+  }
+}
+
+@media (max-width: 520px) {
+  .workflow-diagram {
+    padding-block: 1rem;
+  }
+  .workflow-nodes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 2rem;
+  }
+  .workflow-connector {
+    display: none;
   }
 }
 
