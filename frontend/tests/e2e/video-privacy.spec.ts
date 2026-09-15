@@ -4,58 +4,15 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => window.localStorage.clear());
 });
 
-test("submits a video to a standalone privacy job and shows only protected output", async ({
+test("legacy video privacy route redirects to unified VEEG video review", async ({
   page,
 }) => {
   await page.goto("/video-privacy");
+  await expect(page).toHaveURL(/\/video-detection$/);
   await expect(
-    page.getByRole("heading", { name: "Face redaction" }),
+    page.getByRole("heading", { name: "Video seizure detection" }),
   ).toBeVisible();
   await expect(
-    page.getByText(
-      /original audio is retained when present for private review/i,
-    ),
+    page.getByText(/Face redaction runs before pose extraction/i),
   ).toBeVisible();
-  await page.locator("#video-file").setInputFiles({
-    name: "patient-confidential.mp4",
-    mimeType: "video/mp4",
-    buffer: Buffer.from("synthetic video"),
-  });
-  await page.getByRole("button", { name: "Start privacy transform" }).click();
-  await expect(page).toHaveURL(/\/video-privacy\/VID-/);
-  await expect(
-    page.getByRole("heading", { name: "Video upload 01" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Privacy processing" }),
-  ).toBeVisible();
-  await expect(page.getByText("Preflight", { exact: true })).toBeVisible();
-  await expect(page.getByText("Ready for review", { exact: true })).toBeVisible(
-    { timeout: 10000 },
-  );
-  await expect(
-    page.getByRole("heading", { name: "Protected preview frame" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: /Download protected video/ }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Retained when present", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("patient-confidential.mp4", { exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.locator("#main-content").getByText(/EEG|H5|model/i),
-  ).toHaveCount(0);
-  await page.screenshot({
-    path: test.info().outputPath("video-privacy.png"),
-    fullPage: true,
-  });
-});
-
-test("face redaction is the only new privacy transform", async ({ page }) => {
-  await page.goto("/video-privacy");
-  await expect(page.getByRole("radio")).toHaveCount(0);
-  await expect(page.getByText(/If the detector loses a face/i)).toBeVisible();
 });

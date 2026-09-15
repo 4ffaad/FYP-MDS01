@@ -9,7 +9,7 @@ test("upload leads with one clear action and creates a queued analysis", async (
 }) => {
   await page.goto("/upload");
   await expect(
-    page.getByRole("heading", { name: "Upload the data for one analysis" }),
+    page.getByRole("heading", { name: "Start a VEEG analysis" }),
   ).toBeVisible();
   await expect(page.getByRole("radio")).toHaveCount(0);
   const archiveInput = page.locator("#eeg-file");
@@ -67,7 +67,7 @@ test("privacy preview shows the fixed 18-channel contract and an accessible divi
     page.getByRole("checkbox", { name: /Signal obfuscation/ }),
   ).toBeVisible({ timeout: 15000 });
   await expect(
-    page.getByRole("img", { name: /Synthetic 18-channel EEG preview/ }),
+    page.getByRole("img", { name: /Synthetic 18-channel VEEG preview/ }),
   ).toBeVisible();
   await expect(page.getByText("FP1-F7", { exact: true })).toBeVisible();
   await expect(page.getByText("CZ-PZ", { exact: true })).toBeVisible();
@@ -111,7 +111,7 @@ test("privacy preview shows the fixed 18-channel contract and an accessible divi
   expect(signalRequests).toHaveLength(0);
 });
 
-test("EEG analysis shows an empty state and no private fields", async ({
+test("VEEG analysis shows an empty state and no private fields", async ({
   page,
 }) => {
   await page.goto("/dashboard");
@@ -130,7 +130,7 @@ test("EEG analysis shows an empty state and no private fields", async ({
     ).toHaveCSS("opacity", "0");
   }
   await expect(
-    page.getByRole("heading", { name: "EEG analysis" }),
+    page.getByRole("heading", { name: "VEEG analysis" }),
   ).toBeVisible();
   await expect(
     page.locator('[data-slot="button"]', { hasText: "New analysis" }),
@@ -148,12 +148,12 @@ test("EEG analysis shows an empty state and no private fields", async ({
     await expect(
       page
         .getByRole("navigation", { name: "Primary navigation" })
-        .getByRole("link", { name: "Video privacy" }),
+        .getByRole("link", { name: "New analysis", exact: true }),
     ).toBeVisible();
     await menuButton.click();
     await expect(menuButton).toHaveAttribute("aria-expanded", "false");
   }
-  await expect(page.getByText("No EEG analyses yet.")).toBeVisible();
+  await expect(page.getByText("No VEEG analyses yet.")).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -192,14 +192,14 @@ test("completed analysis opens a result with a score timeline and explanation no
     page.getByRole("heading", { name: "Development flag" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("region", { name: "EEG waveform review" }),
+    page.getByRole("region", { name: "VEEG waveform review" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("img", { name: /Display-normalized 18-channel EEG/ }),
+    page.getByRole("img", { name: /Display-normalized 18-channel VEEG/ }),
   ).toBeVisible();
   await expect(
     page.getByText(
-      "EEG viewing is disabled because the signal can remain biometrically sensitive.",
+      "VEEG viewing is disabled because the signal can remain biometrically sensitive.",
       { exact: true },
     ),
   ).toHaveCount(0);
@@ -289,7 +289,7 @@ test("recording navigation precedes result details on tablet", async ({
   expect(navigation!.y).toBeLessThan(timeline!.y);
 });
 
-test("EEG analysis groups recordings under the session timestamp", async ({
+test("VEEG analysis groups recordings under the session timestamp", async ({
   page,
 }) => {
   await page.goto("/upload");
@@ -302,11 +302,11 @@ test("EEG analysis groups recordings under the session timestamp", async ({
     page.getByRole("button", { name: "Submit for analysis" }),
   ).toBeVisible({ timeout: 15000 });
   await page.getByRole("button", { name: "Submit for analysis" }).click();
-  await page.getByRole("link", { name: "Back to EEG analysis" }).click();
+  await page.getByRole("link", { name: "Back to VEEG analysis" }).click();
   await expect(
-    page.getByRole("heading", { name: "EEG analysis" }),
+    page.getByRole("heading", { name: "VEEG analysis" }),
   ).toBeVisible();
-  await expect(page.getByText(/1 EEG session/)).toBeVisible();
+  await expect(page.getByText(/1 VEEG session/)).toBeVisible();
   await expect(page.getByText("Submitted")).toBeVisible();
   const sessionRegion = page.getByRole("region", { name: /MDS-/ });
   await expect(
@@ -324,7 +324,7 @@ test("EEG analysis groups recordings under the session timestamp", async ({
   ).toBeVisible();
 });
 
-test("completed sessions can be deleted from EEG analysis", async ({
+test("completed sessions can be deleted from VEEG analysis", async ({
   page,
 }) => {
   await page.goto("/upload");
@@ -341,7 +341,7 @@ test("completed sessions can be deleted from EEG analysis", async ({
   await expect(page.getByLabel("Status: Complete").first()).toBeVisible({
     timeout: 15000,
   });
-  await page.getByRole("link", { name: "Back to EEG analysis" }).click();
+  await page.getByRole("link", { name: "Back to VEEG analysis" }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
   const dashboardSession = page.getByRole("region", { name: /MDS-/ });
   await dashboardSession
@@ -358,7 +358,7 @@ test("completed sessions can be deleted from EEG analysis", async ({
     .getByRole("alertdialog", { name: "Delete this session?" })
     .getByRole("button", { name: "Delete session" })
     .click({ force: true });
-  await expect(page.getByText("No EEG analyses yet.")).toBeVisible();
+  await expect(page.getByText("No VEEG analyses yet.")).toBeVisible();
 });
 
 test("unknown result has a recoverable error state", async ({ page }) => {
@@ -367,11 +367,13 @@ test("unknown result has a recoverable error state", async ({ page }) => {
     page.getByRole("heading", { name: "Result unavailable" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("link", { name: /Return to EEG analysis/ }),
+    page.getByRole("link", { name: /Return to VEEG analysis/ }),
   ).toBeVisible();
 });
 
-test("one upload can start EEG and video review together", async ({ page }) => {
+test("one upload can start VEEG and video review together", async ({
+  page,
+}) => {
   const videoJob = {
     job_id: "VID-paired",
     label: "Paired video review",
@@ -418,7 +420,7 @@ test("one upload can start EEG and video review together", async ({ page }) => {
     page.getByRole("heading", { name: "Analysis report" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "EEG analysis" }),
+    page.getByRole("heading", { name: "VEEG analysis" }),
   ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Video seizure review" }),

@@ -95,26 +95,10 @@ test("uploads and reviews window supports without confidence percentages", async
   ).toBeVisible();
   await expect(page.getByRole("img", { name: /Threshold 0.5/ })).toBeVisible();
   await expect(page.locator("main")).not.toContainText(/\d+%|confidence/i);
-  // Exercise the seek handler without pretending a mocked response is media.
-  await page.locator("video").evaluate((element) => {
-    Object.defineProperty(element, "currentTime", {
-      configurable: true,
-      writable: true,
-      value: 0,
-    });
-  });
-  await page.getByRole("button", { name: /Event 1/ }).click();
-  await expect
-    .poll(() =>
-      page
-        .locator("video")
-        .evaluate((element: HTMLVideoElement) => element.currentTime),
-    )
-    .toBe(1);
+  // Protected video is intentionally not published as a playback asset.
+  await expect(page.locator("video")).toHaveCount(0);
   await page.getByText("All window scores", { exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "0:01.0–0:03.0", exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText("0:01.0–0:03.0", { exact: true })).toBeVisible();
 });
 
 test("shows actionable asset error without navigating to fabricated results", async ({
@@ -166,7 +150,7 @@ test("expired job removes playback and scores", async ({ page }) => {
   await page.goto("/video-detection/VID-synthetic");
   await expect(
     page.getByText(
-      "The retention period ended. Video and results have been removed.",
+      "The retention period ended. Source video and results have been removed.",
     ),
   ).toBeVisible();
   await expect(page.locator("video")).toHaveCount(0);

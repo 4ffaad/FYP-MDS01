@@ -81,7 +81,7 @@ test("registration, refresh, readable errors, login and logout use the backend s
 
   await page.reload();
   await expect(
-    page.getByRole("heading", { name: "EEG analysis" }),
+    page.getByRole("heading", { name: "VEEG analysis" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login/);
