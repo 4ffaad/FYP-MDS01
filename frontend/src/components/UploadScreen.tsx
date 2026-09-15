@@ -2,6 +2,7 @@
 
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import {
   deleteUploadDraft,
@@ -17,6 +18,11 @@ import { Icon } from "./Icon";
 import { PrivacyPreview } from "./PrivacyPreview";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+
+const LiquidSignal = dynamic(
+  () => import("./LiquidSignal").then((module) => module.LiquidSignal),
+  { ssr: false },
+);
 
 const DRAFT_STORAGE_KEY = "mds01.active-upload-draft";
 
@@ -558,10 +564,10 @@ function AdditionalPicker({
 function PipelinePreview() {
   return (
     <section
-      className="glass-panel mt-8 rounded-2xl border border-rule px-5 py-5 sm:px-6"
+      className="liquid-surface glass-panel relative mt-8 overflow-hidden rounded-2xl border border-rule px-5 py-5 sm:px-6"
       aria-labelledby="pipeline-preview-heading"
     >
-      <div className="flex items-center justify-between gap-4">
+      <div className="relative z-10 flex items-start justify-between gap-4">
         <div>
           <p className="eyebrow">At a glance</p>
           <h2
@@ -571,9 +577,9 @@ function PipelinePreview() {
             One upload, two protected paths
           </h2>
         </div>
-        <Icon name="lock" className="size-6 text-teal" />
+        <LiquidSignal />
       </div>
-      <div className="mt-5 grid gap-3 text-xs font-semibold text-ink-muted sm:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] sm:items-center">
+      <div className="relative z-10 mt-5 grid gap-3 text-xs font-semibold text-ink-muted sm:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] sm:items-center">
         {(["Upload", "Privacy", "Model", "Review"] as const).map(
           (label, index) => (
             <span key={label} className="contents">

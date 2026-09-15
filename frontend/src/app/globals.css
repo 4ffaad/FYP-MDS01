@@ -390,6 +390,46 @@ select {
   animation: upload-check-pop 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+.liquid-surface {
+  isolation: isolate;
+  background:
+    linear-gradient(120deg, rgb(255 255 255 / 0.9), rgb(237 246 255 / 0.72)),
+    var(--color-surface);
+}
+
+.liquid-surface::before {
+  position: absolute;
+  inset: -45% 32% auto -8%;
+  height: 13rem;
+  border-radius: 999px;
+  background: linear-gradient(
+    110deg,
+    transparent,
+    rgb(255 255 255 / 0.88),
+    transparent
+  );
+  content: "";
+  filter: blur(18px);
+  opacity: 0.65;
+  pointer-events: none;
+  transform: rotate(-8deg);
+}
+
+.liquid-signal {
+  width: min(13rem, 42vw);
+  height: 4.25rem;
+  flex: 0 1 13rem;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+@media (max-width: 520px) {
+  .liquid-signal {
+    width: 8rem;
+    height: 3.5rem;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
