@@ -321,6 +321,75 @@ select {
   animation: enter-up 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+.upload-lane {
+  position: relative;
+  overflow: hidden;
+}
+
+.upload-lane::after {
+  position: absolute;
+  right: -3rem;
+  bottom: -4rem;
+  width: 10rem;
+  height: 10rem;
+  border-radius: 999px;
+  background: rgb(20 115 230 / 0.06);
+  content: "";
+  pointer-events: none;
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.upload-lane:hover::after,
+.upload-lane.is-selected::after {
+  transform: scale(1.35);
+}
+
+.upload-badge {
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+  background: var(--color-surface-soft);
+  padding: 0.34rem 0.65rem;
+  color: var(--color-ink-faint);
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.upload-badge.is-selected {
+  border-color: rgb(20 115 230 / 0.22);
+  background: var(--color-teal-soft);
+  color: var(--color-teal-dark);
+}
+
+.upload-dropzone {
+  position: relative;
+  z-index: 1;
+}
+
+.upload-dropzone.is-dragging {
+  transform: scale(1.012);
+}
+
+@keyframes upload-check-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.7) rotate(-10deg);
+  }
+  70% {
+    transform: scale(1.12) rotate(2deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+}
+
+.upload-check-pop {
+  animation: upload-check-pop 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

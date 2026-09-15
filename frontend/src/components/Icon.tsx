@@ -18,6 +18,7 @@ import {
   SquareLock02Icon,
   Tick02Icon,
   Upload03Icon,
+  Video01Icon,
   Zip01Icon,
 } from "@hugeicons/core-free-icons";
 
@@ -39,7 +40,8 @@ type IconName =
   | "activity"
   | "trash"
   | "menu"
-  | "close";
+  | "close"
+  | "video";
 
 const iconMap = {
   upload: Upload03Icon,
@@ -60,6 +62,7 @@ const iconMap = {
   trash: Delete02Icon,
   menu: Menu01Icon,
   close: Cancel01Icon,
+  video: Video01Icon,
 } as const;
 
 /** Render one consistent Hugeicons stroke icon for product controls and states. */

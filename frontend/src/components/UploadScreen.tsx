@@ -66,9 +66,7 @@ export function UploadScreen() {
     };
   }, []);
 
-  async function handleEegChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0] ?? null;
-    if (!file) return;
+  async function stageEegFile(file: File) {
     setStep("staging");
     setProgress(0);
     setEegSize(file.size);
@@ -87,17 +85,25 @@ export function UploadScreen() {
       setError(
         uploadError instanceof Error
           ? uploadError.message
-          : "The EEG archive could not be secured.",
+          : "The VEEG archive could not be secured.",
       );
     }
   }
 
-  function handleVideoChange(event: ChangeEvent<HTMLInputElement>) {
+  async function handleEegChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
+    if (file) await stageEegFile(file);
+  }
+
+  function selectVideoFile(file: File | null) {
     if (!file) return;
     setVideoFile(file);
     setError(null);
     if (step !== "staging") setStep("configure");
+  }
+
+  function handleVideoChange(event: ChangeEvent<HTMLInputElement>) {
+    selectVideoFile(event.target.files?.[0] ?? null);
   }
 
   async function handleReset() {
@@ -193,11 +199,11 @@ export function UploadScreen() {
           <div className="mt-7 max-w-3xl">
             <p className="eyebrow">New review</p>
             <h1 className="mt-3 text-[clamp(2rem,5vw,2.8rem)] font-semibold leading-[1.06] tracking-[-0.045em] text-ink">
-              Upload the data for one analysis
+              Start a VEEG analysis
             </h1>
             <p className="mt-4 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
-              Add VEEG, video, or both. MDS01 detects what you provide and keeps
-              each modality on its own privacy-first processing path.
+              Select one input or pair both. VEEG and video stay on separate
+              privacy-first paths, then return as one review.
             </p>
           </div>
 
@@ -205,6 +211,7 @@ export function UploadScreen() {
             <ModalityPicker
               id="eeg-file"
               title="VEEG archive"
+              eyebrow="Required"
               description="A ZIP containing EDF recordings. The archive is encrypted and staged before you choose the signal treatment."
               accept=".zip,application/zip"
               icon="activity"
@@ -217,24 +224,27 @@ export function UploadScreen() {
               }
               inputRef={eegInputRef}
               onChange={(event) => void handleEegChange(event)}
+              onFile={stageEegFile}
             />
             <ModalityPicker
               id="video-file"
               title="Patient video"
+              eyebrow="Optional"
               description="An MP4, MOV, or WebM clip. Face redaction runs before VSViG pose extraction and visual scoring."
               accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm"
-              icon="activity"
+              icon="video"
               busy={step === "staging"}
               selected={Boolean(videoFile)}
               selectedLabel="Video ready to submit"
               onChange={handleVideoChange}
+              onFile={selectVideoFile}
             />
           </div>
 
           {step === "staging" && (
             <div className="mt-6 max-w-xl" aria-live="polite">
               <div className="flex justify-between text-xs text-ink-muted">
-                <span>Securing temporary EEG upload</span>
+                <span>Securing temporary VEEG upload</span>
                 <span className="font-mono tabular-nums">{progress}%</span>
               </div>
               <Progress
@@ -270,7 +280,7 @@ export function UploadScreen() {
           </h1>
           <p className="mt-4 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
             The selected modality determines the privacy treatment and model
-            path. A combined upload creates one review page with separate EEG
+            path. A combined upload creates one review page with separate VEEG
             and video status.
           </p>
         </div>
@@ -295,7 +305,7 @@ export function UploadScreen() {
               {draft && !videoFile && (
                 <AdditionalPicker
                   id="video-file"
-                  label="Add a patient video too"
+                  label="Add patient video"
                   accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm"
                   onChange={handleVideoChange}
                 />
@@ -303,7 +313,7 @@ export function UploadScreen() {
               {videoFile && !draft && (
                 <AdditionalPicker
                   id="eeg-file"
-                  label="Add an EEG archive too"
+                  label="Add VEEG archive"
                   accept=".zip,application/zip"
                   inputRef={eegInputRef}
                   onChange={(event) => void handleEegChange(event)}
@@ -313,7 +323,7 @@ export function UploadScreen() {
                 <div className="rounded-xl border border-teal bg-teal-soft/40 px-4 py-4">
                   <PipelineRow
                     icon="activity"
-                    title="EEG analysis"
+                    title="VEEG analysis"
                     detail={`Encrypt → metadata scrub${signalObfuscation ? " → signal obfuscation" : ""} → H5 model → report`}
                   />
                   <p className="mt-2 pl-8 text-xs font-semibold text-teal-dark">
@@ -369,7 +379,7 @@ export function UploadScreen() {
                 <p>
                   <span className="font-semibold text-ink">
                     {draft
-                      ? `${formatBytes(eegSize ?? 0)} EEG archive staged`
+                      ? `${formatBytes(eegSize ?? 0)} VEEG archive staged`
                       : "Video selected"}
                     .
                   </span>{" "}
@@ -381,7 +391,7 @@ export function UploadScreen() {
                   className="mt-3 block text-sm font-semibold text-teal-dark underline underline-offset-4"
                   href={`/sessions/${encodeURIComponent(partialSessionId)}`}
                 >
-                  Open the submitted EEG analysis
+                  Open the submitted VEEG analysis
                 </Link>
               )}
               <Button
@@ -415,6 +425,7 @@ export function UploadScreen() {
 function ModalityPicker({
   id,
   title,
+  eyebrow,
   description,
   accept,
   icon,
@@ -423,48 +434,68 @@ function ModalityPicker({
   selectedLabel,
   inputRef,
   onChange,
+  onFile,
 }: {
   id: string;
   title: string;
+  eyebrow: "Required" | "Optional";
   description: string;
   accept: string;
-  icon: "activity";
+  icon: "activity" | "video";
   busy: boolean;
   selected: boolean;
   selectedLabel: string;
   inputRef?: React.RefObject<HTMLInputElement | null>;
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onFile: (file: File) => void | Promise<void>;
 }) {
+  const [dragging, setDragging] = useState(false);
+
   return (
     <section
-      className={`glass-panel rounded-2xl border p-5 transition-colors sm:p-6 ${selected ? "border-teal bg-teal-soft/35" : "border-rule bg-surface/80 hover:border-rule-strong"}`}
+      className={`upload-lane glass-panel rounded-2xl border p-5 transition-all sm:p-6 ${selected ? "is-selected border-teal bg-teal-soft/35" : "border-rule bg-surface/80 hover:-translate-y-0.5 hover:border-teal/40"}`}
       aria-labelledby={`${id}-heading`}
     >
-      <div className="flex items-start gap-4">
-        <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-ink text-white">
+      <div className="flex items-start justify-between gap-4">
+        <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-ink text-white shadow-sm">
           <Icon name={icon} className="size-6" weight="bold" />
         </span>
-        <div className="min-w-0">
-          <h2
-            id={`${id}-heading`}
-            className="text-lg font-bold tracking-[-0.02em]"
-          >
-            {title}
-          </h2>
-          <p className="mt-2 text-sm leading-6 text-ink-muted">{description}</p>
-        </div>
+        <span className={`upload-badge ${selected ? "is-selected" : ""}`}>
+          {selected ? "Ready" : eyebrow}
+        </span>
+      </div>
+      <div className="mt-5 min-w-0">
+        <h2
+          id={`${id}-heading`}
+          className="text-lg font-bold tracking-[-0.02em]"
+        >
+          {title}
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-ink-muted">{description}</p>
       </div>
       <label
-        className="mt-6 flex min-h-32 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-rule-strong bg-surface-soft px-5 py-6 text-center outline-none transition-colors hover:border-teal hover:bg-teal-soft/35 focus-within:border-teal focus-within:ring-4 focus-within:ring-teal/20"
+        className={`upload-dropzone mt-6 flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed px-5 py-6 text-center outline-none transition-all focus-within:border-teal focus-within:ring-4 focus-within:ring-teal/20 ${dragging ? "is-dragging border-teal bg-teal-soft/60" : "border-rule-strong bg-surface-soft hover:border-teal hover:bg-teal-soft/35"}`}
         htmlFor={id}
+        onDragEnter={(event) => {
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragOver={(event) => event.preventDefault()}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          const file = event.dataTransfer.files[0];
+          if (file) void onFile(file);
+        }}
       >
         <Icon
           name={busy ? "spinner" : selected ? "check" : "upload"}
-          className={`size-7 text-teal ${busy ? "animate-spin" : ""}`}
+          className={`size-7 text-teal ${busy ? "animate-spin" : selected ? "upload-check-pop" : ""}`}
           weight="bold"
         />
         <span className="mt-3 text-sm font-bold text-ink">
-          {selected ? selectedLabel : `Choose ${title.toLowerCase()}`}
+          {selected ? selectedLabel : "Drop here or browse"}
         </span>
         <span className="mt-1 text-xs text-ink-muted">
           {selected
@@ -508,7 +539,9 @@ function AdditionalPicker({
         <Icon name="upload" className="size-4" />
         {label}
       </span>
-      <span className="text-xs font-medium text-ink-muted">Optional</span>
+      <span className="rounded-full bg-surface px-2.5 py-1 text-[0.68rem] font-bold uppercase tracking-[0.08em] text-ink-faint">
+        Optional
+      </span>
       <input
         ref={inputRef}
         className="sr-only"
@@ -555,7 +588,7 @@ function PipelinePreview() {
         )}
       </div>
       <p className="mt-4 text-xs leading-5 text-ink-muted">
-        EEG uses the reviewed H5 contract. Video uses face-redacted frames with
+        VEEG uses the reviewed H5 contract. Video uses face-redacted frames with
         a separate VSViG review output. Both remain research-only.
       </p>
     </section>
