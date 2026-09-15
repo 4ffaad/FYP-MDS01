@@ -15,7 +15,7 @@ const CONTEXT_BEFORE_SECONDS = 600;
 const VIEWPORT_SECONDS = 10;
 const VIEWPORT_POINTS = 1800;
 
-/** Fetch and render one readable time window from a retained EEG representation. */
+/** Fetch and render one readable time window from a retained VEEG representation. */
 export function SignalViewer({
   recordId,
   predictionWindows,
@@ -80,7 +80,7 @@ export function SignalViewer({
         setUnavailable(
           error instanceof Error
             ? error.message
-            : "The retained EEG view is unavailable.",
+            : "The retained VEEG view is unavailable.",
         );
       })
       .finally(() => {
@@ -93,7 +93,7 @@ export function SignalViewer({
   if (!ENABLE_SIGNAL_PREVIEW)
     return (
       <SignalNotice>
-        EEG viewing is disabled because the signal can remain biometrically
+        VEEG viewing is disabled because the signal can remain biometrically
         sensitive.
       </SignalNotice>
     );
@@ -162,8 +162,8 @@ export function SignalViewer({
                   setSliderStart(value ?? browseStart)
                 }
                 onValueCommit={([value]) => moveTo(value ?? browseStart)}
-                aria-label="EEG review window start time"
-                aria-valuetext={`Showing ${formatTime(sliderStart)} to ${formatTime(currentEnd)} of the retained EEG`}
+                aria-label="VEEG review window start time"
+                aria-valuetext={`Showing ${formatTime(sliderStart)} to ${formatTime(currentEnd)} of the retained VEEG`}
                 className="[&_[data-slot=slider-track]]:h-2 [&_[data-slot=slider-track]]:bg-rule [&_[data-slot=slider-range]]:bg-teal [&_[data-slot=slider-thumb]]:size-5 [&_[data-slot=slider-thumb]]:border-2 [&_[data-slot=slider-thumb]]:border-teal [&_[data-slot=slider-thumb]]:bg-white"
               />
             </div>
@@ -208,7 +208,7 @@ export function SignalViewer({
         {loading && !preview ? (
           <div
             className="h-[39rem] animate-pulse rounded-lg bg-surface-soft"
-            aria-label="Loading EEG review window"
+            aria-label="Loading VEEG review window"
           />
         ) : unavailable ? (
           <div
@@ -233,7 +233,7 @@ export function SignalViewer({
         <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-ink-muted">
           <span className="inline-flex items-center gap-2">
             <span className="h-0.5 w-4 bg-[#315f93]" aria-hidden="true" />
-            Display-normalized EEG
+            Display-normalized VEEG
           </span>
           <span className="inline-flex items-center gap-2">
             <span
@@ -267,7 +267,7 @@ function SignalHeader({
           id="signal-heading"
           className="text-lg font-bold tracking-[-0.02em]"
         >
-          EEG waveform review
+          VEEG waveform review
         </h2>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-ink-muted">
           Ten seconds are shown at a time so the 18 channels remain readable.{" "}
@@ -437,7 +437,7 @@ function SignalCanvas({ preview }: { preview: SignalPreview }) {
         ref={canvasRef}
         className="block w-full rounded-lg border border-rule"
         role="img"
-        aria-label={`Display-normalized 18-channel EEG from ${formatTime(preview.timeSeconds[0] ?? 0)} to ${formatTime(preview.timeSeconds.at(-1) ?? 0)} with model threshold overlays`}
+        aria-label={`Display-normalized 18-channel VEEG from ${formatTime(preview.timeSeconds[0] ?? 0)} to ${formatTime(preview.timeSeconds.at(-1) ?? 0)} with model threshold overlays`}
       />
       <p className="mt-3 text-xs text-ink-muted">
         Threshold crossings in this view:{" "}

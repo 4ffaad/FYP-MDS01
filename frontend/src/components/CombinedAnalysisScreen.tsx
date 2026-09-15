@@ -8,7 +8,7 @@ import type { Session } from "@/lib/types";
 import { Icon } from "./Icon";
 import { Button } from "@/components/ui/button";
 
-const ACTIVE_EEG = new Set([
+const ACTIVE_VEEG = new Set([
   "queued",
   "validating",
   "deidentifying",
@@ -57,7 +57,7 @@ export function CombinedAnalysisScreen({
         setVideoJob(nextVideoJob);
         setError(null);
         if (
-          (eegResult && ACTIVE_EEG.has(eegResult.status)) ||
+          (eegResult && ACTIVE_VEEG.has(eegResult.status)) ||
           (nextVideoJob && ACTIVE_VIDEO.has(nextVideoJob.status))
         ) {
           timer = setTimeout(() => void load(), 2500);
@@ -106,7 +106,7 @@ export function CombinedAnalysisScreen({
             Analysis report
           </h1>
           <p className="mt-4 text-[0.98rem] leading-7 text-ink-muted">
-            EEG and video are processed independently, then brought together
+            VEEG and video are processed independently, then brought together
             here so a reviewer can see the privacy and model state for each
             modality.
           </p>
@@ -124,20 +124,20 @@ export function CombinedAnalysisScreen({
           {sessionId && (
             <AnalysisCard
               icon="activity"
-              title="EEG analysis"
+              title="VEEG analysis"
               status={session ? eegStatus(session.status) : "Loading"}
               detail={
                 session
                   ? `${session.progress.completedRecordings} of ${session.progress.totalRecordings} recordings complete`
-                  : "Loading the owner-scoped EEG session…"
+                  : "Loading the owner-scoped VEEG session…"
               }
-              steps={["Metadata scrub", "H5 model", "EEG report"]}
+              steps={["Metadata scrub", "H5 model", "VEEG report"]}
               href={
                 session
                   ? `/sessions/${encodeURIComponent(session.sessionId)}`
                   : undefined
               }
-              action="Open EEG session"
+              action="Open VEEG session"
             />
           )}
           {videoJobId && (

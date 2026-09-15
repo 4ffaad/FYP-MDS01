@@ -24,7 +24,7 @@ function syntheticTrace(channelIndex: number, obfuscated: boolean): string {
   return `M ${points.join(" L ")}`;
 }
 
-/** Show a deterministic synthetic comparison without requesting uploaded EEG. */
+/** Show a deterministic synthetic comparison without requesting uploaded VEEG. */
 export function PrivacyPreview({
   method,
   compact = false,
@@ -68,7 +68,7 @@ export function PrivacyPreview({
                 : (method.previewTitle ?? method.label)}
             </h2>
             <p className="mt-1 text-sm leading-6 text-ink-muted">
-              Illustrative preview — synthetic data, not your uploaded EEG.
+              Illustrative preview — synthetic data, not your uploaded VEEG.
             </p>
           </div>
           <span className="grid size-9 shrink-0 place-items-center rounded-md bg-teal-soft text-teal">
@@ -102,7 +102,7 @@ export function PrivacyPreview({
                 className="absolute inset-0 h-full w-full"
                 viewBox={`0 0 100 ${CHART_HEIGHT}`}
                 role="img"
-                aria-label={`Synthetic 18-channel EEG preview for ${method.label}`}
+                aria-label={`Synthetic 18-channel VEEG preview for ${method.label}`}
                 preserveAspectRatio="none"
               >
                 <defs>

@@ -42,7 +42,7 @@ export function CasesScreen() {
               Cases
             </h1>
             <p className="mt-4 text-[0.98rem] leading-7 text-ink-muted">
-              Follow privacy-safe analysis history across EEG, video, and model
+              Follow privacy-safe analysis history across VEEG, video, and model
               explanations. Case IDs are opaque and contain no patient
               information.
             </p>
@@ -88,7 +88,7 @@ export function CasesScreen() {
             <div className="px-5 py-16 sm:px-7">
               <h3 className="text-lg font-semibold">No cases yet.</h3>
               <p className="mt-2 max-w-md text-sm leading-6 text-ink-muted">
-                Start an analysis with EEG, video, or both. Your case will
+                Start an analysis with VEEG, video, or both. Your case will
                 appear here with its privacy and explanation trail.
               </p>
               <Button asChild variant="outline" className="mt-6">

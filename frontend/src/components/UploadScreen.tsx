@@ -124,7 +124,7 @@ export function UploadScreen() {
     event.preventDefault();
     if (!hasData || step === "staging") {
       setError(
-        "Choose an EEG archive, a patient video, or both before continuing.",
+        "Choose a VEEG archive, a patient video, or both before continuing.",
       );
       return;
     }
@@ -177,7 +177,7 @@ export function UploadScreen() {
       setSubmitting(false);
       setError(
         sessionId
-          ? "The EEG analysis was submitted, but the video could not be started. You can still review the EEG below."
+          ? "The VEEG analysis was submitted, but the video could not be started. You can still review the VEEG below."
           : submissionError instanceof Error
             ? submissionError.message
             : "The analysis could not be submitted.",
@@ -196,7 +196,7 @@ export function UploadScreen() {
               Upload the data for one analysis
             </h1>
             <p className="mt-4 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
-              Add EEG, video, or both. MDS01 detects what you provide and keeps
+              Add VEEG, video, or both. MDS01 detects what you provide and keeps
               each modality on its own privacy-first processing path.
             </p>
           </div>
@@ -204,7 +204,7 @@ export function UploadScreen() {
           <div className="mt-10 grid gap-5 lg:grid-cols-2">
             <ModalityPicker
               id="eeg-file"
-              title="EEG archive"
+              title="VEEG archive"
               description="A ZIP containing EDF recordings. The archive is encrypted and staged before you choose the signal treatment."
               accept=".zip,application/zip"
               icon="activity"

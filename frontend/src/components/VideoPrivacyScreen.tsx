@@ -65,7 +65,7 @@ export function VideoPrivacyUploadScreen() {
           </h1>
           <p className="mt-3 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
             Upload a video and review a face-redacted protected output. Video is
-            processed separately from EEG analysis.
+            processed separately from VEEG analysis.
           </p>
         </div>
 

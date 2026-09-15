@@ -85,7 +85,7 @@ function ResultContent({ recordId }: { recordId: string }) {
     ? "Estimated window probability"
     : "Prediction score timeline";
   const scoreDescription = calibrated
-    ? "Each point estimates the probability for one four-second EEG window. Highlighted windows crossed the configured threshold."
+    ? "Each point estimates the probability for one four-second VEEG window. Highlighted windows crossed the configured threshold."
     : "Full-recording overview. Highlighted windows crossed the configured threshold; select a point for its exact time.";
 
   return (
@@ -543,7 +543,7 @@ function ResultError({ message }: { message: string }) {
           className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-teal-dark underline underline-offset-4"
           href="/dashboard"
         >
-          Return to EEG analysis <Icon name="arrow" className="size-4" />
+          Return to VEEG analysis <Icon name="arrow" className="size-4" />
         </Link>
       </div>
     </div>

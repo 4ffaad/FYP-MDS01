@@ -65,7 +65,7 @@ export function LoginScreen() {
                   {registering ? "Create your account" : "Sign in to MDS01"}
                 </h1>
                 <p className="mt-4 max-w-sm text-[0.96rem] leading-7 text-ink-muted">
-                  Your EEG analyses and video review jobs stay scoped to your
+                  Your VEEG analyses and video review jobs stay scoped to your
                   account.
                 </p>
               </motion.div>
@@ -233,7 +233,7 @@ function WorkflowDiagram() {
         <WorkflowNode
           icon="upload"
           title="Upload"
-          detail="EEG, video, or both"
+          detail="VEEG, video, or both"
         />
         <WorkflowNode
           icon="lock"

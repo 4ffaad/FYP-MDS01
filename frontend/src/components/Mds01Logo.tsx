@@ -11,7 +11,7 @@ export function Mds01Logo({ context = "eeg" }: Mds01LogoProps) {
         viewBox="0 0 40 40"
         fill="none"
         role="img"
-        aria-label="MDS01 EEG signal mark"
+        aria-label="MDS01 VEEG signal mark"
       >
         <path
           d="M5.5 22.5c5.2 0 5.2-10.5 10.3-10.5 5.2 0 5.2 17.2 10.4 17.2 5.1 0 5.1-10.7 8.3-10.7"
@@ -33,7 +33,7 @@ export function Mds01Logo({ context = "eeg" }: Mds01LogoProps) {
               ? "Video Privacy"
               : context === "workspace"
                 ? "Analysis Workspace"
-                : "EEG Research"}
+                : "VEEG Research"}
         </span>
       </span>
     </span>

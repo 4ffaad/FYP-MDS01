@@ -5,11 +5,11 @@ import "./globals.css";
 export const metadata: Metadata = {
   applicationName: "MDS01",
   title: {
-    default: "MDS01 · EEG Analysis & Video Privacy",
+    default: "MDS01 · VEEG Analysis & Video Privacy",
     template: "%s · MDS01",
   },
   description:
-    "A premium research workspace for privacy-aware EEG analysis and integrated patient-video model review.",
+    "A premium research workspace for privacy-aware VEEG analysis and integrated patient-video model review.",
   authors: [{ name: "MDS01 Project Group" }],
   robots: { index: false, follow: false },
 };

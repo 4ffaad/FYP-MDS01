@@ -141,7 +141,7 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
           href="/dashboard"
         >
           <Icon name="back" className="size-4" />
-          Back to EEG analysis
+          Back to VEEG analysis
         </Link>
 
         <section
@@ -310,7 +310,7 @@ function SessionError({ message }: { message: string }) {
           className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-teal-dark underline underline-offset-4"
           href="/dashboard"
         >
-          Return to EEG analysis <Icon name="arrow" className="size-4" />
+          Return to VEEG analysis <Icon name="arrow" className="size-4" />
         </Link>
       </div>
     </div>

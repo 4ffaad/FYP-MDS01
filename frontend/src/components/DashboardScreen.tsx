@@ -148,7 +148,7 @@ export function DashboardScreen() {
                 Analysis workspace
               </h1>
               <p className="mt-4 max-w-xl text-[0.98rem] leading-7 text-ink-muted">
-                Keep EEG and patient-video review in one place. Each modality
+                Keep VEEG and patient-video review in one place. Each modality
                 keeps its own privacy treatment, model, and evidence trail.
               </p>
             </div>
@@ -171,7 +171,7 @@ export function DashboardScreen() {
               icon="list"
             />
             <Metric
-              label="EEG recordings"
+              label="VEEG recordings"
               value={recordingCount}
               detail={`${completedCount} complete`}
               icon="file"
@@ -179,7 +179,7 @@ export function DashboardScreen() {
             <Metric
               label="Modalities"
               value="2"
-              detail="EEG + video"
+              detail="VEEG + video"
               icon="shield"
             />
           </div>
@@ -197,10 +197,10 @@ export function DashboardScreen() {
                   id="eeg-analysis-heading"
                   className="mt-1 text-lg font-bold"
                 >
-                  EEG analysis
+                  VEEG analysis
                 </h2>
                 <p className="mt-1 text-sm text-ink-muted">
-                  {sessions.length} EEG{" "}
+                  {sessions.length} VEEG{" "}
                   {sessions.length === 1 ? "session" : "sessions"} · Window
                   scores, flagged intervals, and optional waveform review.
                 </p>
@@ -362,13 +362,13 @@ function EmptyDashboard({ filtered }: { filtered: boolean }) {
     <div className="px-5 py-16 sm:px-7 sm:py-24">
       <h3 className="text-lg font-semibold">
         {filtered
-          ? "No EEG sessions match this status."
-          : "No EEG analyses yet."}
+          ? "No VEEG sessions match this status."
+          : "No VEEG analyses yet."}
       </h3>
       <p className="mt-2 max-w-md text-sm leading-6 text-ink-muted">
         {filtered
-          ? "Choose another status to see the rest of your EEG sessions."
-          : "Start with EEG, video, or both from New analysis above."}
+          ? "Choose another status to see the rest of your VEEG sessions."
+          : "Start with VEEG, video, or both from New analysis above."}
       </p>
       <Link
         className="mt-5 inline-flex min-h-10 items-center gap-2 text-sm font-bold text-teal-dark underline underline-offset-4"

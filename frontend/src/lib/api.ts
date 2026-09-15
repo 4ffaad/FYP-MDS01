@@ -900,16 +900,23 @@ export async function getCases(signal?: AbortSignal): Promise<CaseSummary[]> {
       explanationReady: toDisplayStatus(session.status) === "complete",
     }));
   }
-  const cases = await getJson<BackendCaseSummary[]>("/api/cases", signal);
-  return cases.map((item) => ({
-    caseId: item.case_id,
-    modalities: item.modalities,
-    analysisCount: item.analysis_count,
-    latestCreatedAt: item.latest_created_at,
-    status: item.status,
-    flaggedIntervalCount: item.flagged_interval_count,
-    explanationReady: item.explanation_ready,
-  }));
+  try {
+    const cases = await getJson<BackendCaseSummary[]>("/api/cases", signal);
+    return cases.map((item) => ({
+      caseId: item.case_id,
+      modalities: item.modalities,
+      analysisCount: item.analysis_count,
+      latestCreatedAt: item.latest_created_at,
+      status: item.status,
+      flaggedIntervalCount: item.flagged_interval_count,
+      explanationReady: item.explanation_ready,
+    }));
+  } catch (error) {
+    // Older running containers may not have the case projection yet. Treat
+    // that deployment state as an empty case list, not a workspace failure.
+    if (error instanceof ApiError && error.status === 404) return [];
+    throw error;
+  }
 }
 
 export async function getCase(
