@@ -103,9 +103,11 @@ def require_request_origin(request: Request) -> None:
 
 
 def owner_id(user: User | None) -> int | None:
-    """Return an internal owner key, or None for explicit local test mode."""
+    """Return an owner filter, or None for local tests and the demo admin."""
 
-    return user.id if isinstance(user, User) else None
+    if not isinstance(user, User) or user.is_admin:
+        return None
+    return user.id
 
 
 @lru_cache(maxsize=4)

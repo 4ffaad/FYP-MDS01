@@ -21,10 +21,16 @@ from backend.app.video_detection.contract import DetectionError
 router = APIRouter(prefix="/api/video-detection", tags=["video-detection"])
 
 
-def account(user: User | None = Depends(require_api_auth)) -> int:
+def account(user: User | None = Depends(require_api_auth)) -> User:
     if user is None or user.id is None:
         raise HTTPException(401, "Sign in to use video detection.")
-    return user.id
+    return user
+
+
+def scoped_owner(user: User) -> int | None:
+    """Return the owner filter, leaving the demo admin unfiltered for reads."""
+
+    return None if user.is_admin else user.id
 
 
 def owned(job_id, owner, db, storage):
@@ -37,8 +43,11 @@ def owned(job_id, owner, db, storage):
 @router.post("/jobs", status_code=202)
 async def create(background_tasks: BackgroundTasks, video: UploadFile = File(...),
                  case_id: str | None = Form(None),
-                 owner: int = Depends(account), db: Session = Depends(get_session)):
+                 current_user: User = Depends(account), db: Session = Depends(get_session)):
     case_id = case_id if isinstance(case_id, str) and case_id else None
+    owner = current_user.id
+    if owner is None:
+        raise HTTPException(401, "Sign in to use video detection.")
     try:
         if os.environ.get("VIDEO_DETECTION_ENABLED", "false").lower() != "true":
             raise HTTPException(503, "Enable the local video detection runtime using the setup guide.")
@@ -46,9 +55,9 @@ async def create(background_tasks: BackgroundTasks, video: UploadFile = File(...
             if repository.has_active_job(db):
                 raise HTTPException(409, "A video is already processing. Try again after it finishes.")
             job = (
-                await service.create_job(db, VideoStorage(), video, owner, case_id)
+                await service.create_job(db, VideoStorage(), video, current_user.id, case_id)
                 if case_id
-                else await service.create_job(db, VideoStorage(), video, owner)
+                else await service.create_job(db, VideoStorage(), video, current_user.id)
             )
         background_tasks.add_task(service.process_job, job.job_id)
         return {"job": service.public_job(db, job, VideoStorage())}
@@ -65,21 +74,21 @@ async def create(background_tasks: BackgroundTasks, video: UploadFile = File(...
 
 
 @router.get("/jobs")
-def listing(owner: int = Depends(account), db: Session = Depends(get_session)):
+def listing(current_user: User = Depends(account), db: Session = Depends(get_session)):
     storage = VideoStorage()
-    return {"jobs": [service.public_job(db, job, storage) for job in repository.list_jobs(db, owner)]}
+    return {"jobs": [service.public_job(db, job, storage) for job in repository.list_jobs(db, scoped_owner(current_user))]}
 
 
 @router.get("/jobs/{job_id}")
-def detail(job_id: str, owner: int = Depends(account), db: Session = Depends(get_session)):
+def detail(job_id: str, current_user: User = Depends(account), db: Session = Depends(get_session)):
     storage = VideoStorage()
-    return {"job": service.public_job(db, owned(job_id, owner, db, storage), storage)}
+    return {"job": service.public_job(db, owned(job_id, scoped_owner(current_user), db, storage), storage)}
 
 
 @router.get("/jobs/{job_id}/predictions")
-def predictions(job_id: str, owner: int = Depends(account), db: Session = Depends(get_session)):
+def predictions(job_id: str, current_user: User = Depends(account), db: Session = Depends(get_session)):
     storage = VideoStorage()
-    job = owned(job_id, owner, db, storage)
+    job = owned(job_id, scoped_owner(current_user), db, storage)
     if job.status != "ready" or not job.predictions_path:
         raise HTTPException(409, "Detection results are not available.")
     path = None

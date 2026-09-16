@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from sqlmodel import Session
 
 from backend.app.api.health import router as health_router
 from backend.app.api.auth import router as auth_router
@@ -17,14 +18,19 @@ from backend.app.api.video_detection import router as video_detection_router
 from backend.app.api.cases import router as cases_router
 from backend.app.core.config import CORS_ORIGINS, MODEL_RUNTIME, auth_configuration
 from backend.app.core.security import require_api_auth
+from backend.app.database.db import engine
 from backend.app.ml.model_loader import get_inference_service
+from backend.app.services.auth_service import ensure_demo_admin
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Validate authentication and the selected model runtime before serving."""
 
-    auth_configuration()
+    mode, _domain, _audience = auth_configuration()
+    if mode == "local-accounts":
+        with Session(engine) as db:
+            ensure_demo_admin(db)
     if MODEL_RUNTIME == "h5":
         # Loading here makes a missing TensorFlow installation, artifact, or
         # reviewed contract fail at startup instead of after an upload returns

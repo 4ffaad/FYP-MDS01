@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import os
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
@@ -16,7 +17,12 @@ from backend.app.database.models.eeg import AnalysisStatus, EEGRecording, EEGSes
 from backend.app.database.models.video import VideoPrivacyJob, VideoPrivacyProfile
 from backend.app.main import app
 from backend.app.database.models.auth import AuthSession
-from backend.app.services.auth_service import authenticate_local_user, register_user, token_hash
+from backend.app.services.auth_service import (
+    authenticate_local_user,
+    ensure_demo_admin,
+    register_user,
+    token_hash,
+)
 
 
 @contextmanager
@@ -72,6 +78,58 @@ class LocalAuthenticationTests(unittest.TestCase):
             headers=self._headers(),
         )
         self.assertEqual(response.status_code, 201, response.text)
+
+    def test_eight_character_password_is_accepted(self) -> None:
+        with Session(self.engine) as db:
+            register_user(db, "eight@example.test", "12345678")
+            with self.assertRaisesRegex(ValueError, "8 characters"):
+                register_user(db, "seven@example.test", "1234567")
+
+    def test_demo_admin_is_seeded_and_can_see_all_sessions(self) -> None:
+        with Session(self.engine) as db, patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "development",
+                "AUTH_MODE": "local-accounts",
+                "DEMO_ADMIN_ENABLED": "true",
+                "DEMO_ADMIN_EMAIL": "admin@mds01.local",
+                "DEMO_ADMIN_PASSWORD": "12345678",
+            },
+        ):
+            admin = ensure_demo_admin(db)
+            self.assertEqual(admin.email, "admin@mds01.local")
+            self.assertEqual(admin.display_name, "admin")
+            self.assertTrue(admin.is_admin)
+            self.assertIs(ensure_demo_admin(db), admin)
+            alice = register_user(db, "alice@example.test", "correct horse battery")
+            bob = register_user(db, "bob@example.test", "correct horse battery")
+            db.add_all(
+                [
+                    EEGSession(
+                        session_id="SES-ALICE",
+                        owner_user_id=alice.id,
+                        status=AnalysisStatus.COMPLETED,
+                    ),
+                    EEGSession(
+                        session_id="SES-BOB",
+                        owner_user_id=bob.id,
+                        status=AnalysisStatus.COMPLETED,
+                    ),
+                ]
+            )
+            db.commit()
+
+        with self._client() as client:
+            login = client.post(
+                "/api/auth/login",
+                json={"email": "admin@mds01.local", "password": "12345678"},
+                headers=self._headers(),
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+            self.assertEqual(
+                {item["session_id"] for item in client.get("/api/sessions").json()},
+                {"SES-ALICE", "SES-BOB"},
+            )
 
     def test_register_login_session_and_logout(self) -> None:
         with self._client() as client:

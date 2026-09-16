@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -13,7 +14,10 @@ from sqlmodel import Session, select
 from backend.app.database.models.auth import AuthSession, User
 
 
-MIN_PASSWORD_LENGTH = 12
+MIN_PASSWORD_LENGTH = 8
+DEMO_ADMIN_PUBLIC_ID = "USR-DEMO-ADMIN"
+DEFAULT_DEMO_ADMIN_EMAIL = "admin@mds01.local"
+DEFAULT_DEMO_ADMIN_PASSWORD = "12345678"
 SESSION_TTL = timedelta(hours=8)
 _SCRYPT_N = 2**14
 _SCRYPT_R = 8
@@ -101,6 +105,42 @@ def register_user(db: Session, email: str, password: str) -> User:
         email=normalized_email,
         password_hash=hash_password(password),
         display_name=normalized_email.split("@", 1)[0][:80],
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def ensure_demo_admin(db: Session) -> User | None:
+    """Create the local demo administrator only in development mode."""
+
+    if (
+        os.getenv("APP_ENV", "development").strip().lower() != "development"
+        or os.getenv("AUTH_MODE", "local").strip().lower() != "local-accounts"
+        or os.getenv("DEMO_ADMIN_ENABLED", "true").strip().lower() != "true"
+    ):
+        return None
+
+    email = normalize_email(os.getenv("DEMO_ADMIN_EMAIL", DEFAULT_DEMO_ADMIN_EMAIL))
+    password = os.getenv("DEMO_ADMIN_PASSWORD", DEFAULT_DEMO_ADMIN_PASSWORD)
+    validate_password(password)
+    user = db.exec(select(User).where(User.email == email)).first()
+    if user is not None:
+        if user.public_id == DEMO_ADMIN_PUBLIC_ID and not user.is_admin:
+            user.is_admin = True
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        return user
+
+    user = User(
+        public_id=DEMO_ADMIN_PUBLIC_ID,
+        email=email,
+        password_hash=hash_password(password),
+        auth_provider="local",
+        display_name="admin",
+        is_admin=True,
     )
     db.add(user)
     db.commit()

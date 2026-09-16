@@ -2,20 +2,24 @@
 
 from datetime import datetime
 
+from sqlalchemy import desc
 from sqlmodel import Session, select
 from backend.app.database.models.video_detection import VideoDetectionJob
 
 
-def get_job(db: Session, job_id: str, owner: int) -> VideoDetectionJob | None:
-    return db.exec(select(VideoDetectionJob).where(
-        VideoDetectionJob.job_id == job_id, VideoDetectionJob.owner_user_id == owner,
-    )).first()
+def get_job(db: Session, job_id: str, owner: int | None) -> VideoDetectionJob | None:
+    statement = select(VideoDetectionJob).where(VideoDetectionJob.job_id == job_id)
+    if owner is not None:
+        statement = statement.where(VideoDetectionJob.owner_user_id == owner)
+    return db.exec(statement).first()
 
 
-def list_jobs(db: Session, owner: int) -> list[VideoDetectionJob]:
-    return list(db.exec(select(VideoDetectionJob).where(
-        VideoDetectionJob.owner_user_id == owner,
-    ).order_by(VideoDetectionJob.created_at.desc())).all())
+def list_jobs(db: Session, owner: int | None) -> list[VideoDetectionJob]:
+    statement = select(VideoDetectionJob)
+    if owner is not None:
+        statement = statement.where(VideoDetectionJob.owner_user_id == owner)
+    created_at = getattr(VideoDetectionJob, "created_at")
+    return list(db.exec(statement.order_by(desc(created_at))).all())
 
 
 def has_active_job(db: Session) -> bool:

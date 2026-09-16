@@ -26,6 +26,7 @@ class User(SQLModel, table=True):
     external_subject: str | None = Field(default=None, index=True, unique=True, max_length=256)
     display_name: str = Field(default="", max_length=80)
     active: bool = True
+    is_admin: bool = False
     created_at: datetime = Field(default_factory=utc_now)
     last_login_at: datetime | None = None
 

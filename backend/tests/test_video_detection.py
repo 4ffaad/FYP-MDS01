@@ -21,6 +21,7 @@ from backend.app.database.models.video import utc_now
 from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.main import app
 from backend.app.services import video_detection_service as service
+from backend.app.services.auth_service import ensure_demo_admin
 from backend.app.services.video_storage_service import VideoStorage
 from backend.app.video_detection.contract import DetectionError, digest, load_contract, validate_predictions
 from backend.app.video_privacy.processor import VideoProcessingResult
@@ -79,6 +80,32 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("path", response.text)
         self.assertNotIn(self.temp.name, response.text)
+
+    def test_demo_admin_can_read_other_users_video_detection_jobs(self):
+        job_id = self.seed()
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "development",
+                "AUTH_MODE": "local-accounts",
+                "DEMO_ADMIN_ENABLED": "true",
+            },
+        ), Session(self.engine) as db:
+            ensure_demo_admin(db)
+
+        admin = TestClient(app)
+        self.addCleanup(admin.close)
+        login = admin.post(
+            "/api/auth/login",
+            json={"email": "admin@mds01.local", "password": "12345678"},
+            headers=self.headers,
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        self.assertEqual(admin.get(f"/api/video-detection/jobs/{job_id}").status_code, 200)
+        self.assertEqual(
+            [item["job_id"] for item in admin.get("/api/video-detection/jobs").json()["jobs"]],
+            [job_id],
+        )
 
     def test_range_playback_is_not_published(self):
         job_id = self.seed()
