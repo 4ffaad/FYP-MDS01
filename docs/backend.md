@@ -40,8 +40,11 @@ POST /api/auth/login
 POST /api/auth/logout
 ```
 
-`local-accounts` uses email/password accounts with 12-character minimum
-passwords, salted `hashlib.scrypt` records and eight-hour opaque sessions. The
+`local-accounts` uses email/password accounts with 8-character minimum
+passwords, salted `hashlib.scrypt` records and eight-hour opaque sessions. In
+development, it seeds the demo administrator `admin@mds01.local` with password
+`12345678`; this account is disabled outside development and is for local demos
+only. The
 raw session token is sent only as an HttpOnly, SameSite=Lax cookie; PostgreSQL
 stores its SHA-256 hash. `require_api_auth` resolves the current user before
 protected routes run. EEG sessions, upload drafts and video jobs are filtered

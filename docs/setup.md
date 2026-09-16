@@ -43,11 +43,20 @@ These commands also work in PowerShell. On Linux, Docker may require your user t
 
 Both frontend and API bind to loopback. Each teammate runs their own database, files and keys. Do not share your `.env` or connect classmates to an unauthenticated network-facing instance.
 
-The default local mode is `local-accounts`. The first browser visit shows the
-MDS01 sign-in page; choose **Create an account** and use a non-patient email
-and a password of at least 12 characters. The API stores only a salted password
-hash and an opaque server-side session token. Sign out from the header when
-switching teammates.
+The default local mode is `local-accounts`. Development mode seeds a demo
+administrator that can review all local records:
+
+```text
+Email:    admin@mds01.local
+Password: 12345678
+```
+
+The first browser visit shows the MDS01 sign-in page. For another teammate,
+choose **Create an account** and use a non-patient email and a password of at
+least 8 characters. The API stores only a salted password hash and an opaque
+server-side session token. Sign out from the header when switching teammates.
+The seeded administrator is intentionally development-only; production rejects
+local authentication and requires Cloudflare Access.
 
 ## First run: native
 

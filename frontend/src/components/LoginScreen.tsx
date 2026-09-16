@@ -102,7 +102,7 @@ export function LoginScreen() {
                     </label>
                     {registering && (
                       <span className="text-xs text-ink-faint">
-                        12 characters minimum
+                        8 characters minimum
                       </span>
                     )}
                   </div>
@@ -114,7 +114,7 @@ export function LoginScreen() {
                     autoComplete={
                       registering ? "new-password" : "current-password"
                     }
-                    minLength={registering ? 12 : undefined}
+                    minLength={registering ? 8 : undefined}
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     required
