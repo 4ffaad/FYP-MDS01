@@ -41,14 +41,20 @@ class AuthRateLimiter:
         identity_key = identity.strip().casefold()[:320]
         keys = ((kind, f"ip:{client_host}"), (kind, f"identity:{identity_key}"))
         with self._lock:
-            queues = [self._events.setdefault(key, deque()) for key in keys]
-            for queue in queues:
-                cutoff = now - self.window_seconds
-                while queue and queue[0] <= cutoff:
-                    queue.popleft()
-                if len(queue) >= limit:
-                    return False
-            for queue in queues:
+            queues = []
+            for key in keys:
+                queue = self._events.get(key)
+                if queue is not None:
+                    cutoff = now - self.window_seconds
+                    while queue and queue[0] <= cutoff:
+                        queue.popleft()
+                    if len(queue) >= limit:
+                        self._trim_buckets()
+                        return False
+                queues.append(queue)
+            for key, queue in zip(keys, queues):
+                if queue is None:
+                    queue = self._events.setdefault(key, deque())
                 queue.append(now)
             self._trim_buckets()
             return True

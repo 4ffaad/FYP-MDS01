@@ -32,6 +32,15 @@ class AuthRateLimiterTests(unittest.TestCase):
         now[0] = 161.0
         self.assertTrue(limiter.allow("login", "192.0.2.1", "alice@example.test"))
 
+    def test_rejected_unique_identities_do_not_create_unbounded_buckets(self) -> None:
+        limiter = AuthRateLimiter(window_seconds=60, max_attempts=1, max_registrations=1, max_buckets=4)
+
+        self.assertTrue(limiter.allow("login", "192.0.2.1", "alice@example.test"))
+        for index in range(100):
+            self.assertFalse(limiter.allow("login", "192.0.2.1", f"user-{index}@example.test"))
+
+        self.assertLessEqual(len(limiter._events), limiter.max_buckets)
+
 
 if __name__ == "__main__":
     unittest.main()
