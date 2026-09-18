@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+from backend.app.core.config import H5_CONTRACT_SHA256
 from backend.app.eeg.model_input import (
     MODEL_CHANNELS,
     MODEL_SAMPLING_RATE,
@@ -39,6 +40,8 @@ class H5InferenceService:
             contract = json.loads(contract_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise H5ModelError("A reviewed H5 model contract is required.") from exc
+        if len(H5_CONTRACT_SHA256) != 64 or _sha256_file(contract_path) != H5_CONTRACT_SHA256:
+            raise H5ModelError("The H5 model contract does not match its independent hash.")
         if not contract.get("reviewed"):
             raise H5ModelError("The H5 model contract has not been manually reviewed.")
         if contract.get("input_shape") != [1024, 18]:

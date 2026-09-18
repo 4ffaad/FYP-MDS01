@@ -7,6 +7,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run node scripts/setup.mjs and configure POSTGRES_PASSWORD}
     ports:
       - "127.0.0.1:5432:5432"
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-2g}
+    cpus: ${POSTGRES_CPU_LIMIT:-2.0}
+    pids_limit: ${POSTGRES_PIDS_LIMIT:-512}
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
     volumes:
       - postgres_data:/var/lib/postgresql/data
     security_opt:
@@ -51,6 +58,7 @@ services:
       MODEL_RUNTIME: ${MODEL_RUNTIME:-stub}
       H5_MODEL_PATH: ${H5_MODEL_PATH:-/opt/eeg-model/best_seizure_model.h5}
       H5_CONTRACT_PATH: ${H5_CONTRACT_PATH:-/opt/eeg-model/model-contract.json}
+      H5_CONTRACT_SHA256: ${H5_CONTRACT_SHA256:-}
       STORAGE_DIR: /app/backend/storage
       MDS01_STORAGE_KEY: ${MDS01_STORAGE_KEY:?Run node scripts/setup.mjs and configure MDS01_STORAGE_KEY}
       MDS01_TEMPLATE_KEY: ${MDS01_TEMPLATE_KEY:?Run node scripts/setup.mjs and configure MDS01_TEMPLATE_KEY}
@@ -144,6 +152,9 @@ services:
     cap_drop:
       - ALL
     read_only: true
+    mem_limit: ${VSVIG_INIT_MEMORY_LIMIT:-4g}
+    cpus: ${VSVIG_INIT_CPU_LIMIT:-2.0}
+    pids_limit: ${VSVIG_INIT_PIDS_LIMIT:-512}
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=512m
     volumes:
@@ -169,6 +180,9 @@ services:
       - FOWNER
       - DAC_OVERRIDE
     read_only: true
+    mem_limit: ${STORAGE_INIT_MEMORY_LIMIT:-256m}
+    cpus: ${STORAGE_INIT_CPU_LIMIT:-0.5}
+    pids_limit: ${STORAGE_INIT_PIDS_LIMIT:-128}
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
     command: >-

@@ -404,7 +404,7 @@ class VideoDetectionTests(unittest.TestCase):
             load_contract(root)
         (root / "contract.json").write_text('{"reviewed": true, "upstream_commit": "wrong"}')
         with patch.dict(os.environ, {"VSVIG_CONTRACT_SHA256": digest(root / "contract.json")}):
-            with self.assertRaisesRegex(DetectionError, "asset_mismatch"):
+            with self.assertRaisesRegex(DetectionError, "contract_unreviewed"):
                 load_contract(root)
 
 

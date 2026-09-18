@@ -104,9 +104,10 @@ The model executes in the backend container. There are two deployment choices:
 The default Compose stack uses the same deployment shape locally and remotely:
 the `vsvig-assets-init` service downloads and verifies the pinned bundle into the
 named Docker volume `mds01-vsvig-assets`, and the backend mounts that volume
-read-only at `/opt/vsvig`. The backend's separately configured
-`VSVIG_CONTRACT_SHA256` still gates startup. No host filesystem path is needed
-for the model.
+read-only at `/opt/vsvig`. The backend checks both the separately configured
+`VSVIG_CONTRACT_SHA256` and the code-pinned reviewed contract digest before
+startup; a mounted bundle cannot approve its own changed contract. No host
+filesystem path is needed for the model.
 
 For a remote deployment, run these commands on the Linux Docker host, not on a
 developer laptop. Build and push the application image without model weights,

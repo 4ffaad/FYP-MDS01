@@ -9,7 +9,9 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
+import types
 import unittest
 import zipfile
 import warnings
@@ -366,6 +368,18 @@ class BackendTests(unittest.TestCase):
 
         with self.assertRaises(H5ModelError):
             H5InferenceService(Path("missing-model.h5"), Path("missing-contract.json"))
+
+    def test_h5_runtime_requires_an_independent_contract_hash(self) -> None:
+        from backend.app.ml import h5_inference
+        from backend.app.ml.h5_inference import H5InferenceService, H5ModelError
+
+        with tempfile.TemporaryDirectory() as directory:
+            contract_path = Path(directory) / "model-contract.json"
+            contract_path.write_text("{}", encoding="utf-8")
+            with patch.object(h5_inference, "H5_CONTRACT_SHA256", ""):
+                with patch.dict(sys.modules, {"tensorflow": types.ModuleType("tensorflow")}):
+                    with self.assertRaisesRegex(H5ModelError, "independent hash"):
+                        H5InferenceService(Path(directory) / "model.h5", contract_path)
 
     def test_storage_rejects_archive_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -100,6 +100,7 @@ MODEL_VERSION = os.getenv("MODEL_VERSION", "stub-0.1.0")
 MODEL_THRESHOLD = float(os.getenv("MODEL_THRESHOLD", "0.5"))
 H5_MODEL_PATH = Path(os.getenv("H5_MODEL_PATH", "/opt/eeg-model/best_seizure_model.h5"))
 H5_CONTRACT_PATH = Path(os.getenv("H5_CONTRACT_PATH", "/opt/eeg-model/model-contract.json"))
+H5_CONTRACT_SHA256 = os.getenv("H5_CONTRACT_SHA256", "").strip().lower()
 SIGNAL_RETENTION_CONTEXT_SECONDS = float(os.getenv("SIGNAL_RETENTION_CONTEXT_SECONDS", "600"))
 UPLOAD_DRAFT_TTL_SECONDS = int(os.getenv("UPLOAD_DRAFT_TTL_SECONDS", "1800"))
 ENABLE_SIGNAL_PREVIEW = os.getenv("ENABLE_SIGNAL_PREVIEW", "false").lower() == "true"

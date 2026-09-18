@@ -27,6 +27,7 @@ from backend.app.video_detection.contract import (
     POSE_COMMIT,
     POSE_REPOSITORY,
     POSE_SOURCES,
+    REVIEWED_CONTRACT_SHA256,
     UPSTREAM_ARTIFACTS,
     UPSTREAM_COMMIT,
     UPSTREAM_REPOSITORY,
@@ -234,6 +235,8 @@ def install(asset_dir: Path, *, approve_source_contract: bool, env_file: Path | 
     contract_path = asset_dir / "contract.json"
     _write_atomic(contract_path, json.dumps(contract, indent=2) + "\n")
     contract_digest = _sha256(contract_path)
+    if approve_source_contract and contract_digest != REVIEWED_CONTRACT_SHA256:
+        raise RuntimeError("the generated VSViG contract is not independently approved")
     values = {
         "VSVIG_ASSET_DIR": str(asset_dir),
         "VSVIG_CONTRACT_SHA256": contract_digest,

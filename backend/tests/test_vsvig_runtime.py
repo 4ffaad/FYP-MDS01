@@ -81,6 +81,10 @@ class VSViGRuntimeTests(unittest.TestCase):
             contract_module,
             "LICENSES",
             {name: digest(root / name) for name in LICENSES},
+        ), patch.object(
+            contract_module,
+            "REVIEWED_CONTRACT_SHA256",
+            contract_hash,
         ), patch.dict(os.environ, {"VSVIG_CONTRACT_SHA256": contract_hash}, clear=False):
             yield
 
@@ -179,7 +183,15 @@ class VSViGRuntimeTests(unittest.TestCase):
                 contract["preprocessing"]["sample_fps"] = 7.0
                 contract_path.write_text(json.dumps(contract), encoding="utf-8")
                 with patch.dict(os.environ, {"VSVIG_CONTRACT_SHA256": digest(contract_path)}):
-                    with self.assertRaisesRegex(DetectionError, "contract_invalid"):
+                    with self.assertRaisesRegex(DetectionError, "contract_unreviewed"):
+                        load_contract(root)
+
+    def test_contract_requires_the_independent_reviewed_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self._synthetic_contract(root):
+                with patch.object(contract_module, "REVIEWED_CONTRACT_SHA256", "0" * 64):
+                    with self.assertRaisesRegex(DetectionError, "contract_unreviewed"):
                         load_contract(root)
 
     def test_bundle_layout_rejects_invalid_roots(self):

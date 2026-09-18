@@ -7,7 +7,7 @@ This report records the August 2026 repository and disposable-runtime audit. The
 The final integration pass rechecked the repository after the historical
 snapshot above:
 
-- Backend unit/security suite: **160 passed** with one expected local codec-support skip.
+- Backend unit/security suite: **196 passed** with one expected local codec-support skip.
 - Frontend formatting, lint, TypeScript check and production build: **passed**.
 - Browser-only desktop/mobile suite: **34 passed**.
 - Pinned VSViG/OpenPose installer and contract-loader checks: **passed**.
@@ -25,7 +25,7 @@ clinical accuracy, anonymity or production security.
 
 | Area | Result |
 | --- | --- |
-| API authentication | Protected routers require either a server-side local account session in `AUTH_MODE=local-accounts` or a valid Cloudflare Access assertion in `AUTH_MODE=cloudflare`; `/health` and auth status remain public. Production startup rejects local authentication. |
+| API authentication | Protected routers require either a server-side local account session in `AUTH_MODE=local-accounts` or a valid Cloudflare Access assertion in `AUTH_MODE=cloudflare`; `/health` and auth status remain public. Local login/registration admission is bounded by client and identifier buckets and returns `429` with `Retry-After`. Production startup rejects local authentication. |
 | Local exposure | FastAPI and PostgreSQL bind to `127.0.0.1` in Docker Compose. Local authentication is intended only for this loopback development mode. |
 | Identifiers | New `SES-`, `REC-`, and `UPL-` identifiers contain 128 random bits. Historical IDs remain readable. |
 | Upload abuse | ZIP traversal, per-member size, member count, cumulative uncompressed size, and compression-ratio limits are enforced. |
@@ -35,17 +35,17 @@ clinical accuracy, anonymity or production security.
 | Draft lifecycle | Expired drafts are swept at startup and by a background retention task; orphaned encrypted draft directories are eligible for safe cleanup. |
 | Ownership | Ordinary users remain owner-scoped. Only an explicitly enabled development/local-account demo administrator has global read scope; new and destructive writes retain the authenticated account owner. |
 | Private storage | New directories use mode `0700`, files use `0600`, the process uses umask `077`, and the backend container runs as an unprivileged user. A scoped initializer repairs ownership of an older Docker storage volume without deleting it. |
-| Container hardening | Backend and VSViG initializer run unprivileged with `no-new-privileges`, all capabilities dropped, read-only roots and constrained `/tmp`. Postgres keeps only the limited capabilities required by its official root-to-postgres entrypoint; the root `storage-init` helper keeps only ownership capabilities and is one-shot. |
+| Container hardening | Backend and VSViG initializer run unprivileged with `no-new-privileges`, all capabilities dropped, read-only roots and constrained `/tmp`. Postgres and one-shot initializers have explicit memory, CPU, PID and file limits. Postgres keeps only the limited capabilities required by its official root-to-postgres entrypoint; the root `storage-init` helper keeps only ownership capabilities and is one-shot. |
 | Browser boundary | Explicit credentialed CORS origins support local and Cloudflare cookies. Local state changes also require a configured `Origin`. FastAPI and Next.js return framing, MIME-sniffing, referrer, and browser-permission headers. |
 | Signal access | Signal preview remains disabled by default and returns `404`; enabling it is a deliberate local-development choice. |
-| Video model supply chain | The official VSViG and Lightweight OpenPose files are pinned by revision and SHA-256, initialized into a named volume outside Git, mounted read-only by the backend, and loaded by a startup verification pass before Uvicorn starts. |
+| Video model supply chain | The official VSViG and Lightweight OpenPose files are pinned by revision and SHA-256, initialized into a named volume outside Git, mounted read-only by the backend, and loaded by a startup verification pass before Uvicorn starts. The generated contract must also match the code-pinned reviewed contract digest; a mounted bundle cannot approve its own changed metadata. |
 | Video media minimization | Detection deletes source and temporary model-input work, retains only encrypted prediction results plus the explicitly approved encrypted owner-scoped privacy-safe visualization, and exposes no source-video endpoint. The visualization is audio-free, face-redacted and full-frame-blurred with a skeleton overlay; the separate video-privacy utility has a separate policy. |
 | Upload staging | Multipart parsing precedes application-level AES-GCM storage; the framework's private spool is treated as short-lived sensitive work data and is cleaned with the job. |
 | Video privacy runtime | New jobs support face redaction only. The legacy pose-only enum remains readable for stored records but fails closed and is not shipped as an executable privacy transform. |
 
 ## Verification evidence
 
-- The current backend discovery suite reports **154 passed** with one expected
+- The current backend discovery suite reports **196 passed** with one expected
   local codec-support skip.
 - Frontend formatting, ESLint, TypeScript, Next.js production build, and
   Playwright report **34 passed** browser tests.
@@ -112,7 +112,7 @@ These are not blockers for loopback-only local development. They must be handled
 
 ## Manual actions deliberately not performed
 
-- No normal PostgreSQL volume, session data, retained EEG artifact, or legacy file was deleted. Disposable security volumes remain isolated and can be removed manually after confirmation.
+- No normal PostgreSQL volume, session data, retained EEG artifact, or legacy file was deleted. Disposable security containers and volumes were removed after verification; normal project data was untouched.
 - The tracked `frontend/.env.local` and generated `frontend/tsconfig.tsbuildinfo`
   are now removed from the working tree and ignored. Git history was not
   rewritten; rotate any value that was ever a real secret before publishing

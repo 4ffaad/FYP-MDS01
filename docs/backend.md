@@ -114,7 +114,9 @@ nor metadata scrubbing removes every possible EEG biometric signal.
 New Docker installations default to the deterministic development stub. Set
 `MODEL_RUNTIME=h5` and `INSTALL_RESEARCH=true` in `.env`, then populate the
 operator-managed `mds01-eeg-model-assets` volume with the reviewed H5 artifact
-and contract before rebuilding. The backend reads `/opt/eeg-model` read-only;
+and contract before rebuilding. Set `H5_CONTRACT_SHA256` to the independently
+recorded SHA-256 of that contract; startup rejects a contract whose hash is
+missing or does not match. The backend reads `/opt/eeg-model` read-only;
 model files are not stored in Git or copied into the image.
 The image is built as `linux/amd64` because the normal
 Apple Silicon host environment may not provide the required TensorFlow wheel.
@@ -122,9 +124,9 @@ The adapter loads the model once, validates `(None, 1024, 18)` input and
 `(None, 1)` sigmoid output, and runs batched float32 predictions.
 
 The external contract is reviewed for its mounted artifact, including its hash,
-output semantics, threshold, and training preprocessing. If the H5 file changes,
-rerun the verifier and set `reviewed` to false until the replacement has been
-reviewed.
+output semantics, threshold, and training preprocessing. If the H5 file or
+contract changes, record a new independent contract hash, rerun the verifier,
+and set `reviewed` to false until the replacement has been reviewed.
 The H5 contract starts as an uncalibrated research score. It must not be
 presented as confidence, accuracy, or a clinical probability. After separate
 patient-disjoint temperature scaling has been fitted for both privacy

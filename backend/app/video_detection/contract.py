@@ -41,6 +41,7 @@ LICENSES = {
     "vsvig/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
     "openpose/LICENSE": "61a7b068237f7262b2abbef47f2a7a79e8b1df18083db8a75abfe8ec1b2b0a36",
 }
+REVIEWED_CONTRACT_SHA256 = "e55484a3c9d6eb6ef5559970eae5c6eab7a0c2d3d002340486676fc052512429"
 
 DEFAULT_PATCH_ORDER = [0, 15, 14, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 DEFAULT_PATCH_LABELS = [
@@ -163,7 +164,12 @@ def load_contract(root: Path | None = None) -> tuple[Path, dict]:
     try:
         contract_path = _strict_file(root, "contract.json")
         expected_contract_hash = os.environ.get("VSVIG_CONTRACT_SHA256", "").lower()
-        if len(expected_contract_hash) != 64 or digest(contract_path) != expected_contract_hash:
+        actual_contract_hash = digest(contract_path)
+        if (
+            len(expected_contract_hash) != 64
+            or actual_contract_hash != expected_contract_hash
+            or actual_contract_hash != REVIEWED_CONTRACT_SHA256
+        ):
             raise DetectionError("contract_unreviewed")
         contract = json.loads(contract_path.read_text())
         if not isinstance(contract, dict):
