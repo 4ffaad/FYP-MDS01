@@ -1,25 +1,7 @@
-services:
-  backend:
-    image: mds01-video-detection:local
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-      args:
-        INSTALL_VIDEO_DETECTION: "true"
-    environment:
-      VIDEO_DETECTION_ENABLED: "true"
-      VSVIG_ASSET_DIR: /opt/vsvig
-      VSVIG_CONTRACT_SHA256: ${VSVIG_CONTRACT_SHA256:?Set the reviewed contract SHA-256}
-    volumes:
-      - type: bind
-        source: ${VSVIG_ASSET_DIR:?Set an absolute external model bundle directory}
-        target: /opt/vsvig
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${VIDEO_DATA_DIR:?Set an absolute approved video directory}
-        target: /private-video-data
-        read_only: true
-        bind:
-          create_host_path: false
+# Compatibility overlay.
+# Video detection is part of docker-compose.yml, so the supported command is:
+#   docker compose up --build
+#
+# This file remains empty so older explicit `-f` invocations continue to work
+# without maintaining a second copy of the secure service definitions.
+services: {}

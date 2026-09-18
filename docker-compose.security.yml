@@ -40,9 +40,24 @@ services:
       MDS01_MAX_ARCHIVE_TOTAL_BYTES: "10485760"
       MDS01_MAX_ZIP_COMPRESSION_RATIO: "100"
     ports:
-      - "127.0.0.1:18000:8000"
+      - "127.0.0.1:${SECURITY_BACKEND_PORT:-18000}:8000"
+    user: "999:999"
+    mem_limit: ${SECURITY_BACKEND_MEMORY_LIMIT:-2g}
+    cpus: ${SECURITY_BACKEND_CPU_LIMIT:-2.0}
+    pids_limit: ${SECURITY_BACKEND_PIDS_LIMIT:-256}
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
     volumes:
       - security_storage:/app/backend/storage
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
     depends_on:
       postgres:
         condition: service_healthy

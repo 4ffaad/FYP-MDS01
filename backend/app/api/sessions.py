@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from fastapi import BackgroundTasks, APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from sqlmodel import Session
 
-from backend.app.core.security import owner_id, require_api_auth
+from backend.app.core.security import mutation_owner_id, owner_id, require_api_auth
 from backend.app.privacy.methods import canonical_privacy_profile, normalize_privacy_methods
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
@@ -18,6 +19,7 @@ from backend.app.services.session_service import (
 )
 from backend.app.services.processing_capacity import processing_capacity
 from backend.app.services.storage_service import SessionStorage, StorageError
+from backend.app.services.case_service import CaseReferenceError
 
 
 router = APIRouter(prefix="/api", tags=["sessions"])
@@ -76,14 +78,20 @@ async def upload_session(
 
     try:
         create_kwargs = {}
-        if (current_owner_id := owner_id(current_user)) is not None:
+        if (current_owner_id := mutation_owner_id(current_user)) is not None:
             create_kwargs["owner_user_id"] = current_owner_id
         if case_id:
             create_kwargs["case_id"] = case_id
         session = await create_session(db, SessionStorage(), archive, privacy_profile, **create_kwargs)
+    except asyncio.CancelledError:
+        processing_capacity.release()
+        raise
+    except CaseReferenceError as exc:
+        processing_capacity.release()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except StorageError as exc:
         processing_capacity.release()
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail="Private EEG storage is temporarily unavailable.") from exc
     except Exception:
         processing_capacity.release()
         raise
@@ -236,7 +244,7 @@ def delete_session_route(
         Raised with 404 when missing or 409 while processing is active.
     """
 
-    session = get_session_or_none(db, session_id, owner_id(current_user))
+    session = get_session_or_none(db, session_id, mutation_owner_id(current_user))
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
     try:

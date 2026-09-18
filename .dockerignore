@@ -5,11 +5,9 @@
 !backend/**/*.py
 !backend/Dockerfile
 !backend/requirements-video-detection.txt
-!backend/Dockerfile.video-detection
 !backend/requirements*.txt
 !backend/alembic.ini
-!backend/model/model-contract.json
-!backend/model/best_seizure_model.h5
 backend/storage/
 backend/database/
+backend/model/
 **/__pycache__/

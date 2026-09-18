@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 from collections import defaultdict
 from typing import Any
@@ -11,6 +12,13 @@ from sqlmodel import Session, select
 from backend.app.database.models.eeg import EEGSession
 from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.database.repository import list_flagged_window_counts, list_recordings_for_session
+
+
+CASE_ID_PATTERN = re.compile(r"^CASE-[0-9A-F]{8,16}$")
+
+
+class CaseReferenceError(ValueError):
+    """Raised when a requested case is malformed or outside the account."""
 
 
 def new_case_id() -> str:
@@ -23,6 +31,23 @@ def legacy_case_id(identifier: str) -> str:
     """Give pre-case records a deterministic opaque grouping identifier."""
 
     return f"CASE-{identifier[-8:].upper()}"
+
+
+def ensure_case_reference(db: Session, case_id: str | None, owner_user_id: int | None) -> None:
+    """Reject malformed or cross-owner case references before creating data."""
+
+    if case_id is None:
+        return
+    if not isinstance(case_id, str) or not CASE_ID_PATTERN.fullmatch(case_id):
+        raise CaseReferenceError("Case identifier is invalid.")
+
+    eeg_statement = select(EEGSession.id).where(EEGSession.case_id == case_id)
+    video_statement = select(VideoDetectionJob.id).where(VideoDetectionJob.case_id == case_id)
+    if owner_user_id is not None:
+        eeg_statement = eeg_statement.where(EEGSession.owner_user_id == owner_user_id)
+        video_statement = video_statement.where(VideoDetectionJob.owner_user_id == owner_user_id)
+    if db.exec(eeg_statement).first() is None and db.exec(video_statement).first() is None:
+        raise CaseReferenceError("Case identifier was not found for this account.")
 
 
 def list_cases(db: Session, owner_user_id: int | None = None) -> list[dict[str, Any]]:

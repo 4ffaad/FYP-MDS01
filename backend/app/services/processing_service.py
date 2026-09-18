@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
-from sqlalchemy import delete, select
-from sqlmodel import Session
+from sqlalchemy import delete, inspect
+from sqlmodel import Session, select
 
 from backend.app.database.db import engine
 from backend.app.database.models.eeg import (
@@ -30,6 +32,7 @@ from backend.app.database.repository import (
 from backend.app.core.config import (
     ENABLE_FULL_SIGNAL_PREVIEW,
     ENABLE_SHAP_EXPLANATIONS,
+    CLEANUP_INTERVAL_SECONDS,
     SHAP_METADATA_BACKGROUND_PATH,
     SHAP_OBFUSCATED_BACKGROUND_PATH,
     SHAP_MAX_WINDOWS,
@@ -56,6 +59,20 @@ from backend.app.services.storage_service import SessionStorage
 from backend.app.services.validation_service import ValidationError, validate_edf
 
 
+LOGGER = logging.getLogger(__name__)
+
+_ACTIVE_SESSION_STATUSES = {
+    AnalysisStatus.QUEUED,
+    AnalysisStatus.VALIDATING,
+    AnalysisStatus.DEIDENTIFYING,
+    AnalysisStatus.PREPROCESSING,
+    AnalysisStatus.INFERENCE,
+    AnalysisStatus.EXPLAINING,
+}
+_INTERRUPTED_ERROR = "EEG processing was interrupted before completion."
+_CLEANUP_ERROR = "Private EEG cleanup is pending and will be retried."
+
+
 def _now() -> datetime:
     """Return the current UTC time for processing audit timestamps."""
 
@@ -76,9 +93,129 @@ def _safe_error(exc: Exception) -> str:
         Safe message suitable for a database status row and API response.
     """
 
-    if isinstance(exc, (ValidationError, ValueError, RuntimeError)):
+    if isinstance(exc, ValidationError):
         return str(exc)[:500]
+    if isinstance(exc, ValueError):
+        return "The EEG input or processing request was invalid."
+    if isinstance(exc, RuntimeError):
+        return "The EEG processing runtime failed."
     return "Processing failed unexpectedly."
+
+
+def _record_has_private_paths(record: EEGRecording) -> bool:
+    """Return whether a recording still references private storage."""
+
+    return any(
+        getattr(record, name)
+        for name in (
+            "extracted_path",
+            "deidentified_path",
+            "preprocessed_path",
+            "retained_artifact_path",
+        )
+    )
+
+
+def sweep_interrupted_sessions() -> None:
+    """Reconcile interrupted EEG work and retry incomplete private cleanup.
+
+    Active sessions cannot survive a process restart because their work runs in
+    an in-process background task. They are converted to a safe terminal
+    failure, while any cleanup failure leaves internal paths populated so the
+    next sweep can retry it. Paths are never serialized by this function.
+    """
+
+    schema = inspect(engine)
+    if not schema.has_table(str(EEGSession.__tablename__)):
+        return
+    columns = {column["name"] for column in schema.get_columns(str(EEGSession.__tablename__))}
+    if "owner_user_id" not in columns:
+        return
+    storage = SessionStorage()
+    with Session(engine) as db:
+        sessions = db.exec(select(EEGSession)).all()
+        for session in sessions:
+            if session.id is None:
+                continue
+            records = list_recordings_for_session(db, session.id)
+            active = session.status in _ACTIVE_SESSION_STATUSES
+            has_paths = bool(session.original_path) or any(
+                _record_has_private_paths(record) for record in records
+            )
+            if not active and not has_paths:
+                continue
+
+            if active:
+                session.status = AnalysisStatus.FAILED
+                session.current_stage = None
+                session.error_message = _INTERRUPTED_ERROR
+                session.completed_at = _now()
+                for record in records:
+                    if record.id is not None:
+                        _remove_record_outputs(db, record.id)
+                    record.status = RecordingStatus.FAILED
+                    record.error_message = _INTERRUPTED_ERROR
+                    db.add(record)
+                for attempt in db.exec(
+                    select(ProcessingAttempt).where(
+                        ProcessingAttempt.session_db_id == session.id,
+                        ProcessingAttempt.status == ProcessingStatus.RUNNING,
+                    )
+                ).all():
+                    attempt.status = ProcessingStatus.FAILED
+                    attempt.error_message = _INTERRUPTED_ERROR
+                    attempt.finished_at = _now()
+                    db.add(attempt)
+
+            keep_retained = (
+                not active
+                and session.status
+                in {AnalysisStatus.COMPLETED, AnalysisStatus.COMPLETED_WITH_ERRORS}
+            )
+            cleanup_succeeded = True
+            try:
+                storage.cleanup_session(session.session_id, keep_retained=keep_retained)
+            except Exception:
+                cleanup_succeeded = False
+                LOGGER.warning("EEG private cleanup unavailable; retrying later.")
+
+            for record in records:
+                if record.retained_artifact_path and (
+                    not keep_retained or record.status == RecordingStatus.FAILED
+                ):
+                    try:
+                        storage.delete_retained_artifact(Path(record.retained_artifact_path))
+                    except Exception:
+                        cleanup_succeeded = False
+                    else:
+                        record.retained_artifact_path = None
+                if cleanup_succeeded:
+                    record.extracted_path = None
+                    record.deidentified_path = None
+                    record.preprocessed_path = None
+                db.add(record)
+            if cleanup_succeeded:
+                session.original_path = ""
+            elif not active:
+                session.current_stage = "cleanup"
+                session.error_message = _CLEANUP_ERROR
+            db.add(session)
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                LOGGER.warning("EEG cleanup state could not be persisted; retrying later.")
+
+
+async def eeg_retention_loop() -> None:
+    """Retry interrupted EEG cleanup independently of API requests."""
+
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+        try:
+            await asyncio.to_thread(sweep_interrupted_sessions)
+        except Exception:
+            LOGGER.warning("EEG retention cleanup unavailable; retrying.")
 
 
 def _shap_background_for_profile(privacy_profile: str) -> Path:
@@ -301,10 +438,16 @@ def process_session(session_id: str) -> None:
                     failed_record = db.get(EEGRecording, record_db_id) if record_db_id else None
                     if failed_record is None:
                         continue
+                    retained_cleanup_failed = False
                     if failed_record.retained_artifact_path:
-                        storage.delete_retained_artifact(Path(failed_record.retained_artifact_path))
+                        try:
+                            storage.delete_retained_artifact(Path(failed_record.retained_artifact_path))
+                        except Exception:
+                            retained_cleanup_failed = True
+                            LOGGER.warning("Failed EEG artifact cleanup will be retried.")
                     _remove_record_outputs(db, record_db_id)
-                    failed_record.retained_artifact_path = None
+                    if not retained_cleanup_failed:
+                        failed_record.retained_artifact_path = None
                     failed_record.status = RecordingStatus.FAILED
                     failed_record.error_message = _safe_error(exc)
                     db.add(failed_record)
@@ -321,19 +464,32 @@ def process_session(session_id: str) -> None:
             # A failed flush leaves SQLAlchemy unusable until rollback. Clear
             # that state before touching private storage or querying records.
             db.rollback()
-            storage.cleanup_session(session_id, keep_retained=True)
+            cleanup_succeeded = True
+            try:
+                storage.cleanup_session(session_id, keep_retained=True)
+            except Exception:
+                cleanup_succeeded = False
+                LOGGER.warning("EEG private cleanup unavailable; retrying later.")
             db.rollback()
             current_session = get_session_by_public_id(db, session_id)
             if current_session is None or current_session.id is None:
                 return
-            current_session.original_path = ""
-            for record in list_recordings_for_session(db, current_session.id):
-                record.extracted_path = None
-                record.preprocessed_path = None
-                record.deidentified_path = None
-                db.add(record)
+            if cleanup_succeeded:
+                current_session.original_path = ""
+                for record in list_recordings_for_session(db, current_session.id):
+                    record.extracted_path = None
+                    record.preprocessed_path = None
+                    record.deidentified_path = None
+                    db.add(record)
+            else:
+                current_session.current_stage = "cleanup"
+                current_session.error_message = _CLEANUP_ERROR
             db.add(current_session)
-            db.commit()
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                LOGGER.warning("EEG cleanup state could not be persisted; retrying later.")
 
 
 def _process_record(
@@ -517,7 +673,10 @@ def _process_record(
     except Exception as exc:
         db.rollback()
         if retained_artifact_path:
-            storage.delete_retained_artifact(Path(retained_artifact_path))
+            try:
+                storage.delete_retained_artifact(Path(retained_artifact_path))
+            except Exception:
+                LOGGER.warning("Failed EEG artifact cleanup will be retried.")
         _fail_attempt(db, explanation_attempt, _safe_error(exc))
         raise
 

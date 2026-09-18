@@ -9,7 +9,9 @@ const job = {
   fps: 30,
   created_at: new Date().toISOString(),
   retention_expires_at: new Date(Date.now() + 3600000).toISOString(),
-  video_available: true,
+  video_available: false,
+  visualization_available: true,
+  visualization_url: "/api/video-detection/jobs/VID-synthetic/visualization",
   error: null,
 };
 const result = {
@@ -43,6 +45,44 @@ const result = {
     },
   ],
   intervals: [{ start_time: 1, end_time: 3 }],
+  timeline: [
+    {
+      timestamp: 1,
+      start_time: 0,
+      end_time: 2,
+      score: 0.2,
+      seizure_detected: false,
+    },
+    {
+      timestamp: 2,
+      start_time: 1,
+      end_time: 3,
+      score: 0.8,
+      seizure_detected: true,
+    },
+  ],
+  events: [{ start_time: 1, end_time: 3, peak_score: 0.8, peak_timestamp: 2 }],
+  summary: {
+    peak_score: 0.8,
+    potential_event_detected: true,
+    event_count: 1,
+    threshold: 0.5,
+  },
+  privacy: {
+    method: "face-detection-and-full-frame-blur",
+    model_input: "full-frame-blurred video",
+    face_detection_coverage: 1,
+    quality_flags: [],
+    review_required: false,
+  },
+  visualization: {
+    available: true,
+    media_type: "video/mp4",
+    audio_included: false,
+    privacy_method: "full-frame-blur-and-skeleton-overlay",
+    overlay: { skeleton: true, model_score: false, event_markers: false },
+    frontend_overlay: { model_score: true, event_markers: true },
+  },
   recording_probability_available: false,
 };
 
@@ -60,6 +100,17 @@ test.beforeEach(async ({ page }) => {
         },
       });
     if (url.endsWith("/video")) return route.abort();
+    if (url.endsWith("/visualization"))
+      return route.fulfill({
+        status: 200,
+        body: Buffer.from("protected video fixture"),
+        headers: {
+          "Content-Type": "video/mp4",
+          "Cache-Control": "no-store",
+          "Access-Control-Allow-Origin": "http://127.0.0.1:3001",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      });
     return route.fulfill({
       json: url.endsWith("/predictions")
         ? result
@@ -78,7 +129,7 @@ test("uploads and reviews window supports without confidence percentages", async
   page,
 }) => {
   await page.goto("/video-detection");
-  await page.getByLabel("Patient video", { exact: true }).setInputFiles({
+  await page.getByLabel("Video", { exact: true }).setInputFiles({
     name: "synthetic.mp4",
     mimeType: "video/mp4",
     buffer: Buffer.from("synthetic fixture"),
@@ -88,17 +139,153 @@ test("uploads and reviews window supports without confidence percentages", async
     .click();
   await expect(page).toHaveURL(/video-detection\/VID-synthetic/);
   await expect(
-    page.getByRole("heading", { name: "Uncalibrated model score" }),
+    page.getByRole("heading", { name: "VSViG score over time" }),
   ).toBeVisible();
   await expect(
-    page.getByText(/Each point covers 2.00 seconds, stepping 1.00 seconds/),
+    page.getByRole("heading", { name: "Potential seizure activity detected" }),
   ).toBeVisible();
-  await expect(page.getByRole("img", { name: /Threshold 0.5/ })).toBeVisible();
-  await expect(page.locator("main")).not.toContainText(/\d+%|confidence/i);
-  // Protected video is intentionally not published as a playback asset.
-  await expect(page.locator("video")).toHaveCount(0);
+  await expect(
+    page.getByRole("img", { name: "VSViG model scores over video time" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/configured research threshold 0.50/),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Protected review workspace", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator("video")).toHaveCount(1);
+  await expect(
+    page.getByRole("progressbar", { name: "Video review completion" }),
+  ).toHaveAttribute("aria-valuenow", "100");
+  await expect(page.locator("main")).not.toContainText(/confidence/i);
+  // Raw video remains unpublished; only the protected visualization is playable.
+  await expect(page.getByRole("button", { name: "Event 1" })).toBeVisible();
   await page.getByText("All window scores", { exact: true }).click();
-  await expect(page.getByText("0:01.0–0:03.0", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("table").getByText("0:01.0–0:03.0", { exact: true }),
+  ).toBeVisible();
+});
+
+test("retries a transient protected visualization failure", async ({
+  page,
+}) => {
+  let attempts = 0;
+  await page.route(
+    "**/api/video-detection/jobs/VID-synthetic/visualization",
+    async (route) => {
+      attempts += 1;
+      if (attempts === 1) {
+        return route.fulfill({ status: 503, body: "temporary failure" });
+      }
+      return route.fulfill({
+        status: 200,
+        body: Buffer.from("protected video fixture"),
+        headers: { "Content-Type": "video/mp4" },
+      });
+    },
+  );
+
+  await page.goto("/video-detection/VID-synthetic");
+  await expect(
+    page.getByRole("button", { name: "Retry protected video" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Retry protected video" }).click();
+  await expect(page.locator("video")).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "Retry protected video" }),
+  ).toHaveCount(0);
+  expect(attempts).toBe(2);
+});
+
+test("retries a transient ready-result failure without a reload", async ({
+  page,
+}) => {
+  let attempts = 0;
+  await page.route(
+    "**/api/video-detection/jobs/VID-synthetic/predictions",
+    async (route) => {
+      attempts += 1;
+      if (attempts === 1) {
+        return route.fulfill({ status: 503, body: "temporary failure" });
+      }
+      return route.fulfill({
+        json: result,
+        headers: {
+          "Access-Control-Allow-Origin": "http://127.0.0.1:3001",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      });
+    },
+  );
+
+  await page.goto("/video-detection/VID-synthetic");
+  await expect
+    .poll(() => attempts, { timeout: 10_000 })
+    .toBeGreaterThanOrEqual(2);
+  await expect(
+    page.getByRole("heading", { name: "VSViG score over time" }),
+  ).toBeVisible();
+  await expect(page.locator("main").getByRole("alert")).toHaveCount(0);
+});
+
+test("shows the reported processing stage and checkpoint percentage", async ({
+  page,
+}) => {
+  await page.route("**/api/video-detection/jobs/VID-processing", (route) => {
+    const processingJob = {
+      ...job,
+      status: "processing",
+      current_stage: "privacy-transform",
+      video_available: false,
+    };
+    return route.fulfill({ json: { job: processingJob } });
+  });
+
+  await page.goto("/video-detection/VID-processing");
+  await expect(
+    page.getByRole("heading", { name: "Building your video review" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("progressbar", { name: "Video review completion" }),
+  ).toHaveAttribute("aria-valuenow", "44");
+  await expect(
+    page
+      .getByRole("list", { name: "Video review processing steps" })
+      .getByText("Face redaction", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("44%", { exact: true })).toBeVisible();
+});
+
+test("shows the upload handoff while the backend acknowledges the video", async ({
+  page,
+}) => {
+  await page.route("**/api/video-detection/jobs", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    return route.fulfill({ json: { job } });
+  });
+
+  await page.goto("/video-detection");
+  await page.getByLabel("Video", { exact: true }).setInputFiles({
+    name: "pending.mp4",
+    mimeType: "video/mp4",
+    buffer: Buffer.from("pending upload fixture"),
+  });
+  await page
+    .getByRole("button", { name: "Start detection", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", {
+      name: /Sending video securely|Waiting for the private API/,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("progressbar", { name: "Video upload progress" }),
+  ).toHaveAttribute("aria-valuenow", "0");
+  await expect(
+    page.getByRole("list", { name: "Video upload steps" }),
+  ).toBeVisible();
+  await expect(page.getByText("Review queue", { exact: true })).toBeVisible();
 });
 
 test("shows actionable asset error without navigating to fabricated results", async ({
@@ -110,7 +297,7 @@ test("shows actionable asset error without navigating to fabricated results", as
           status: 503,
           json: {
             detail:
-              "Mount the official model assets before starting detection.",
+              "Mount the official model assets by running the pinned VSViG installer; see docs/video-detection.md.",
           },
           headers: {
             "Access-Control-Allow-Origin": "http://127.0.0.1:3001",
@@ -120,7 +307,7 @@ test("shows actionable asset error without navigating to fabricated results", as
       : route.fallback(),
   );
   await page.goto("/video-detection");
-  await page.getByLabel("Patient video", { exact: true }).setInputFiles({
+  await page.getByLabel("Video", { exact: true }).setInputFiles({
     name: "synthetic.mp4",
     mimeType: "video/mp4",
     buffer: Buffer.from("test"),
@@ -129,7 +316,10 @@ test("shows actionable asset error without navigating to fabricated results", as
     .getByRole("button", { name: "Start detection", exact: true })
     .click();
   await expect(
-    page.getByText("Mount the official model assets", { exact: false }).first(),
+    page.getByText(
+      "Mount the official model assets by running the pinned VSViG installer; see docs/video-detection.md.",
+      { exact: true },
+    ),
   ).toBeVisible();
   await expect(page).toHaveURL(/\/video-detection$/);
 });
@@ -143,6 +333,8 @@ test("expired job removes playback and scores", async ({ page }) => {
           status: "expired",
           current_stage: "expired",
           video_available: false,
+          visualization_available: false,
+          visualization_url: null,
         },
       },
     }),
@@ -150,7 +342,7 @@ test("expired job removes playback and scores", async ({ page }) => {
   await page.goto("/video-detection/VID-synthetic");
   await expect(
     page.getByText(
-      "The retention period ended. Source video and results have been removed.",
+      "The retention period ended. Source video, the temporary model input, and retained review artifacts have been removed.",
     ),
   ).toBeVisible();
   await expect(page.locator("video")).toHaveCount(0);

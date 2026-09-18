@@ -19,6 +19,7 @@ import numpy as np
 import pyedflib
 from fastapi import BackgroundTasks, UploadFile
 from fastapi import HTTPException
+from sqlalchemy import String
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -34,6 +35,7 @@ from backend.app.database.models.eeg import (
     ProcessingStatus,
     RecordingStatus,
 )
+from backend.app.database.models.types import EnumString
 from backend.app.database.repository import (
     get_recording_by_public_id,
     get_session_by_database_id,
@@ -63,6 +65,7 @@ from backend.app.research.chb_mit import (
 )
 from backend.app.services.storage_service import SessionStorage, StorageError
 from backend.app.services.session_service import cleanup_expired_drafts, create_session, create_upload_draft, delete_session, finalize_upload_draft, public_record, public_session
+from backend.app.services.case_service import CaseReferenceError, ensure_case_reference, new_case_id
 from backend.app.services.validation_service import ValidationError, validate_edf
 
 
@@ -242,6 +245,13 @@ class BackendTests(unittest.TestCase):
         np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
         self.assertEqual(actual.dtype, np.float64)
 
+    def test_preprocessing_rejects_non_finite_samples(self) -> None:
+        """NaN and infinity cannot reach either inference adapter."""
+        data = np.zeros((2, 2048), dtype=np.float64)
+        data[0, 10] = np.inf
+        with self.assertRaisesRegex(ValueError, "non-finite"):
+            EEGPreprocessor(sampling_rate=256).preprocess(data)
+
     def test_model_contract_constants_are_unchanged(self) -> None:
         """The reviewed model contract remains explicit in one place."""
         from backend.app.eeg.model_input import (
@@ -262,8 +272,8 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(MODEL_CHANNELS[-2:], ("FZ-CZ", "CZ-PZ"))
 
     def test_model_windows_match_the_trained_input_contract(self) -> None:
-        labels = list(MODEL_CHANNELS) + ["P7-T7", "T7-FT9", "FT9-FT10", "FT10-T8", "T8-P8"]
-        signals = np.arange(23 * 2048, dtype=np.float64).reshape(23, 2048)
+        labels = list(MODEL_CHANNELS)
+        signals = np.arange(18 * 2048, dtype=np.float64).reshape(18, 2048)
         windows, starts, discarded = prepare_model_windows(signals, 256, labels)
 
         self.assertEqual(windows.shape, (3, 1024, 18))
@@ -272,6 +282,25 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(discarded, 0)
         self.assertEqual(windows[0, 0, 0], signals[0, 0])
         self.assertEqual(windows[1, 0, 17], signals[17, 512])
+
+    def test_model_windows_reject_ambiguous_channel_sets(self) -> None:
+        """The model must not silently select duplicate or extra EDF channels."""
+        duplicate_labels = list(MODEL_CHANNELS[:-1]) + [MODEL_CHANNELS[0], MODEL_CHANNELS[-1]]
+        signals = np.zeros((len(duplicate_labels), 1024), dtype=np.float64)
+        with self.assertRaisesRegex(ValueError, "duplicate|exactly the model's required channels"):
+            prepare_model_windows(signals, 256, duplicate_labels)
+
+        extra_labels = list(MODEL_CHANNELS) + ["EXTRA-CHANNEL"]
+        signals = np.zeros((len(extra_labels), 1024), dtype=np.float64)
+        with self.assertRaisesRegex(ValueError, "exactly the model's required channels"):
+            prepare_model_windows(signals, 256, extra_labels)
+
+    def test_model_windows_reject_non_finite_signal_values(self) -> None:
+        """Invalid samples must not be converted into a model-compatible tensor."""
+        signals = np.zeros((len(MODEL_CHANNELS), 1024), dtype=np.float64)
+        signals[0, 0] = np.nan
+        with self.assertRaisesRegex(ValueError, "non-finite"):
+            prepare_model_windows(signals, 256, list(MODEL_CHANNELS))
 
     def test_uniform_reader_reopens_edf(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -296,6 +325,17 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(service.model_version, "stub-0.1.0")
         self.assertTrue(all(0 <= item.probability <= 1 for item in first))
         self.assertTrue(all(item.seizure_detected == score_crossed_threshold(item.probability, service.threshold) for item in first))
+
+    def test_stub_rejects_non_finite_or_wrong_dtype_input(self) -> None:
+        """The development adapter enforces the same finite float32 contract."""
+        service = StubInferenceService()
+        starts = np.asarray([0.0], dtype=np.float32)
+        non_finite = np.zeros((1, 1024, 18), dtype=np.float32)
+        non_finite[0, 0, 0] = np.nan
+        with self.assertRaisesRegex(ValueError, "finite"):
+            service.predict(non_finite, starts, "REC-NAN")
+        with self.assertRaisesRegex(ValueError, "float32"):
+            service.predict(np.zeros((1, 1024, 18), dtype=np.float64), starts, "REC-DTYPE")
 
     def test_alert_threshold_is_inclusive_for_stub_and_h5_scores(self) -> None:
         """Both inference adapters flag exactly scores at or above the configured boundary."""
@@ -409,6 +449,55 @@ class BackendTests(unittest.TestCase):
                 cleanup_expired_drafts(db, storage)
                 self.assertIsNone(get_upload_draft(db, expiring.draft_id))
                 self.assertFalse(expiring_path.exists())
+
+    def test_pending_draft_quota_limits_repeated_staging(self) -> None:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SessionStorage(Path(directory) / "sessions", self.storage_key)
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+            with Session(engine) as db:
+                drafts = [
+                    asyncio.run(
+                        create_upload_draft(
+                            db,
+                            storage,
+                            UploadFile(filename=f"recordings-{index}.zip", file=io.BytesIO(b"small")),
+                            expires_at,
+                            owner_user_id=42,
+                        )
+                    )
+                    for index in range(2)
+                ]
+                with self.assertRaisesRegex(StorageError, "Too many staged uploads"):
+                    asyncio.run(
+                        create_upload_draft(
+                            db,
+                            storage,
+                            UploadFile(filename="recordings-3.zip", file=io.BytesIO(b"small")),
+                            expires_at,
+                            owner_user_id=42,
+                        )
+                    )
+                for draft in drafts:
+                    storage.delete_draft(draft.draft_id)
+                    db.delete(draft)
+                db.commit()
+
+    def test_case_reference_is_owner_scoped_and_opaque(self) -> None:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        case_id = new_case_id()
+        with Session(engine) as db:
+            db.add(EEGSession(session_id="SES-CASE-OWNER", case_id=case_id, owner_user_id=7))
+            db.commit()
+            ensure_case_reference(db, case_id, 7)
+            with self.assertRaises(CaseReferenceError):
+                ensure_case_reference(db, case_id, 8)
+            with self.assertRaises(CaseReferenceError):
+                ensure_case_reference(db, "patient-name", 7)
 
     def test_signal_preview_returns_bounded_alert_intervals(self) -> None:
         from backend.app.services.signal_service import build_signal_preview
@@ -582,7 +671,7 @@ class BackendTests(unittest.TestCase):
         self.assertIn("/api/recordings/{record_id}/prediction", paths)
         self.assertNotIn("patient_reference", str(schema))
 
-    def test_status_and_stage_columns_use_varchar_enum_processing(self) -> None:
+    def test_status_and_stage_columns_use_compatibility_safe_varchar_processing(self) -> None:
         columns = (
             EEGSession.__table__.c.status,
             EEGRecording.__table__.c.status,
@@ -590,7 +679,8 @@ class BackendTests(unittest.TestCase):
             ProcessingAttempt.__table__.c.status,
         )
         for column in columns:
-            self.assertFalse(column.type.native_enum)
+            self.assertIsInstance(column.type, EnumString)
+            self.assertIsInstance(column.type.impl, String)
 
     def test_failed_transaction_can_mark_session_failed_and_cleanup_storage(self) -> None:
         from backend.app.services.processing_service import _mark_session_failed

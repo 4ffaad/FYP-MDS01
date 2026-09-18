@@ -26,7 +26,7 @@ def seed(email: str) -> str:
         storage = VideoStorage()
         video = storage.work_path(job.job_id, "synthetic.mp4")
         subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=4", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(video)], check=True)
-        job.video_path = str(storage.store_artifact(job.job_id, video, "review.mp4"))
+        job.visualization_path = str(storage.store_artifact(job.job_id, video, "video.visualization.mp4"))
         output = storage.work_path(job.job_id, "predictions.json")
         metadata = {"model_name": "Synthetic test fixture", "model_version": "fixture-only", "weights_hash": "none", "preprocessing_version": "fixture-only", "threshold": 0.5, "sample_fps": 15, "window_frames": 30, "stride_frames": 15, "calibrated": False}
         output.write_text(json.dumps(validate_predictions([{"start_time": 0, "end_time": 2, "raw_score": 0.2}, {"start_time": 1, "end_time": 3, "raw_score": 0.8}], 4, metadata)))

@@ -101,6 +101,9 @@ class EEGPreprocessor:
     def preprocess(self, data):
         """Apply bandpass, notch, z-score normalization, then clipping."""
 
+        if not np.isfinite(data).all():
+            raise ValueError("EEG signal contains non-finite values.")
+
         # 1. Bandpass filter
         data = self.bandpass_filter(data)
 
@@ -112,5 +115,8 @@ class EEGPreprocessor:
 
         # 4. Artifact clipping
         data = self.remove_artifacts(data)
+
+        if not np.isfinite(data).all():
+            raise ValueError("EEG preprocessing produced non-finite values.")
 
         return data

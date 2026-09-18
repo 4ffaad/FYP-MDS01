@@ -4,12 +4,14 @@ import { resolve } from "node:path";
 
 export default function globalTeardown() {
   const root = resolve(__dirname, "../../..");
+  const securityProject =
+    process.env.MDS01_SECURITY_COMPOSE_PROJECT ?? "mds01-security";
   execFileSync(
     "docker",
     [
       "compose",
       "-p",
-      "mds01-security",
+      securityProject,
       "-f",
       "docker-compose.security.yml",
       "down",

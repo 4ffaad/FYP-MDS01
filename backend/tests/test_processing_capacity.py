@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi import BackgroundTasks, HTTPException
 
@@ -53,6 +53,50 @@ class ProcessingCapacityTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 503)
         create_session.assert_not_called()
+
+    def test_draft_finalize_releases_capacity_if_cleanup_fails_before_promotion(self) -> None:
+        from backend.app.api.uploads import finalize_staged_upload
+        from backend.app.services.storage_service import StorageError
+
+        with (
+            patch("backend.app.api.uploads.processing_capacity.reserve", return_value=True),
+            patch("backend.app.api.uploads.processing_capacity.release") as release,
+            patch("backend.app.api.uploads.SessionStorage"),
+            patch(
+                "backend.app.api.uploads.cleanup_expired_drafts",
+                side_effect=StorageError("cleanup failed at /private/sessions/SES-1"),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                finalize_staged_upload(
+                    "DRAFT-ONE", BackgroundTasks(), None, db=MagicMock(), current_user=None
+                )
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertNotIn("/private/sessions", str(raised.exception.detail))
+        release.assert_called_once_with()
+
+    def test_draft_finalize_maps_storage_failure_to_503(self) -> None:
+        from backend.app.api.uploads import finalize_staged_upload
+        from backend.app.services.storage_service import StorageError
+
+        with (
+            patch("backend.app.api.uploads.processing_capacity.reserve", return_value=True),
+            patch("backend.app.api.uploads.processing_capacity.release") as release,
+            patch("backend.app.api.uploads.SessionStorage"),
+            patch("backend.app.api.uploads.cleanup_expired_drafts"),
+            patch(
+                "backend.app.api.uploads.finalize_upload_draft",
+                side_effect=StorageError("storage unavailable"),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                finalize_staged_upload(
+                    "DRAFT-ONE", BackgroundTasks(), None, db=MagicMock(), current_user=None
+                )
+
+        self.assertEqual(raised.exception.status_code, 503)
+        release.assert_called_once_with()
 
 
 if __name__ == "__main__":

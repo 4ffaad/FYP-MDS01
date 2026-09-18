@@ -1,6 +1,9 @@
 # MDS01 interface
 
-A task-focused research workspace. People upload EEG archives, inspect processing and review flagged windows; video privacy is a separate workflow. The interface must make that distinction and the limitations of the output clear.
+A task-focused research workspace. People upload one EEG archive and, separately,
+one video; they inspect processing and review flagged windows. Video privacy is
+a separate workflow. The interface must make those boundaries and the
+limitations of the output clear.
 
 ## Source of truth
 
@@ -43,8 +46,13 @@ Icons support labels. Keep them generally 16–20px, using the shared Hugeicons 
 - Calibrated H5: **Estimated window probability**, explicitly one four-second window with a two-second stride.
 - Keep model name/version and research-only status findable. No whole-recording confidence badge.
 - Use flagged-window counts, exact intervals and waveform context to guide review. No flagged windows does not mean a patient is seizure-free.
-- Video output is a research privacy transform. Keep acknowledgement and quality caveats near the download action.
-- Never display original patient filenames or identifying container metadata. The video detection review screen explicitly allows owner-only source-appearance playback during retention; the video privacy screen continues to show only protected output.
+- Video privacy output is a research transform. Keep acknowledgement and quality caveats near its download action.
+- Video detection publishes an encrypted owner-scoped privacy-safe review
+  artifact (face-redacted model input; full-frame-blurred, audio-free preview with
+  skeleton overlay) alongside prediction/evidence metadata; it never publishes source
+  playback. The keypoint labels in model evidence identify input regions, not
+  clinical explanations.
+- Never display original patient filenames or identifying container metadata.
 
 ## Interaction checks
 

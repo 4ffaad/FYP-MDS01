@@ -9,6 +9,22 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The official entrypoint initializes the volume as root, then drops to
+    # postgres. These are the only capabilities needed for that bootstrap.
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /var/run/postgresql:rw,noexec,nosuid,size=16m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U seizureai -d seizureai"]
       interval: 5s
@@ -16,26 +32,51 @@ services:
       retries: 10
 
   backend:
-    image: mds01-backend:local
+    image: ${VIDEO_DETECTION_IMAGE:-mds01-video-detection:local}
     platform: linux/amd64
     build:
       context: .
       dockerfile: backend/Dockerfile
       args:
         INSTALL_RESEARCH: ${INSTALL_RESEARCH:-false}
+        INSTALL_VIDEO_DETECTION: "true"
     environment:
       DATABASE_URL: postgresql+psycopg://seizureai:${POSTGRES_PASSWORD:?Configure POSTGRES_PASSWORD}@postgres:5432/seizureai
-      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      APP_ENV: ${APP_ENV:-development}
+      AUTH_MODE: ${AUTH_MODE:-local-accounts}
+      DEMO_ADMIN_ENABLED: ${DEMO_ADMIN_ENABLED:-false}
+      DEMO_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:-admin@mds01.local}
+      DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-}
       MODEL_RUNTIME: ${MODEL_RUNTIME:-stub}
+      H5_MODEL_PATH: ${H5_MODEL_PATH:-/opt/eeg-model/best_seizure_model.h5}
+      H5_CONTRACT_PATH: ${H5_CONTRACT_PATH:-/opt/eeg-model/model-contract.json}
       STORAGE_DIR: /app/backend/storage
-      MDS01_STORAGE_KEY: ${MDS01_STORAGE_KEY:-}
-      MDS01_TEMPLATE_KEY: ${MDS01_TEMPLATE_KEY:-}
+      MDS01_STORAGE_KEY: ${MDS01_STORAGE_KEY:?Run node scripts/setup.mjs and configure MDS01_STORAGE_KEY}
+      MDS01_TEMPLATE_KEY: ${MDS01_TEMPLATE_KEY:?Run node scripts/setup.mjs and configure MDS01_TEMPLATE_KEY}
       SIGNAL_RETENTION_CONTEXT_SECONDS: ${SIGNAL_RETENTION_CONTEXT_SECONDS:-600}
       UPLOAD_DRAFT_TTL_SECONDS: ${UPLOAD_DRAFT_TTL_SECONDS:-1800}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-2147483648}
+      MAX_ACTIVE_UPLOAD_DRAFTS: ${MAX_ACTIVE_UPLOAD_DRAFTS:-2}
+      MAX_PENDING_DRAFT_BYTES: ${MAX_PENDING_DRAFT_BYTES:-2148532224}
+      CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-60}
       MAX_VIDEO_UPLOAD_BYTES: ${MAX_VIDEO_UPLOAD_BYTES:-536870912}
       VIDEO_RETENTION_SECONDS: ${VIDEO_RETENTION_SECONDS:-86400}
-      VIDEO_DETECTION_ENABLED: "true"
+      VIDEO_DETECTION_ENABLED: ${VIDEO_DETECTION_ENABLED:-true}
+      VSVIG_ASSET_DIR: /opt/vsvig
+      VSVIG_CONTRACT_SHA256: ${VSVIG_CONTRACT_SHA256:?Configure VSVIG_CONTRACT_SHA256 after model initialization}
       VIDEO_MAX_DURATION_SECONDS: ${VIDEO_MAX_DURATION_SECONDS:-3600}
+      VIDEO_MIN_FPS: ${VIDEO_MIN_FPS:-6}
+      VIDEO_MAX_FPS: ${VIDEO_MAX_FPS:-60}
+      VIDEO_MAX_WIDTH: ${VIDEO_MAX_WIDTH:-1920}
+      VIDEO_MAX_HEIGHT: ${VIDEO_MAX_HEIGHT:-1080}
+      VIDEO_MAX_FRAMES: ${VIDEO_MAX_FRAMES:-216000}
+      VIDEO_MAX_OUTPUT_BYTES: ${VIDEO_MAX_OUTPUT_BYTES:-1073741824}
+      VIDEO_PRIVACY_TIMEOUT_SECONDS: ${VIDEO_PRIVACY_TIMEOUT_SECONDS:-900}
+      VIDEO_PREFLIGHT_TIMEOUT_SECONDS: ${VIDEO_PREFLIGHT_TIMEOUT_SECONDS:-30}
+      VIDEO_PRIVACY_MAX_ACTIVE_JOBS: ${VIDEO_PRIVACY_MAX_ACTIVE_JOBS:-4}
+      VIDEO_PRIVACY_MAX_ACTIVE_JOBS_PER_OWNER: ${VIDEO_PRIVACY_MAX_ACTIVE_JOBS_PER_OWNER:-1}
+      VIDEO_PRIVACY_MAX_CONCURRENT_JOBS: ${VIDEO_PRIVACY_MAX_CONCURRENT_JOBS:-1}
       ENABLE_SIGNAL_PREVIEW: ${ENABLE_SIGNAL_PREVIEW:-false}
       ENABLE_FULL_SIGNAL_PREVIEW: ${ENABLE_FULL_SIGNAL_PREVIEW:-false}
       FULL_SIGNAL_PREVIEW_MAX_SECONDS: ${FULL_SIGNAL_PREVIEW_MAX_SECONDS:-7200}
@@ -44,30 +85,92 @@ services:
       SHAP_OBFUSCATED_BACKGROUND_PATH: ${SHAP_OBFUSCATED_BACKGROUND_PATH:-/app/backend/model/shap-background-obfuscated.npy}
       SHAP_MAX_WINDOWS: ${SHAP_MAX_WINDOWS:-3}
       SHAP_TIME_BINS: ${SHAP_TIME_BINS:-32}
-      APP_ENV: ${APP_ENV:-development}
-      AUTH_MODE: ${AUTH_MODE:-local-accounts}
       CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${CLOUDFLARE_ACCESS_TEAM_DOMAIN:-}
       CLOUDFLARE_ACCESS_AUD: ${CLOUDFLARE_ACCESS_AUD:-}
       MAX_CONCURRENT_ANALYSES: ${MAX_CONCURRENT_ANALYSES:-1}
       MDS01_MAX_ARCHIVE_TOTAL_BYTES: ${MDS01_MAX_ARCHIVE_TOTAL_BYTES:-2147483648}
       MDS01_MAX_ZIP_COMPRESSION_RATIO: ${MDS01_MAX_ZIP_COMPRESSION_RATIO:-100}
+      MDS01_MAX_ARCHIVE_MEMBER_COUNT: ${MDS01_MAX_ARCHIVE_MEMBER_COUNT:-4096}
+      MAX_ARCHIVE_MEMBER_BYTES: ${MAX_ARCHIVE_MEMBER_BYTES:-2147483648}
+      MAX_EDF_FILES_PER_ARCHIVE: ${MAX_EDF_FILES_PER_ARCHIVE:-500}
     ports:
       - "127.0.0.1:8000:8000"
+    user: "999:999"
+    mem_limit: ${BACKEND_MEMORY_LIMIT:-4g}
+    cpus: ${BACKEND_CPU_LIMIT:-2.0}
+    pids_limit: ${BACKEND_PIDS_LIMIT:-512}
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
     volumes:
       - backend_storage:/app/backend/storage
+      - type: volume
+        source: eeg_model_assets
+        target: /opt/eeg-model
+        read_only: true
+      - type: volume
+        source: vsvig_assets
+        target: /opt/vsvig
+        read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
     depends_on:
       postgres:
         condition: service_healthy
       storage-init:
         condition: service_completed_successfully
+      vsvig-assets-init:
+        condition: service_completed_successfully
     command: >-
-      sh -c "alembic -c backend/alembic.ini upgrade head &&
+      sh -c "python -m backend.scripts.verify_vsvig_runtime &&
+      alembic -c backend/alembic.ini upgrade head &&
       uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
       --no-server-header"
+
+  vsvig-assets-init:
+    image: ${VIDEO_DETECTION_IMAGE:-mds01-video-detection:local}
+    platform: linux/amd64
+    user: "mds01"
+    environment:
+      VSVIG_CONTRACT_SHA256: ${VSVIG_CONTRACT_SHA256:-}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    volumes:
+      - type: volume
+        source: vsvig_assets
+        target: /opt/vsvig
+    command: >-
+      sh -c "python backend/scripts/install_vsvig_assets.py
+      --asset-dir /opt/vsvig --approve-source-contract &&
+      python -m backend.scripts.verify_vsvig_runtime"
 
   storage-init:
     image: alpine:3.22
     user: "0:0"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # This one-shot root helper needs ownership capabilities for the mounted
+    # application volume; it is never a long-running application service.
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
     command: >-
       sh -c "chown -R 999:999 /app/backend/storage &&
       find /app/backend/storage -type d -exec chmod 700 {} + &&
@@ -78,3 +181,7 @@ services:
 volumes:
   postgres_data:
   backend_storage:
+  eeg_model_assets:
+    name: mds01-eeg-model-assets
+  vsvig_assets:
+    name: mds01-vsvig-assets

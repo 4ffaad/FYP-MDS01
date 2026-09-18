@@ -1,7 +1,7 @@
-import { redirect } from "next/navigation";
+import { VideoPrivacyUploadScreen } from "@/components/VideoPrivacyScreen";
 
-export const metadata = { title: "Video detection" };
+export const metadata = { title: "Video privacy" };
 
 export default function VideoPrivacyPage() {
-  redirect("/video-detection");
+  return <VideoPrivacyUploadScreen />;
 }

@@ -49,6 +49,8 @@ htmlcov/
 *.pt
 /video-models/
 /backend/model/shap-background-*.npy
+backend/model/*.h5
+backend/model/model-contract.json
 
 # Per-machine editor/tool preferences.
 .impeccable/

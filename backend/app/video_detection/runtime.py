@@ -11,9 +11,10 @@ import sys
 from types import SimpleNamespace
 
 from backend.app.video_detection.contract import DetectionError, load_contract, validate_predictions
+from backend.app.video_detection.visualization import render_visualization
 
 
-def _patch_occlusion_evidence(model, patches, coordinates, score):
+def _patch_occlusion_evidence(model, patches, coordinates, score, patch_labels):
     """Measure bounded model sensitivity to each anonymous VSViG input patch."""
 
     import torch
@@ -28,6 +29,7 @@ def _patch_occlusion_evidence(model, patches, coordinates, score):
                 raise DetectionError("invalid_model_output")
             parts.append({
                 "patch_index": patch_index,
+                "component": patch_labels[patch_index],
                 "score_change": float(score - alternate.item()),
             })
     return {
@@ -37,14 +39,36 @@ def _patch_occlusion_evidence(model, patches, coordinates, score):
     }
 
 
+def _track_single_pose(previous_poses, keypoints, pose_class, track_function):
+    """Require the pinned OpenPose tracker to preserve one subject identity."""
+
+    current_pose = pose_class(keypoints[:, :2].copy(), float(keypoints[:, 2].mean()))
+    current_poses = [current_pose]
+    track_function(previous_poses, current_poses, threshold=3, smooth=False)
+    if previous_poses and current_pose.id != previous_poses[0].id:
+        raise DetectionError("ambiguous_or_missing_pose")
+    return current_poses
+
+
 def module_from_file(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load upstream module: {name}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous = sys.modules.get(name)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        if previous is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+        raise
     return module
 
 
-def run(source: Path) -> dict:
+def run(source: Path, visualization_output: Path | None = None) -> dict:
     root, contract = load_contract()
     import cv2
     import numpy as np
@@ -55,6 +79,7 @@ def run(source: Path) -> dict:
     from demo import infer_fast
     from models.with_mobilenet import PoseEstimationWithMobileNet
     from modules.keypoints import extract_keypoints, group_keypoints
+    from modules.pose import Pose, track_poses
 
     upstream = module_from_file("mds01_vsvig_upstream", root / "vsvig/VSViG.py")
     patches_module = module_from_file("mds01_vsvig_patches", root / "vsvig/extract_patches.py")
@@ -81,10 +106,12 @@ def run(source: Path) -> dict:
         raise DetectionError("video_incompatible")
     duration = count / fps
     patches, coordinates, times, rows = [], [], [], []
+    pose_samples = []
+    previous_poses = []
     strongest_flagged = None
     frame_index, next_sample = 0, 0
-    # Upstream extractor drops neck and two eye points. Explicitly reorder its
-    # input so the reviewed patch order is preserved independently of pose order.
+    # The upstream extractor removes slots 1, 14, and 15. Place the reviewed
+    # 15-point model order into its surviving slots before calling it.
     kept = [i for i in range(18) if i not in (1, 14, 15)]
     try:
         with torch.inference_mode():
@@ -119,19 +146,33 @@ def run(source: Path) -> dict:
                     raise DetectionError("incomplete_pose")
                 if (keypoints[:, :2] < 0).any() or (keypoints[:, 0] >= frame.shape[1]).any() or (keypoints[:, 1] >= frame.shape[0]).any():
                     raise DetectionError("incomplete_pose")
+                previous_poses = _track_single_pose(
+                    previous_poses,
+                    keypoints,
+                    Pose,
+                    track_poses,
+                )
+                pose_samples.append((index / fps, keypoints.copy()))
                 reordered = keypoints.copy()
                 reordered[kept] = keypoints[p["patch_order"]]
                 if p["color_order"] == "RGB":
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                patch = patches_module.extract_patches(frame, reordered)
-                if patch.shape != (15, 32, 32, 3) or not np.isfinite(patch).all():
+                patch = patches_module.extract_patches(
+                    frame,
+                    reordered,
+                    kernel_size=int(p["patch_kernel_size"]),
+                    kernel_sigma=float(p["patch_sigma"]),
+                    scale=float(p["patch_scale"]),
+                )
+                patch_shape = (15, 32, 32, 3)
+                if patch.shape != patch_shape or not np.isfinite(patch).all():
                     raise DetectionError("invalid_patch")
                 kpts = keypoints[p["keypoint_order"]].copy()
                 kpts[:, :2] *= p["coordinate_scale"]
                 patches.append(patch.transpose(0, 3, 1, 2).astype(np.float32) * p["pixel_scale"])
                 coordinates.append(kpts)
                 times.append(index / fps)
-                if len(patches) == 30:
+                if len(patches) == p["frames"]:
                     tensor = torch.from_numpy(np.stack(patches)[None])
                     k_tensor = torch.from_numpy(np.stack(coordinates)[None])
                     result = model(tensor, k_tensor)
@@ -154,17 +195,50 @@ def run(source: Path) -> dict:
         "partition_hash": contract["sha256"]["dy_point_order.pt"],
         "preprocessing_version": p["version"], "contract_version": contract["version"],
         "threshold": contract["threshold"], "calibrated": False,
-        "window_frames": 30, "sample_fps": p["sample_fps"], "stride_frames": p["stride_frames"],
+        "window_frames": p["frames"], "sample_fps": p["sample_fps"], "stride_frames": p["stride_frames"],
+        "input_resolution": {"width": p["width"], "height": p["height"]},
+        "patch_labels": p["patch_labels"],
+        "source_repository": contract.get("upstream_repository"),
+        "pose_repository": contract.get("pose_repository"),
+        "pose_model": "Lightweight OpenPose",
+        "privacy_input": "full-frame-blurred video; audio is not decoded by the model",
+        "postprocessing": "per-window threshold; score is not calibrated",
     }
     if strongest_flagged is not None:
         score, row_index, tensor, k_tensor = strongest_flagged
-        rows[row_index]["model_evidence"] = _patch_occlusion_evidence(model, tensor, k_tensor, score)
-    return validate_predictions(rows, duration, metadata)
+        rows[row_index]["model_evidence"] = _patch_occlusion_evidence(
+            model, tensor, k_tensor, score, p["patch_labels"]
+        )
+    result = validate_predictions(rows, duration, metadata)
+    result["duration_seconds"] = frame_index / fps
+    result["fps"] = fps
+    result["frame_count"] = frame_index
+    if visualization_output is not None:
+        result["visualization"] = render_visualization(
+            source,
+            visualization_output,
+            pose_samples,
+        )
+    else:
+        result["visualization"] = {
+            "available": False,
+            "media_type": "video/mp4",
+            "audio_included": False,
+            "privacy_method": "full-frame-blur-and-skeleton-overlay",
+            "overlay": {"skeleton": True, "model_score": False, "event_markers": False},
+            "frontend_overlay": {"model_score": True, "event_markers": True},
+        }
+    return result
 
 
 if __name__ == "__main__":
     try:
-        result = run(Path(sys.argv[1]))
+        visualization_output = None
+        if len(sys.argv) == 4:
+            visualization_output = Path(sys.argv[3])
+        elif len(sys.argv) != 3:
+            raise DetectionError("runtime_incompatible")
+        result = run(Path(sys.argv[1]), visualization_output)
         Path(sys.argv[2]).write_text(json.dumps(result, allow_nan=False))
     except DetectionError as exc:
         print(str(exc), file=sys.stderr)

@@ -2,17 +2,33 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import secrets
-import subprocess
+import shutil
+import threading
+import time
+# All subprocess calls below use fixed argv arrays and no shell.
+import subprocess  # nosec B404
 from datetime import timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import UploadFile
-from sqlmodel import Session
+from sqlalchemy import inspect as sqlalchemy_inspect
+from sqlmodel import Session, select
 
-from backend.app.core.config import VIDEO_RETENTION_SECONDS
+from backend.app.core.config import (
+    CLEANUP_INTERVAL_SECONDS,
+    VIDEO_MAX_OUTPUT_BYTES,
+    VIDEO_PRIVACY_MAX_ACTIVE_JOBS,
+    VIDEO_PRIVACY_MAX_ACTIVE_JOBS_PER_OWNER,
+    VIDEO_PRIVACY_MAX_CONCURRENT_JOBS,
+    VIDEO_PREFLIGHT_TIMEOUT_SECONDS,
+    VIDEO_PRIVACY_TIMEOUT_SECONDS,
+    VIDEO_RETENTION_SECONDS,
+)
 from backend.app.database.db import engine
 from backend.app.database.models.video import (
     VideoPrivacyJob,
@@ -20,7 +36,12 @@ from backend.app.database.models.video import (
     VideoPrivacyStatus,
     utc_now,
 )
-from backend.app.database.repository import count_video_jobs, get_video_job
+from backend.app.database.repository import (
+    count_active_video_jobs,
+    count_active_video_jobs_for_owner,
+    count_video_jobs,
+    get_video_job,
+)
 from backend.app.services.video_storage_service import VideoStorage
 from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProcessorError
 
@@ -35,6 +56,24 @@ PROFILE_DETAILS: dict[VideoPrivacyProfile, dict[str, str]] = {
         "description": "Replace the scene with pose landmarks on a non-identifying background.",
     },
 }
+
+
+LOGGER = logging.getLogger(__name__)
+VIDEO_PRIVACY_ADMISSION_LOCK = threading.Lock()
+VIDEO_PRIVACY_PROCESS_SEMAPHORE = threading.BoundedSemaphore(VIDEO_PRIVACY_MAX_CONCURRENT_JOBS)
+ACTIVE_PRIVACY_PROCESS_STATUSES = frozenset(
+    {
+        VideoPrivacyStatus.PREFLIGHT,
+        VideoPrivacyStatus.PROCESSING,
+        VideoPrivacyStatus.VALIDATING,
+    }
+)
+ACTIVE_PRIVACY_STATUSES = ACTIVE_PRIVACY_PROCESS_STATUSES | {VideoPrivacyStatus.QUEUED}
+
+
+class VideoPrivacyCapacityError(RuntimeError):
+    """Raised before upload storage when privacy capacity is exhausted."""
+
 
 
 def new_video_job_id() -> str:
@@ -52,27 +91,51 @@ def parse_profile(value: str | None) -> VideoPrivacyProfile:
 
 
 def finalize_protected_video(source: Path, visual: Path, output: Path) -> None:
-    """Keep one source audio stream while removing non-review metadata."""
+    """Finalize one audio-free privacy-safe video without source metadata."""
 
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        raise VideoProcessorError("Required video tooling is unavailable.")
+    success = False
     try:
-        subprocess.run(
+        if output.is_symlink() or (output.exists() and not output.is_file()):
+            raise VideoProcessorError("Protected output path is invalid.")
+        output.unlink(missing_ok=True)
+        subprocess.run(  # nosec B603
             [
-                "ffmpeg", "-nostdin", "-v", "error", "-y",
-                "-i", str(visual), "-i", str(source),
-                "-map", "0:v:0", "-map", "1:a:0?",
-                "-c:v", "copy", "-c:a", "copy",
+                ffmpeg, "-nostdin", "-v", "error", "-y",
+                "-i", str(visual),
+                "-map", "0:v:0", "-an", "-c:v", "copy",
                 "-map_metadata", "-1", "-map_chapters", "-1", "-sn", "-dn",
-                "-movflags", "+faststart", str(output),
+                "-movflags", "+faststart", "-fs", str(VIDEO_MAX_OUTPUT_BYTES), str(output),
             ],
-            check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=VIDEO_PRIVACY_TIMEOUT_SECONDS,
         )
-        inspected = subprocess.run(
+        if (
+            output.is_symlink()
+            or not output.is_file()
+            or output.stat().st_size == 0
+            or output.stat().st_size > VIDEO_MAX_OUTPUT_BYTES
+        ):
+            raise VideoProcessorError("Protected output exceeded the configured size policy.")
+        inspected = subprocess.run(  # nosec B603
             [
-                "ffprobe", "-v", "error", "-show_entries",
+                ffprobe, "-v", "error", "-show_entries",
                 "format_tags:stream=codec_type:stream_tags", "-of", "json", str(output),
             ],
-            check=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=VIDEO_PRIVACY_TIMEOUT_SECONDS,
         )
+        if len(inspected.stdout) > 64 * 1024:
+            raise VideoProcessorError("Protected output metadata exceeded the configured limit.")
         details = json.loads(inspected.stdout)
         streams = details.get("streams", [])
         stream_types = [stream.get("codec_type") for stream in streams]
@@ -86,7 +149,7 @@ def finalize_protected_video(source: Path, visual: Path, output: Path) -> None:
         }
         if (
             stream_types.count("video") != 1
-            or stream_types.count("audio") > 1
+            or stream_types.count("audio") != 0
             or any(kind not in {"video", "audio"} for kind in stream_types)
             or set(format_tags) - allowed_format_tags
             or any(set(stream.get("tags", {})) - allowed_stream_tags for stream in streams)
@@ -96,8 +159,16 @@ def finalize_protected_video(source: Path, visual: Path, output: Path) -> None:
             )
         ):
             raise VideoProcessorError("Protected output did not meet the audio and metadata policy.")
-    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-        raise VideoProcessorError("Protected output could not preserve audio safely.") from exc
+        success = True
+    except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise VideoProcessorError("Protected output could not be finalized safely.") from exc
+    finally:
+        if not success:
+            try:
+                if output.is_symlink() or output.is_file():
+                    output.unlink(missing_ok=True)
+            except OSError:
+                logging.getLogger(__name__).exception("Protected output cleanup failed")
 
 
 def _safe_content_type(upload: UploadFile) -> str:
@@ -116,6 +187,17 @@ def _safe_content_type(upload: UploadFile) -> str:
     return "video/mp4"
 
 
+def _preflight_uploaded_video(storage: VideoStorage, job_id: str, encrypted: Path) -> dict[str, float | int]:
+    """Decrypt and preflight one upload under a cooperative wall-clock deadline."""
+
+    deadline = time.monotonic() + VIDEO_PREFLIGHT_TIMEOUT_SECONDS
+    source = storage.materialize_original(job_id, encrypted, deadline=deadline)
+    try:
+        return VideoPrivacyProcessor.preflight(source, deadline=deadline)
+    finally:
+        storage.delete_work_file(source)
+
+
 async def create_video_job(
     db: Session,
     storage: VideoStorage,
@@ -126,30 +208,31 @@ async def create_video_job(
     """Create metadata and encrypt the source before queueing processing."""
 
     content_type = _safe_content_type(upload)
-    upload_number = count_video_jobs(db, owner_user_id) + 1
-    job = VideoPrivacyJob(
-        owner_user_id=owner_user_id,
-        job_id=new_video_job_id(),
-        profile=profile,
-        display_label=f"Video upload {upload_number:02d}",
-        content_type=content_type,
-        status=VideoPrivacyStatus.QUEUED,
-        current_stage="preflight",
-        retention_expires_at=utc_now() + timedelta(seconds=VIDEO_RETENTION_SECONDS),
-    )
-    db.add(job)
-    db.commit()
-    db.refresh(job)
+    with VIDEO_PRIVACY_ADMISSION_LOCK:
+        if count_active_video_jobs(db) >= VIDEO_PRIVACY_MAX_ACTIVE_JOBS:
+            raise VideoPrivacyCapacityError("The video privacy service is at capacity. Try again later.")
+        if count_active_video_jobs_for_owner(db, owner_user_id) >= VIDEO_PRIVACY_MAX_ACTIVE_JOBS_PER_OWNER:
+            raise VideoPrivacyCapacityError("This account already has a video privacy job in progress.")
+        upload_number = count_video_jobs(db, owner_user_id) + 1
+        job = VideoPrivacyJob(
+            owner_user_id=owner_user_id,
+            job_id=new_video_job_id(),
+            profile=profile,
+            display_label=f"Video upload {upload_number:02d}",
+            content_type=content_type,
+            status=VideoPrivacyStatus.QUEUED,
+            current_stage="preflight",
+            retention_expires_at=utc_now() + timedelta(seconds=VIDEO_RETENTION_SECONDS),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
     try:
         encrypted = await storage.save_upload(job.job_id, upload)
         job.original_path = str(encrypted)
         # Size is a coarse technical field, not client-provided identity.
         job.file_size_bytes = max(0, encrypted.stat().st_size)
-        source = storage.materialize_original(job.job_id, encrypted)
-        try:
-            preflight = VideoPrivacyProcessor.preflight(source)
-        finally:
-            source.unlink(missing_ok=True)
+        preflight = await asyncio.to_thread(_preflight_uploaded_video, storage, job.job_id, encrypted)
         job.fps = float(preflight["fps"])
         job.width = int(preflight["width"])
         job.height = int(preflight["height"])
@@ -160,11 +243,21 @@ async def create_video_job(
         db.commit()
         db.refresh(job)
         return job
+    except asyncio.CancelledError:
+        try:
+            storage.delete_job(job.job_id)
+        except Exception:
+            logging.getLogger(__name__).exception("Cancelled privacy upload cleanup failed")
+        db.delete(job)
+        db.commit()
+        raise
     except Exception:
         storage.delete_job(job.job_id)
         db.delete(job)
         db.commit()
         raise
+    finally:
+        await upload.close()
 
 
 def _set_stage(db: Session, job: VideoPrivacyJob, stage: str, status: VideoPrivacyStatus) -> None:
@@ -174,7 +267,51 @@ def _set_stage(db: Session, job: VideoPrivacyJob, stage: str, status: VideoPriva
     db.commit()
 
 
+def _mark_privacy_job_failed(
+    db: Session,
+    job: VideoPrivacyJob,
+    storage: VideoStorage,
+    *,
+    stage: str,
+    message: str,
+) -> bool:
+    """Persist a terminal failure after best-effort private cleanup."""
+
+    cleanup_succeeded = True
+    try:
+        storage.cleanup(job.job_id, keep_retained=False)
+    except Exception:
+        cleanup_succeeded = False
+        LOGGER.exception("Privacy job cleanup failed after processing error.")
+    job.status = VideoPrivacyStatus.FAILED
+    job.current_stage = stage if cleanup_succeeded else "cleanup"
+    job.error_message = message
+    job.output_usable = False
+    if cleanup_succeeded:
+        job.original_path = None
+        job.output_path = None
+        job.preview_path = None
+    db.add(job)
+    db.commit()
+    return cleanup_succeeded
+
+
 def process_video_privacy_job(
+    job_id: str,
+    *,
+    storage: VideoStorage | None = None,
+    processor: VideoPrivacyProcessor | None = None,
+) -> None:
+    """Run one privacy job under the configured global worker limit."""
+
+    VIDEO_PRIVACY_PROCESS_SEMAPHORE.acquire()
+    try:
+        _process_video_privacy_job(job_id, storage=storage, processor=processor)
+    finally:
+        VIDEO_PRIVACY_PROCESS_SEMAPHORE.release()
+
+
+def _process_video_privacy_job(
     job_id: str,
     *,
     storage: VideoStorage | None = None,
@@ -225,17 +362,81 @@ def process_video_privacy_job(
             job.original_removed_at = utc_now()
             db.add(job)
             db.commit()
+        except asyncio.CancelledError:
+            _mark_privacy_job_failed(
+                db,
+                job,
+                storage,
+                stage="interrupted",
+                message="Processing stopped before completion.",
+            )
+            raise
         except Exception:
-            storage.cleanup(job.job_id, keep_retained=False)
-            job.status = VideoPrivacyStatus.FAILED
-            job.current_stage = job.current_stage or "preflight"
-            job.error_message = "The video could not be transformed safely."
-            job.original_path = None
-            job.output_path = None
-            job.preview_path = None
-            job.output_usable = False
-            db.add(job)
-            db.commit()
+            _mark_privacy_job_failed(
+                db,
+                job,
+                storage,
+                stage=job.current_stage or "preflight",
+                message="The video could not be transformed safely.",
+            )
+
+
+def sweep_video_privacy_jobs(*, startup: bool = False) -> None:
+    """Clean standalone privacy work and expire retained output safely."""
+
+    active_statuses = ACTIVE_PRIVACY_STATUSES
+    if not sqlalchemy_inspect(engine).has_table("video_privacy_jobs"):
+        return
+    with Session(engine) as db:
+        storage = VideoStorage()
+        jobs = list(db.exec(select(VideoPrivacyJob)).all())
+        for job in jobs:
+            if startup and job.status in active_statuses:
+                _mark_privacy_job_failed(
+                    db,
+                    job,
+                    storage,
+                    stage="recovered-after-restart",
+                    message="Processing stopped before completion.",
+                )
+                continue
+            if (
+                job.status in ACTIVE_PRIVACY_PROCESS_STATUSES
+                and job.retention_expires_at
+                and _is_expired(job.retention_expires_at)
+            ):
+                _mark_privacy_job_failed(
+                    db,
+                    job,
+                    storage,
+                    stage="retention-expired",
+                    message="Processing exceeded the private retention window.",
+                )
+                continue
+            if job.status in ACTIVE_PRIVACY_PROCESS_STATUSES:
+                continue
+            if job.status in {VideoPrivacyStatus.READY, VideoPrivacyStatus.NEEDS_REVIEW}:
+                try:
+                    storage.cleanup(job.job_id, keep_retained=True)
+                except Exception:
+                    logging.getLogger(__name__).exception("Privacy work cleanup failed")
+            elif job.status == VideoPrivacyStatus.FAILED:
+                try:
+                    storage.cleanup(job.job_id, keep_retained=False)
+                except Exception:
+                    logging.getLogger(__name__).exception("Failed privacy job cleanup failed")
+            _expire_if_needed(db, job, storage)
+
+
+async def video_privacy_retention_loop(interval_seconds: int = CLEANUP_INTERVAL_SECONDS) -> None:
+    """Periodically sweep standalone privacy jobs until application shutdown."""
+
+    while True:
+        try:
+            await asyncio.to_thread(sweep_video_privacy_jobs)
+        except Exception:
+            logging.getLogger(__name__).exception("Privacy retention sweep failed")
+        await asyncio.sleep(interval_seconds)
 
 
 def _expire_if_needed(db: Session, job: VideoPrivacyJob, storage: VideoStorage | None = None) -> VideoPrivacyJob:
@@ -244,7 +445,11 @@ def _expire_if_needed(db: Session, job: VideoPrivacyJob, storage: VideoStorage |
     if (
         job.retention_expires_at
         and _is_expired(job.retention_expires_at)
-        and job.status not in {VideoPrivacyStatus.FAILED, VideoPrivacyStatus.EXPIRED}
+        and job.status not in {
+            VideoPrivacyStatus.FAILED,
+            VideoPrivacyStatus.EXPIRED,
+            *ACTIVE_PRIVACY_PROCESS_STATUSES,
+        }
     ):
         if storage is not None:
             storage.delete_job(job.job_id)

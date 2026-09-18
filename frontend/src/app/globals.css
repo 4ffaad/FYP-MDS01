@@ -390,6 +390,26 @@ select {
   animation: upload-check-pop 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+.video-job-loading-state,
+.video-upload-status,
+.video-processing-card,
+.video-status-mark {
+  --base-duration-1000: 1s;
+  --base-easing-linear: linear;
+}
+
+.video-progress-primer {
+  --bgColor-success-emphasis: var(--color-teal);
+  --borderRadius-small: 999px;
+  --progressBar-track-bgColor: var(--color-rule);
+  --progressBar-track-borderColor: transparent;
+}
+
+.video-progress-primer [data-component="ProgressBar.Item"] {
+  border-radius: inherit;
+  transition: width 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 .liquid-surface {
   isolation: isolate;
   background:

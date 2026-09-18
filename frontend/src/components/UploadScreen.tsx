@@ -16,6 +16,7 @@ import type { UploadDraft } from "@/lib/types";
 import { formatBytes } from "@/lib/format";
 import { Icon } from "./Icon";
 import { PrivacyPreview } from "./PrivacyPreview";
+import { VideoUploadStatus } from "./VideoProcessingStatus";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 
@@ -35,15 +36,21 @@ export function UploadScreen() {
   const [step, setStep] = useState<UploadStep>("select");
   const [draft, setDraft] = useState<UploadDraft | null>(null);
   const [caseId, setCaseId] = useState<string | null>(null);
+  const [submittedSessionId, setSubmittedSessionId] = useState<string | null>(
+    null,
+  );
   const [eegSize, setEegSize] = useState<number | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [signalObfuscation, setSignalObfuscation] = useState(false);
   const [progress, setProgress] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [submissionPhase, setSubmissionPhase] = useState<
+    "preparing" | "uploading"
+  >("preparing");
   const [error, setError] = useState<string | null>(null);
   const [partialSessionId, setPartialSessionId] = useState<string | null>(null);
 
-  const hasData = Boolean(draft || videoFile);
+  const hasData = Boolean(draft || videoFile || submittedSessionId);
   const selectedMethod = signalObfuscation
     ? PRIVACY_METHODS[1]
     : PRIVACY_METHODS[0];
@@ -91,7 +98,7 @@ export function UploadScreen() {
       setError(
         uploadError instanceof Error
           ? uploadError.message
-          : "The VEEG archive could not be secured.",
+          : "The EEG archive could not be secured.",
       );
     }
   }
@@ -124,9 +131,11 @@ export function UploadScreen() {
     if (eegInputRef.current) eegInputRef.current.value = "";
     setDraft(null);
     setCaseId(null);
+    setSubmittedSessionId(null);
     setEegSize(null);
     setVideoFile(null);
     setProgress(0);
+    setSubmissionPhase("preparing");
     setError(null);
     setPartialSessionId(null);
     setStep("select");
@@ -135,21 +144,20 @@ export function UploadScreen() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!hasData || step === "staging") {
-      setError(
-        "Choose a VEEG archive, a patient video, or both before continuing.",
-      );
+      setError("Choose an EEG archive, a video, or both before continuing.");
       return;
     }
 
     setSubmitting(true);
+    setSubmissionPhase(draft ? "preparing" : "uploading");
     setError(null);
     setPartialSessionId(null);
-    let sessionId: string | null = null;
+    let sessionId: string | null = submittedSessionId;
     let videoJobId: string | null = null;
     let analysisCaseId = caseId;
 
     try {
-      if (draft) {
+      if (draft && !submittedSessionId) {
         const result = await finalizeUploadDraft(
           draft.draftId,
           signalObfuscation
@@ -159,9 +167,14 @@ export function UploadScreen() {
         );
         sessionId = result.sessionId;
         analysisCaseId = result.caseId;
+        setSubmittedSessionId(sessionId);
+        setCaseId(analysisCaseId);
+        setDraft(null);
+        window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
       }
 
       if (videoFile) {
+        setSubmissionPhase("uploading");
         setProgress(0);
         const result = await uploadDetection(
           videoFile,
@@ -208,7 +221,7 @@ export function UploadScreen() {
               Start a VEEG analysis
             </h1>
             <p className="mt-4 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
-              Select one input or pair both. VEEG and video stay on separate
+              Select one input or pair both. EEG and video stay on separate
               privacy-first paths, then return as one review.
             </p>
           </div>
@@ -216,7 +229,7 @@ export function UploadScreen() {
           <div className="mt-10 grid gap-5 lg:grid-cols-2">
             <ModalityPicker
               id="eeg-file"
-              title="VEEG archive"
+              title="EEG archive"
               eyebrow="Required"
               description="A ZIP containing EDF recordings. The archive is encrypted and staged before you choose the signal treatment."
               accept=".zip,application/zip"
@@ -234,7 +247,7 @@ export function UploadScreen() {
             />
             <ModalityPicker
               id="video-file"
-              title="Patient video"
+              title="Video"
               eyebrow="Optional"
               description="An MP4, MOV, or WebM clip. Face redaction runs before VSViG pose extraction and visual scoring."
               accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm"
@@ -250,7 +263,7 @@ export function UploadScreen() {
           {step === "staging" && (
             <div className="mt-6 max-w-xl" aria-live="polite">
               <div className="flex justify-between text-xs text-ink-muted">
-                <span>Securing temporary VEEG upload</span>
+                <span>Securing temporary EEG upload</span>
                 <span className="font-mono tabular-nums">{progress}%</span>
               </div>
               <Progress
@@ -286,7 +299,7 @@ export function UploadScreen() {
           </h1>
           <p className="mt-4 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
             The selected modality determines the privacy treatment and model
-            path. A combined upload creates one review page with separate VEEG
+            path. A combined upload creates one review page with separate EEG
             and video status.
           </p>
         </div>
@@ -295,6 +308,11 @@ export function UploadScreen() {
           className="mt-10 grid items-start gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]"
           onSubmit={(event) => void handleSubmit(event)}
         >
+          {submitting && videoFile && (
+            <div className="lg:col-span-2">
+              <VideoUploadStatus progress={progress} phase={submissionPhase} />
+            </div>
+          )}
           <section
             className="panel glass-panel overflow-hidden"
             aria-labelledby="pipeline-heading"
@@ -311,7 +329,7 @@ export function UploadScreen() {
               {draft && !videoFile && (
                 <AdditionalPicker
                   id="video-file"
-                  label="Add patient video"
+                  label="Add video"
                   accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm"
                   onChange={handleVideoChange}
                 />
@@ -319,7 +337,7 @@ export function UploadScreen() {
               {videoFile && !draft && (
                 <AdditionalPicker
                   id="eeg-file"
-                  label="Add VEEG archive"
+                  label="Add EEG archive"
                   accept=".zip,application/zip"
                   inputRef={eegInputRef}
                   onChange={(event) => void handleEegChange(event)}
@@ -329,7 +347,7 @@ export function UploadScreen() {
                 <div className="rounded-xl border border-teal bg-teal-soft/40 px-4 py-4">
                   <PipelineRow
                     icon="activity"
-                    title="VEEG analysis"
+                    title="EEG analysis"
                     detail={`Encrypt → metadata scrub${signalObfuscation ? " → signal obfuscation" : ""} → H5 model → report`}
                   />
                   <p className="mt-2 pl-8 text-xs font-semibold text-teal-dark">
@@ -342,10 +360,12 @@ export function UploadScreen() {
                   <PipelineRow
                     icon="activity"
                     title="Video seizure review"
-                    detail="Encrypt → face redaction → VSViG model → evidence timeline"
+                    detail="Encrypt → face redaction → pose keypoints → VSViG model → evidence timeline"
                   />
                   <p className="mt-3 pl-8 text-xs leading-5 text-ink-muted">
-                    Audio is excluded from this visual-only detection workflow.
+                    Lightweight OpenPose supplies the keypoints that VSViG
+                    scores. Audio is excluded from this visual-only detection
+                    workflow.
                   </p>
                 </div>
               )}
@@ -385,7 +405,7 @@ export function UploadScreen() {
                 <p>
                   <span className="font-semibold text-ink">
                     {draft
-                      ? `${formatBytes(eegSize ?? 0)} VEEG archive staged`
+                      ? `${formatBytes(eegSize ?? 0)} EEG archive staged`
                       : "Video selected"}
                     .
                   </span>{" "}
@@ -397,7 +417,7 @@ export function UploadScreen() {
                   className="mt-3 block text-sm font-semibold text-teal-dark underline underline-offset-4"
                   href={`/sessions/${encodeURIComponent(partialSessionId)}`}
                 >
-                  Open the submitted VEEG analysis
+                  Open the submitted EEG analysis
                 </Link>
               )}
               <Button
@@ -595,7 +615,8 @@ function PipelinePreview() {
       </div>
       <p className="mt-4 text-xs leading-5 text-ink-muted">
         VEEG uses the reviewed H5 contract. Video uses face-redacted frames with
-        a separate VSViG review output. Both remain research-only.
+        Lightweight OpenPose keypoints and a separate VSViG review output; audio
+        is excluded from model input. Both remain research-only.
       </p>
     </section>
   );
@@ -645,9 +666,10 @@ function VideoPrivacySummary() {
             Video privacy is fixed for detection
           </h2>
           <p className="mt-2 text-sm leading-6 text-ink-muted">
-            The detector receives face-redacted frames. Audio is excluded, and
-            the output is labeled as an uncalibrated model score until a video
-            calibration process is validated.
+            The detector receives face-redacted visual frames and pose
+            keypoints. Audio is excluded from model input, and the output is
+            labeled as an uncalibrated model score until a video calibration
+            process is validated.
           </p>
         </div>
       </div>

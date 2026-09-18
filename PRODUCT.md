@@ -36,9 +36,12 @@ model assets remain outside Git.
 
 - EEG follows `privacy → model` with metadata scrubbing and optional signal
   obfuscation before research-only model review.
-- Video follows `privacy → model` with face redaction before VSViG visual
-  inference; detection playback is muted and privacy playback retains audio
-  only in the encrypted owner-only output.
+- Video detection follows `face redaction → shared Lightweight OpenPose keypoints →
+  { VSViG visual inference → evidence timeline; privacy-safe masked video →
+  skeleton overlay }`; it publishes owner-scoped encrypted prediction results
+  and an encrypted privacy-safe review artifact, never source playback. The
+  separate video privacy utility may retain audio only in its encrypted
+  owner-only output.
 - A unified upload may contain one or both modalities. Missing modalities are
   skipped and reported; the workflows remain independent internally.
 - Results are research-only and never a diagnosis or treatment recommendation.

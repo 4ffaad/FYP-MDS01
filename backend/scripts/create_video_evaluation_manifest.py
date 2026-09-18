@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 import random
 import re
-import subprocess
+import shutil
+# Evaluation manifests never execute user-provided commands or shell syntax.
+import subprocess  # nosec B404
 
 
 SUBJECT = re.compile(r"^(S\d+)_", re.IGNORECASE)
@@ -26,7 +28,7 @@ def split_by_subject(subjects: set[str], seed: int) -> dict[str, str]:
     ordered = sorted(subjects)
     if len(ordered) < 3:
         raise ValueError("At least three subjects are needed for train/calibration/test splits.")
-    random.Random(seed).shuffle(ordered)
+    random.Random(seed).shuffle(ordered)  # nosec B311
     train_end = max(1, round(len(ordered) * 0.6))
     calibration_end = min(len(ordered) - 1, train_end + max(1, round(len(ordered) * 0.2)))
     return {
@@ -36,8 +38,11 @@ def split_by_subject(subjects: set[str], seed: int) -> dict[str, str]:
 
 
 def duration_seconds(path: Path) -> float:
-    completed = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nokey=1:noprint_wrappers=1", str(path)],
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        raise RuntimeError("ffprobe is required to build an evaluation manifest.")
+    completed = subprocess.run(  # nosec B603
+        [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nokey=1:noprint_wrappers=1", str(path)],
         check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
     )
     duration = float(completed.stdout.strip())

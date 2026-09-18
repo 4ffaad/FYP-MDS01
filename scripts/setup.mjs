@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -15,7 +15,8 @@ export function setup(root) {
       content = content
         .replace(/^POSTGRES_PASSWORD=.*$/m, `POSTGRES_PASSWORD=${randomBytes(24).toString("hex")}`)
         .replace(/^MDS01_STORAGE_KEY=.*$/m, `MDS01_STORAGE_KEY=${randomBytes(32).toString("base64")}`)
-        .replace(/^MDS01_TEMPLATE_KEY=.*$/m, `MDS01_TEMPLATE_KEY=${randomBytes(32).toString("base64")}`);
+        .replace(/^MDS01_TEMPLATE_KEY=.*$/m, `MDS01_TEMPLATE_KEY=${randomBytes(32).toString("base64")}`)
+        .replace(/^DEMO_ADMIN_PASSWORD=.*$/m, `DEMO_ADMIN_PASSWORD=${randomBytes(16).toString("hex")}`);
     }
     try {
       writeFileSync(resolve(root, destination), content, { flag: "wx", mode: 0o600 });
@@ -23,13 +24,31 @@ export function setup(root) {
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       // Repair older local files without rotating existing secrets.
+      const existingPath = resolve(root, destination);
+      const existingStats = lstatSync(existingPath);
+      if (existingStats.isSymbolicLink() || !existingStats.isFile()) {
+        throw new Error(`${destination} must be a regular file, not a symlink or directory`);
+      }
+      chmodSync(existingPath, 0o600);
       if (destination === ".env") {
-        const existing = readFileSync(resolve(root, destination), "utf8");
+        const existing = readFileSync(existingPath, "utf8");
         const additions = [];
-        if (!/^POSTGRES_PASSWORD=/m.test(existing)) additions.push(`POSTGRES_PASSWORD=${randomBytes(24).toString("hex")}`);
-        if (!/^MDS01_STORAGE_KEY=/m.test(existing)) additions.push(`MDS01_STORAGE_KEY=${randomBytes(32).toString("base64")}`);
-        if (!/^MDS01_TEMPLATE_KEY=/m.test(existing)) additions.push(`MDS01_TEMPLATE_KEY=${randomBytes(32).toString("base64")}`);
-        if (additions.length) writeFileSync(resolve(root, destination), `${existing.trimEnd()}\n${additions.join("\n")}\n`, { mode: 0o600 });
+        let repaired = existing;
+        const generators = {
+          POSTGRES_PASSWORD: () => randomBytes(24).toString("hex"),
+          MDS01_STORAGE_KEY: () => randomBytes(32).toString("base64"),
+          MDS01_TEMPLATE_KEY: () => randomBytes(32).toString("base64"),
+          DEMO_ADMIN_PASSWORD: () => randomBytes(16).toString("hex"),
+        };
+        for (const [key, generate] of Object.entries(generators)) {
+          const match = existing.match(new RegExp(`^${key}=(.*)$`, "m"));
+          if (!match) {
+            additions.push(`${key}=${generate()}`);
+          } else if (!match[1].trim() || match[1].trim().startsWith("replace-with-")) {
+            repaired = repaired.replace(new RegExp(`^${key}=.*$`, "m"), `${key}=${generate()}`);
+          }
+        }
+        if (additions.length || repaired !== existing) writeFileSync(existingPath, `${repaired.trimEnd()}\n${additions.join("\n")}\n`, { mode: 0o600 });
       }
       return `Kept existing ${destination}`;
     }

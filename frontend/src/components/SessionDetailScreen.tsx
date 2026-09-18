@@ -3,7 +3,13 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { deleteSession, getSession, toDisplayStatus } from "@/lib/api";
+import {
+  deleteSession,
+  getSession,
+  pollRetryDelay,
+  shouldRetryRequest,
+  toDisplayStatus,
+} from "@/lib/api";
 import { formatSubmittedAt } from "@/lib/format";
 import type { Session } from "@/lib/types";
 import { Icon } from "./Icon";
@@ -45,6 +51,7 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
     const controller = new AbortController();
     let mounted = true;
     let timer: number | undefined;
+    let retryAttempt = 0;
     const load = async () => {
       if (document.hidden) {
         timer = window.setTimeout(() => void load(), POLL_INTERVAL_MS);
@@ -56,6 +63,7 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
         if (!mounted) return;
         setSession(nextSession);
         setError(null);
+        retryAttempt = 0;
         shouldPoll = ACTIVE_SESSION_STATUSES.has(nextSession.status);
       } catch (loadError: unknown) {
         if (
@@ -63,7 +71,10 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
           loadError.name === "AbortError"
         )
           return;
-        if (mounted)
+        if (mounted && shouldRetryRequest(loadError)) {
+          retryAttempt += 1;
+          shouldPoll = true;
+        } else if (mounted)
           setError(
             loadError instanceof Error
               ? loadError.message
@@ -71,7 +82,10 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
           );
       } finally {
         if (mounted && shouldPoll && !controller.signal.aborted)
-          timer = window.setTimeout(() => void load(), POLL_INTERVAL_MS);
+          timer = window.setTimeout(
+            () => void load(),
+            pollRetryDelay(retryAttempt, POLL_INTERVAL_MS),
+          );
       }
     };
     void load();

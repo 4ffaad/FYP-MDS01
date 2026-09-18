@@ -7,14 +7,16 @@ from pathlib import Path
 import secrets
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+
 from sqlmodel import Session
 
-from backend.app.core.security import require_api_auth
+from backend.app.core.security import owner_id, require_api_auth
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
 from backend.app.database import video_detection_repository as repository
+from backend.app.services.case_service import CaseReferenceError
 from backend.app.services import video_detection_service as service
-from backend.app.services.video_storage_service import VideoStorage
+from backend.app.services.video_storage_service import CleanupFileResponse, VideoStorage
 from backend.app.services.storage_service import StorageError
 from backend.app.video_detection.contract import DetectionError
 
@@ -28,9 +30,9 @@ def account(user: User | None = Depends(require_api_auth)) -> User:
 
 
 def scoped_owner(user: User) -> int | None:
-    """Return the owner filter, leaving the demo admin unfiltered for reads."""
+    """Return the shared owner filter for detection reads."""
 
-    return None if user.is_admin else user.id
+    return owner_id(user)
 
 
 def owned(job_id, owner, db, storage):
@@ -61,6 +63,8 @@ async def create(background_tasks: BackgroundTasks, video: UploadFile = File(...
             )
         background_tasks.add_task(service.process_job, job.job_id)
         return {"job": service.public_job(db, job, VideoStorage())}
+    except CaseReferenceError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except DetectionError as exc:
         raise HTTPException(422 if str(exc) == "video_incompatible" else 503, service.ERRORS.get(str(exc), service.ERRORS["processing_failed"])) from exc
     except StorageError as exc:
@@ -83,6 +87,41 @@ def listing(current_user: User = Depends(account), db: Session = Depends(get_ses
 def detail(job_id: str, current_user: User = Depends(account), db: Session = Depends(get_session)):
     storage = VideoStorage()
     return {"job": service.public_job(db, owned(job_id, scoped_owner(current_user), db, storage), storage)}
+
+
+@router.get("/jobs/{job_id}/visualization")
+def visualization(
+    job_id: str,
+    current_user: User = Depends(account),
+    db: Session = Depends(get_session),
+) -> CleanupFileResponse:
+    """Stream only the encrypted privacy-safe review visualization."""
+
+    storage = VideoStorage()
+    job = owned(job_id, scoped_owner(current_user), db, storage)
+    expected_path = storage.visualization_path(job_id)
+    if (
+        job.status != "ready"
+        or not job.visualization_path
+        or Path(job.visualization_path) != expected_path
+    ):
+        raise HTTPException(409, "The privacy-safe visualization is not available.")
+    try:
+        materialized = storage.materialize_artifact(
+            job_id,
+            expected_path,
+            f"protected-visualization-{secrets.token_hex(8)}.mp4",
+        )
+    except StorageError as exc:
+        raise HTTPException(409, "The privacy-safe visualization is unavailable.") from exc
+    return CleanupFileResponse(
+        materialized,
+        cleanup=lambda: storage.delete_work_file(materialized),
+        media_type="video/mp4",
+        filename="protected-video-review.mp4",
+        content_disposition_type="inline",
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache", "Vary": "Cookie, Origin"},
+    )
 
 
 @router.get("/jobs/{job_id}/predictions")

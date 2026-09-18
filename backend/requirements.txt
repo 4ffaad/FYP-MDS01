@@ -1,16 +1,16 @@
-fastapi
-httpx2>=2,<3
-uvicorn[standard]
-python-multipart
-pyedflib
-numpy
-scipy
-sqlmodel
-psycopg[binary]
-alembic
-cryptography
-PyJWT[crypto]>=2.10,<3
-opencv-python-headless>=4.10,<5
-# The processor uses the bundled legacy solutions.pose API.
-# MediaPipe 0.10.14 publishes no native Apple Silicon wheel; Docker/Linux installs it.
-mediapipe==0.10.14; sys_platform != "darwin" or platform_machine != "arm64"
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+python-multipart==0.0.32
+# Keep transitive parser/server helpers on their audited release lines.
+starlette==1.6.0
+click==8.5.0
+python-dotenv==1.2.3
+pyedflib==0.1.42
+numpy==2.1.3
+scipy==1.18.1
+sqlmodel==0.0.42
+psycopg[binary]==3.3.5
+alembic==1.20.0
+cryptography==50.0.1
+PyJWT[crypto]==2.14.0
+opencv-python-headless==4.14.0.94

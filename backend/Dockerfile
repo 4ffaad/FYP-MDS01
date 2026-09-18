@@ -4,8 +4,10 @@ WORKDIR /app
 ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV MPLCONFIGDIR=/tmp/matplotlib
 
 COPY backend/requirements.txt /tmp/requirements.txt
+RUN python -m pip install --no-cache-dir "pip==26.2.1"
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 ARG INSTALL_RESEARCH=false
@@ -22,15 +24,16 @@ RUN case "$INSTALL_VIDEO_DETECTION" in \
       *) echo "Building without VSViG video model dependencies" ;; \
     esac
 
-# MediaPipe also installs OpenCV's contrib wheel, which needs these shared libraries.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Fail the build if the video runtime cannot load in a clean installation.
-RUN python -c "import cv2; import mediapipe as mp; assert hasattr(mp, 'solutions')"
+RUN python -c "import cv2; assert cv2.__version__"
 
 RUN groupadd --system mds01 && useradd --system --gid mds01 --home-dir /app --no-create-home mds01
+RUN mkdir -p /tmp/matplotlib /opt/vsvig /opt/eeg-model \
+    && chown mds01:mds01 /tmp/matplotlib /opt/vsvig /opt/eeg-model
 
 COPY --chown=mds01:mds01 backend /app/backend
 

@@ -6,6 +6,9 @@ import shutil
 import re
 import os
 import secrets
+import stat
+import time
+from datetime import datetime, timezone
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -33,6 +36,9 @@ _TAG_BYTES = 16
 _MAX_ANNOTATION_MEMBER_BYTES = 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES = int(os.getenv("MDS01_MAX_ARCHIVE_TOTAL_BYTES", str(2 * 1024**3)))
 MAX_ZIP_COMPRESSION_RATIO = float(os.getenv("MDS01_MAX_ZIP_COMPRESSION_RATIO", "100"))
+MAX_ARCHIVE_MEMBER_COUNT = int(os.getenv("MDS01_MAX_ARCHIVE_MEMBER_COUNT", "4096"))
+if MAX_ARCHIVE_TOTAL_BYTES <= 0 or MAX_ZIP_COMPRESSION_RATIO <= 0 or MAX_ARCHIVE_MEMBER_COUNT <= 0:
+    raise RuntimeError("Archive limits must be positive.")
 
 
 class SessionStorage:
@@ -68,9 +74,16 @@ class SessionStorage:
             Session directory path for internal service use.
         """
 
-        path = self.root / session_id
+        safe_id = self._safe_session_id(session_id)
+        root = self.root
+        if root.is_symlink() or (root.exists() and not root.is_dir()):
+            raise StorageError("Private storage root is invalid.")
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / safe_id
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise StorageError("Private session storage is invalid.")
         path.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.root, 0o700)
+        os.chmod(root, 0o700)
         os.chmod(path, 0o700)
         return path
 
@@ -82,11 +95,33 @@ class SessionStorage:
             raise StorageError("Storage identifier is invalid.")
         return value
 
+    @staticmethod
+    def _safe_session_id(value: str) -> str:
+        """Validate an EEG or video session directory identifier."""
+
+        if Path(value).name != value or not value.startswith(("SES-", "VID-")):
+            raise StorageError("Storage identifier is invalid.")
+        return value
+
+    def _drafts_root(self, *, create: bool) -> Path:
+        """Return the draft root without following a symlink."""
+
+        path = self.root / "_drafts"
+        if path.is_symlink():
+            raise StorageError("Staged upload storage is invalid.")
+        if path.exists():
+            metadata = path.lstat()
+            if metadata.st_mode & 0o170000 != 0o040000:
+                raise StorageError("Staged upload storage is invalid.")
+        elif create:
+            path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def draft_dir(self, draft_id: str) -> Path:
         """Create and return the private directory for one staged upload."""
 
         safe_id = self._safe_token(draft_id, "UPL-")
-        path = self.root / "_drafts" / safe_id
+        path = self._drafts_root(create=True) / safe_id
         path.mkdir(parents=True, exist_ok=True)
         os.chmod(self.root, 0o700)
         os.chmod(path.parent, 0o700)
@@ -97,6 +132,19 @@ class SessionStorage:
         """Return the encrypted archive path for one staged upload."""
 
         return self.draft_dir(draft_id) / "upload.zip.enc"
+
+    def draft_size(self, draft_id: str) -> int:
+        """Return a staged ciphertext size without following symlinks."""
+
+        safe_id = self._safe_token(draft_id, "UPL-")
+        path = self._drafts_root(create=False) / safe_id / "upload.zip.enc"
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return 0
+        if not path.is_file() or metadata.st_mode & 0o170000 != 0o100000:
+            raise StorageError("Staged upload storage is invalid.")
+        return metadata.st_size
 
     def directory(self, session_id: str, name: str) -> Path:
         """Create and return one approved artifact directory.
@@ -123,6 +171,8 @@ class SessionStorage:
         if name not in {"original", "work", "extracted", "deidentified", "processed", "retained", "explanations"}:
             raise StorageError("Unknown session storage area.")
         path = self.session_dir(session_id) / name
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise StorageError("Session storage area is invalid.")
         path.mkdir(parents=True, exist_ok=True)
         os.chmod(path, 0o700)
         return path
@@ -174,7 +224,7 @@ class SessionStorage:
         nonce = secrets.token_bytes(_NONCE_BYTES)
         encryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce)).encryptor()
         try:
-            with destination.open("wb") as output:
+            with self._open_private_output(destination) as output:
                 output.write(_ENCRYPTED_MAGIC)
                 output.write(nonce)
                 while chunk := await upload.read(1024 * 1024):
@@ -197,15 +247,36 @@ class SessionStorage:
         if not source.exists():
             raise StorageError("Upload draft was not found.")
         destination = self.directory(session_id, "original") / "upload.zip.enc"
-        shutil.copy2(source, destination)
-        os.chmod(destination, 0o600)
+        try:
+            with self._open_private_input(source) as input_stream, self._open_private_output(destination) as output_stream:
+                shutil.copyfileobj(input_stream, output_stream)
+        except FileExistsError as exc:
+            raise StorageError("Session upload already exists.") from exc
         return destination
 
     def delete_draft(self, draft_id: str) -> None:
         """Delete one staged archive and its private directory."""
 
         safe_id = self._safe_token(draft_id, "UPL-")
-        shutil.rmtree(self.root / "_drafts" / safe_id, ignore_errors=True)
+        drafts_root = self._drafts_root(create=False)
+        if drafts_root.exists():
+            self._remove_tree(drafts_root / safe_id)
+
+    def cleanup_orphaned_drafts(self, active_draft_ids: set[str], older_than: datetime) -> None:
+        """Remove old draft directories that have no database row."""
+
+        drafts_root = self._drafts_root(create=False)
+        if not drafts_root.exists():
+            return
+        for candidate in drafts_root.iterdir():
+            if candidate.name in active_draft_ids or not candidate.name.startswith("UPL-"):
+                continue
+            metadata = candidate.lstat()
+            if metadata.st_mode & 0o170000 != 0o040000:
+                raise StorageError("Staged upload storage is invalid.")
+            modified_at = datetime.fromtimestamp(metadata.st_mtime, timezone.utc)
+            if modified_at <= older_than:
+                self._remove_tree(candidate)
 
     def _key(self) -> bytes:
         """Return the injected test key or the required runtime storage key."""
@@ -215,24 +286,60 @@ class SessionStorage:
         except CryptoError as exc:
             raise StorageError(str(exc)) from exc
 
-    def materialize_archive(self, session_id: str, encrypted_path: Path) -> Path:
+    def materialize_archive(self, session_id: str, encrypted_path: Path, *, deadline: float | None = None) -> Path:
         """Decrypt one private ZIP into a short-lived, owner-only work path."""
 
+        safe_path = self._validate_materialization_source(session_id, encrypted_path)
         destination = self.directory(session_id, "work") / "upload.zip"
-        return self._materialize_encrypted(encrypted_path, destination)
+        return self._materialize_encrypted(safe_path, destination, deadline=deadline)
 
-    def materialize_retained_artifact(self, session_id: str, encrypted_path: Path, name: str) -> Path:
+    def materialize_retained_artifact(
+        self, session_id: str, encrypted_path: Path, name: str, *, deadline: float | None = None
+    ) -> Path:
         """Decrypt one retained artifact into temporary private work storage."""
 
         if Path(name).name != name or not name:
             raise StorageError("Retained artifact name is invalid.")
+        safe_path = self._validate_materialization_source(session_id, encrypted_path)
         destination = self.directory(session_id, "work") / name
-        return self._materialize_encrypted(encrypted_path, destination)
+        return self._materialize_encrypted(safe_path, destination, deadline=deadline)
 
-    def _materialize_encrypted(self, encrypted_path: Path, destination: Path) -> Path:
+    def _validate_materialization_source(self, session_id: str, encrypted_path: Path) -> Path:
+        """Require an existing regular ciphertext below one session root."""
+
+        safe_id = self._safe_session_id(session_id)
+        root = Path(os.path.abspath(self.root))
+        if root.is_symlink() or not root.is_dir():
+            raise StorageError("Private storage root is invalid.")
+        session_root = root / safe_id
+        candidate = Path(os.path.abspath(encrypted_path))
+        try:
+            relative = candidate.relative_to(session_root)
+        except ValueError as exc:
+            raise StorageError("Stored artifact path is outside its session.") from exc
+        if session_root.is_symlink() or not session_root.is_dir():
+            raise StorageError("Private session storage is invalid.")
+        current = session_root
+        for part in relative.parts[:-1]:
+            current /= part
+            if current.is_symlink() or not current.is_dir():
+                raise StorageError("Stored artifact path is invalid.")
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError as exc:
+            raise StorageError("Stored artifact was not found.") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise StorageError("Stored artifact path is invalid.")
+        return candidate
+
+    def _materialize_encrypted(
+        self, encrypted_path: Path, destination: Path, *, deadline: float | None = None
+    ) -> Path:
         """Decrypt one AES-GCM file and remove the plaintext on failure."""
 
         try:
+            if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+                raise StorageError("Plaintext destination is invalid.")
             size = encrypted_path.stat().st_size
             minimum_size = len(_ENCRYPTED_MAGIC) + _NONCE_BYTES + _TAG_BYTES
             if size < minimum_size:
@@ -246,8 +353,10 @@ class SessionStorage:
                 source.seek(len(_ENCRYPTED_MAGIC) + _NONCE_BYTES)
                 remaining = size - len(_ENCRYPTED_MAGIC) - _NONCE_BYTES - _TAG_BYTES
                 decryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce, tag)).decryptor()
-                with destination.open("wb") as output:
+                with self._open_private_output(destination) as output:
                     while remaining:
+                        if deadline is not None and time.monotonic() > deadline:
+                            raise StorageError("Stored artifact materialization timed out.")
                         chunk = source.read(min(1024 * 1024, remaining))
                         if not chunk:
                             raise StorageError("Stored archive is incomplete.")
@@ -257,11 +366,34 @@ class SessionStorage:
             os.chmod(destination, 0o600)
             return destination
         except StorageError:
-            destination.unlink(missing_ok=True)
+            self._remove_plaintext_file(destination)
             raise
         except Exception as exc:
-            destination.unlink(missing_ok=True)
+            self._remove_plaintext_file(destination)
             raise StorageError("Stored archive cannot be decrypted.") from exc
+
+    @staticmethod
+    def _remove_plaintext_file(path: Path) -> None:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return
+        if stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _open_private_input(path: Path):
+        """Open a regular private file without following a symlink."""
+
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        return os.fdopen(os.open(path, flags), "rb")
+
+    @staticmethod
+    def _open_private_output(path: Path):
+        """Create a new owner-only file without following a symlink."""
+
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        return os.fdopen(os.open(path, flags, 0o600), "wb")
 
     def store_encrypted_artifact(self, session_id: str, source_path: Path, name: str) -> Path:
         """Encrypt one retained derived artifact and return its private path.
@@ -292,7 +424,7 @@ class SessionStorage:
         nonce = secrets.token_bytes(_NONCE_BYTES)
         encryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce)).encryptor()
         try:
-            with Path(source_path).open("rb") as source, destination.open("wb") as output:
+            with self._open_private_input(Path(source_path)) as source, self._open_private_output(destination) as output:
                 output.write(_ENCRYPTED_MAGIC)
                 output.write(nonce)
                 while chunk := source.read(1024 * 1024):
@@ -341,6 +473,36 @@ class SessionStorage:
 
         return any(part == "__MACOSX" or part.startswith(".") for part in path.parts)
 
+    @classmethod
+    def _validated_archive_members(cls, archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+        """Validate ZIP metadata before any member is read or extracted."""
+
+        members = archive.infolist()
+        if len(members) > MAX_ARCHIVE_MEMBER_COUNT:
+            raise StorageError("ZIP archive contains too many members.")
+
+        total_uncompressed = 0
+        total_compressed = 0
+        for member in members:
+            mode = (member.external_attr >> 16) & 0o170000
+            if mode in {stat.S_IFLNK, stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK}:
+                raise StorageError("Archive contains a special file.")
+            if member.file_size < 0 or member.compress_size < 0:
+                raise StorageError("Archive contains invalid size metadata.")
+            if member.is_dir():
+                continue
+            if member.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+                raise StorageError("Archive member exceeds the size limit.")
+            total_uncompressed += member.file_size
+            total_compressed += member.compress_size
+            if total_uncompressed > MAX_ARCHIVE_TOTAL_BYTES:
+                raise StorageError("ZIP archive exceeds the cumulative total size limit.")
+            if member.file_size / max(member.compress_size, 1) > MAX_ZIP_COMPRESSION_RATIO:
+                raise StorageError("Archive member exceeds the safe compression ratio.")
+        if total_compressed > MAX_UPLOAD_BYTES:
+            raise StorageError("ZIP archive exceeds the compressed size limit.")
+        return members
+
     def read_reference_annotations(self, archive_path: Path) -> dict[str, tuple[str, list[tuple[float, float]]]]:
         """Read optional CHB-MIT reference intervals without retaining source names."""
 
@@ -348,7 +510,7 @@ class SessionStorage:
         summaries: dict[str, list[tuple[float, float]]] = {}
         sidecars: dict[str, list[tuple[float, float]]] = {}
         with zipfile.ZipFile(archive_path) as archive:
-            for member in archive.infolist():
+            for member in self._validated_archive_members(archive):
                 if member.is_dir():
                     continue
                 relative = self._safe_member_path(member.filename)
@@ -396,7 +558,7 @@ class SessionStorage:
         extracted_dir = self.directory(session_id, "extracted")
         with zipfile.ZipFile(archive_path) as archive:
             members: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
-            for member in archive.infolist():
+            for member in self._validated_archive_members(archive):
                 if member.is_dir():
                     continue
                 relative = self._safe_member_path(member.filename)
@@ -407,14 +569,6 @@ class SessionStorage:
                 raise StorageError("ZIP archive does not contain EDF files.")
             if len(members) > MAX_EDF_FILES_PER_ARCHIVE:
                 raise StorageError("ZIP archive contains too many EDF files.")
-            if sum(member.file_size for member, _ in members) > MAX_ARCHIVE_TOTAL_BYTES:
-                raise StorageError("ZIP archive exceeds the cumulative total size limit.")
-            if any(
-                member.file_size / max(member.compress_size, 1) > MAX_ZIP_COMPRESSION_RATIO
-                for member, _ in members
-            ):
-                raise StorageError("Archive member exceeds the safe compression ratio.")
-
             outputs: list[Path] = []
             used_names: set[str] = set()
             natural_key = lambda item: [
@@ -422,8 +576,6 @@ class SessionStorage:
                 for part in re.split(r"(\d+)", item[1].name)
             ]
             for member, relative in sorted(members, key=natural_key):
-                if member.file_size > MAX_ARCHIVE_MEMBER_BYTES:
-                    raise StorageError("Archive member exceeds the size limit.")
                 # Store only the basename to prevent user-controlled directory
                 # layouts from escaping the session boundary.
                 destination = extracted_dir / relative.name
@@ -447,14 +599,27 @@ class SessionStorage:
             Preserve encrypted model-positive artifacts when true.
         """
 
-        session_dir = self.root / session_id
-        if not session_dir.exists():
-            return
+        session_dir = self.root / self._safe_session_id(session_id)
         if not keep_retained:
-            shutil.rmtree(session_dir)
+            self._remove_tree(session_dir)
             return
         for name in ("original", "work", "extracted", "deidentified", "processed", "explanations"):
-            shutil.rmtree(session_dir / name, ignore_errors=True)
+            self._remove_tree(session_dir / name)
+
+    @staticmethod
+    def _remove_tree(path: Path) -> None:
+        """Remove a private directory and fail closed if deletion fails."""
+
+        if not path.exists():
+            if path.is_symlink():
+                raise StorageError("Private storage cleanup encountered a symlink.")
+            return
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            raise StorageError("Private storage cleanup failed.") from exc
+        if path.exists():
+            raise StorageError("Private storage cleanup could not be verified.")
 
     def delete_retained_artifact(self, path: Path) -> None:
         """Delete one encrypted retained artifact after a recording failure.
@@ -486,7 +651,7 @@ class SessionStorage:
             Opaque session identifier whose protected storage should be removed.
         """
 
-        shutil.rmtree(self.root / session_id, ignore_errors=True)
+        self._remove_tree(self.root / self._safe_session_id(session_id))
 
     def cleanup_expired_drafts(self, draft_ids: list[str]) -> None:
         """Remove expired staged upload directories."""

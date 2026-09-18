@@ -62,11 +62,16 @@ flowchart TB
     Choose --> ZIP
     subgraph Detection[Video seizure review]
         DetectionUpload[Video upload] --> DetectionPrivacy[Face redaction]
-        DetectionPrivacy --> DetectionModel[VSViG scoring]
-        DetectionModel --> DetectionReview[Evidence timeline]
+        DetectionPrivacy --> DetectionPose[One shared Lightweight OpenPose pass]
+        DetectionPose --> DetectionPatches[15-keypoint Gaussian patches]
+        DetectionPatches --> DetectionModel[VSViG scoring]
+        DetectionModel --> DetectionReview[Scores and evidence timeline]
+        DetectionPose --> DetectionMask[Full-frame privacy blur]
+        DetectionMask --> DetectionOverlay[Skeleton plus optional score/markers]
+        DetectionOverlay --> DetectionPreview[Encrypted privacy-safe preview]
     end
     Choose --> DetectionUpload
-    subgraph Video[Video privacy]
+    subgraph Video[Standalone video privacy]
         Upload[MP4, MOV or WebM] --> Job[Encrypted upload and video job]
         Job --> Transform[Face redaction with full-frame fallback]
         Transform --> Audio[Keep first audio stream; remove metadata]
@@ -75,14 +80,20 @@ flowchart TB
         Output --> Download[Review caveats and download]
     end
     Scores --> Cleanup[Delete original and transient EEG files]
-    Check --> VideoCleanup[Delete original and transient video files]
+    DetectionReview --> VideoCleanup[Delete original and transient detection files]
+    DetectionPreview --> VideoCleanup
+    Check --> VideoPrivacyCleanup[Delete standalone privacy work files]
 ```
 
-One ZIP creates one session containing multiple recordings. A malformed recording can fail while its siblings complete. New video privacy jobs use face redaction only; original audio is retained in the encrypted, owner-only output and is not de-identified. Video privacy does not run H5, seizure detection or action classification.
+One EEG ZIP creates one session containing multiple recordings. A malformed recording can fail while its siblings complete. New video privacy jobs use face redaction only; original audio is retained in the encrypted, owner-only output and is not de-identified. Video privacy does not run H5, seizure detection or action classification.
 The unified `/upload` screen selects the existing EEG and video-detection paths.
 A paired upload does not create a combined backend entity: `/analysis` polls the
 owner-scoped jobs and links to their full reviews. Video detection is visual-only
-and does not use the retained-audio video-privacy output.
+and does not use the retained-audio video-privacy output. It extracts 18 pose
+keypoints once, fans them out to the 15 VSViG patches and a full-frame-blurred,
+skeleton-overlaid, audio-free review visualization, and publishes only encrypted
+owner-scoped results and that approved visualization; it never publishes source
+or model-input playback.
 
 ## Where to change code
 
@@ -92,14 +103,16 @@ and does not use the retained-audio video-privacy output.
 | Session list / processing status | `DashboardScreen.tsx`, `SessionDetailScreen.tsx` |
 | EEG result explanation | `ResultScreen.tsx`, `PredictionTimeline.tsx`, `SignalViewer.tsx` |
 | Video upload / output review | `VideoPrivacyScreen.tsx` |
+| Video detection review | `VideoDetectionScreen.tsx`, `backend/app/video_detection/` |
 | Browser/backend mapping | `frontend/src/lib/api.ts`, `types.ts` |
 | HTTP endpoints | `backend/app/api/` |
 | EEG processing sequence | `backend/app/services/processing_service.py` |
-| Video job sequence | `backend/app/services/video_privacy_service.py` |
+| Video detection job sequence | `backend/app/services/video_detection_service.py` |
+| Video privacy job sequence | `backend/app/services/video_privacy_service.py` |
 | Video transformation | `backend/app/video_privacy/processor.py` |
 | Input shape and preprocessing | `backend/app/eeg/model_input.py`, `preprocessing.py` |
 | Runtime selection | `backend/app/ml/model_loader.py` |
-| H5 artifact and score semantics | `backend/model/model-contract.json`, `backend/app/ml/h5_inference.py` |
+| H5 artifact and score semantics | operator-mounted `/opt/eeg-model/model-contract.json`, `backend/app/ml/h5_inference.py` |
 | Database operations / schema changes | `backend/app/database/`, a new Alembic migration |
 
 Keep route handlers small. Extend the service that already owns a workflow before adding another coordinator. Keep API calls in the existing browser adapter and use existing shadcn primitives and Hugeicons.
@@ -136,6 +149,7 @@ erDiagram
     USER ||--o{ AUTH_SESSION : signs_in
     USER ||--o{ SESSION : owns
     USER ||--o{ VIDEO_PRIVACY_JOB : owns
+    USER ||--o{ VIDEO_DETECTION_JOB : owns
     SESSION ||--o{ RECORDING : contains
     RECORDING ||--o{ PREDICTION : produces
     PREDICTION ||--o{ EXPLANATION : explains
@@ -146,10 +160,11 @@ Rows created before account ownership was enabled have `owner_user_id = null`
 and are quarantined from normal account queries. They are not reassigned or
 returned to a signed-in user.
 
-Video jobs are independent rows; transformed video artifacts live in the filesystem. PostgreSQL stores status, safe result metadata and private internal artifact references. File bytes stay in private storage.
+Video jobs are independent rows; media artifacts live in the filesystem. PostgreSQL stores status, safe result metadata and private internal artifact references. File bytes stay in private storage.
 
 - EEG originals and intermediate files are deleted after processing. Default retention keeps encrypted transformed model-positive clips with configured context. Full transformed preview is an explicit local-only exception.
-- Video keeps encrypted transformed output and a preview until expiry. Intermittent detection requires acknowledgement before download; no usable transform means no output.
+- Video detection retains only encrypted prediction results until expiry. Source and protected model-input video are deleted after success, failure, expiry, and startup recovery; no detection-video download is published.
+- The separate video-privacy workflow keeps an encrypted transformed output and preview until expiry. Intermittent redaction requires acknowledgement before download; no usable transform means no output.
 - Public responses never return original files, client filenames, patient references, private paths or original metadata.
 - Privacy keys are installation-specific. Changing or losing a key can make retained artifacts unreadable. Setup never overwrites existing keys.
 

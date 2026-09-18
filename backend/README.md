@@ -4,6 +4,7 @@ FastAPI, PostgreSQL and encrypted filesystem storage. Run Docker Compose from th
 
 - [First run and tests](../docs/setup.md)
 - [Architecture](../docs/architecture.md)
+- [Video seizure review setup and model contract](../docs/video-detection.md)
 - [Processing, API and research commands](../docs/backend.md)
 - [Interactive API reference](http://127.0.0.1:8000/docs) when running locally
 

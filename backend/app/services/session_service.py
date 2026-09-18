@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import secrets
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
 from collections.abc import Iterable
 
 from fastapi import UploadFile
+from sqlalchemy import inspect
 from sqlmodel import Session
 
+from backend.app.core.config import (
+    MAX_ACTIVE_UPLOAD_DRAFTS,
+    MAX_PENDING_DRAFT_BYTES,
+    UPLOAD_DRAFT_TTL_SECONDS,
+)
+from backend.app.database.db import engine
 from backend.app.database.models.eeg import EEGRecording, EEGSession, UploadDraft, utc_now
 from backend.app.database.repository import (
     delete_session_data,
@@ -21,15 +31,34 @@ from backend.app.database.repository import (
     list_sessions,
     get_upload_draft,
     list_expired_upload_drafts,
+    list_upload_drafts,
+    list_upload_drafts_for_owner,
 )
-from backend.app.services.storage_service import SessionStorage
-from backend.app.services.case_service import new_case_id
+from backend.app.services.storage_service import SessionStorage, StorageError
+from backend.app.services.case_service import ensure_case_reference, new_case_id
 from backend.app.database.models.eeg import AnalysisStatus
 from backend.app.privacy.methods import (
     canonical_privacy_profile,
     methods_from_profile,
 )
 from backend.app.privacy.retention import model_alert_intervals
+
+
+LOGGER = logging.getLogger(__name__)
+DRAFT_UPLOAD_LOCK = asyncio.Lock()
+DRAFT_LIFECYCLE_LOCK = threading.RLock()
+
+
+def serialize_draft_lifecycle(function):
+    """Serialize finalize/delete filesystem transitions in this process."""
+
+    def guarded(*args, **kwargs):
+        with DRAFT_LIFECYCLE_LOCK:
+            return function(*args, **kwargs)
+
+    guarded.__name__ = function.__name__
+    guarded.__doc__ = function.__doc__
+    return guarded
 
 
 def new_session_id() -> str:
@@ -70,6 +99,41 @@ def cleanup_expired_drafts(db: Session, storage: SessionStorage) -> None:
     db.commit()
 
 
+def sweep_expired_upload_drafts() -> None:
+    """Sweep expired drafts even when no upload request arrives."""
+
+    if not inspect(engine).has_table(str(UploadDraft.__tablename__)):
+        return
+    with Session(engine) as db:
+        storage = SessionStorage()
+        cleanup_expired_drafts(db, storage)
+        active_draft_ids = {draft.draft_id for draft in list_upload_drafts(db)}
+        storage.cleanup_orphaned_drafts(
+            active_draft_ids,
+            utc_now() - timedelta(seconds=UPLOAD_DRAFT_TTL_SECONDS),
+        )
+
+
+async def draft_retention_loop() -> None:
+    """Run draft cleanup independently of video detection configuration."""
+
+    while True:
+        await asyncio.sleep(30)
+        try:
+            await asyncio.to_thread(sweep_expired_upload_drafts)
+        except Exception:
+            LOGGER.warning("Upload draft retention cleanup unavailable; retrying.")
+
+
+def _pending_draft_bytes(db: Session, storage: SessionStorage, owner_user_id: int | None) -> int:
+    """Calculate one owner's staged ciphertext usage without exposing paths."""
+
+    return sum(
+        storage.draft_size(draft.draft_id)
+        for draft in list_upload_drafts_for_owner(db, owner_user_id)
+    )
+
+
 async def create_upload_draft(
     db: Session,
     storage: SessionStorage,
@@ -101,6 +165,12 @@ async def create_upload_draft(
         Storage or database errors are rolled back and propagated.
     """
 
+    existing_drafts = list_upload_drafts_for_owner(db, owner_user_id)
+    if len(existing_drafts) >= MAX_ACTIVE_UPLOAD_DRAFTS:
+        raise StorageError("Too many staged uploads are waiting for completion.")
+    if _pending_draft_bytes(db, storage, owner_user_id) >= MAX_PENDING_DRAFT_BYTES:
+        raise StorageError("Staged upload storage is full for this account.")
+
     draft_id = new_draft_id()
     draft = UploadDraft(
         owner_user_id=owner_user_id,
@@ -114,15 +184,27 @@ async def create_upload_draft(
         encrypted_path = await storage.save_draft_upload(draft_id, archive)
         draft.encrypted_path = str(encrypted_path)
         db.add(draft)
+        if _pending_draft_bytes(db, storage, owner_user_id) > MAX_PENDING_DRAFT_BYTES:
+            raise StorageError("Staged upload storage is full for this account.")
         db.commit()
         db.refresh(draft)
         return draft
+    except asyncio.CancelledError:
+        db.rollback()
+        try:
+            storage.delete_draft(draft_id)
+        except Exception:
+            LOGGER.exception("Cancelled upload-draft cleanup failed.")
+        raise
     except Exception:
         db.rollback()
         storage.delete_draft(draft_id)
         raise
+    finally:
+        await archive.close()
 
 
+@serialize_draft_lifecycle
 def finalize_upload_draft(
     db: Session,
     storage: SessionStorage,
@@ -138,7 +220,7 @@ def finalize_upload_draft(
     commit leaves the encrypted draft available for a safe retry.
     """
 
-    draft = get_upload_draft(db, draft_id, owner_user_id)
+    draft = get_upload_draft(db, draft_id, owner_user_id, for_update=True)
     if draft is None:
         raise ValueError("Upload draft was not found or has expired.")
     if _is_expired(draft.expires_at):
@@ -147,6 +229,7 @@ def finalize_upload_draft(
         db.commit()
         raise ValueError("Upload draft has expired. Choose the archive again.")
 
+    ensure_case_reference(db, case_id, owner_user_id)
     profile = canonical_privacy_profile(privacy_methods if privacy_methods is not None else privacy_method)
     session = EEGSession(
         owner_user_id=owner_user_id,
@@ -165,7 +248,12 @@ def finalize_upload_draft(
         db.add(session)
         db.commit()
         db.refresh(session)
-        storage.delete_draft(draft.draft_id)
+        try:
+            storage.delete_draft(draft.draft_id)
+        except StorageError:
+            # The session is already committed. Leave only encrypted duplicate
+            # data and let the next retention sweep retry its cleanup.
+            LOGGER.warning("Encrypted draft cleanup deferred after finalization.")
         return session
     except Exception:
         db.rollback()
@@ -206,6 +294,7 @@ async def create_session(
         Propagated when the upload exceeds limits or cannot be stored.
     """
 
+    ensure_case_reference(db, case_id, owner_user_id)
     profile = canonical_privacy_profile(privacy_methods if privacy_methods is not None else privacy_method)
     session = EEGSession(
         owner_user_id=owner_user_id,
@@ -224,10 +313,19 @@ async def create_session(
         db.commit()
         db.refresh(session)
         return session
+    except asyncio.CancelledError:
+        db.rollback()
+        try:
+            storage.cleanup_session(session.session_id)
+        except Exception:
+            LOGGER.exception("Cancelled session-upload cleanup failed.")
+        raise
     except Exception:
         db.rollback()
         storage.cleanup_session(session.session_id)
         raise
+    finally:
+        await archive.close()
 
 
 def get_session_or_none(db: Session, session_id: str, owner_user_id: int | None = None) -> EEGSession | None:

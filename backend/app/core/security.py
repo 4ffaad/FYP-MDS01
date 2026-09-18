@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 
 from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 import jwt
@@ -14,10 +15,16 @@ from sqlmodel import Session
 from backend.app.core.config import CORS_ORIGINS, auth_configuration
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
-from backend.app.services.auth_service import InvalidCredentials, cloudflare_user, user_for_session
+from backend.app.services.auth_service import (
+    DEMO_ADMIN_PUBLIC_ID,
+    InvalidCredentials,
+    cloudflare_user,
+    user_for_session,
+)
 
 
 AUTH_COOKIE_NAME = "mds01_session"
+_STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def require_api_auth(
@@ -45,12 +52,14 @@ def require_api_auth(
     if mode == "local":
         return
     if mode == "local-accounts":
-        if request.method in {"POST", "DELETE", "PUT", "PATCH"}:
+        if request.method in _STATE_CHANGING_METHODS:
             require_request_origin(request)
         user = user_for_session(db, session_token)
         if user is None:
             raise _unauthorized()
         return user
+    if request.method in _STATE_CHANGING_METHODS:
+        require_request_origin(request)
     if not assertion:
         raise _unauthorized()
 
@@ -103,9 +112,33 @@ def require_request_origin(request: Request) -> None:
 
 
 def owner_id(user: User | None) -> int | None:
-    """Return an owner filter, or None for local tests and the demo admin."""
+    """Return a read filter, allowing only the explicit demo admin globally."""
 
-    if not isinstance(user, User) or user.is_admin:
+    if not isinstance(user, User):
+        return None
+    if user.is_admin and user.public_id == DEMO_ADMIN_PUBLIC_ID and _demo_admin_read_scope_enabled():
+        return None
+    return user.id
+
+
+def _demo_admin_read_scope_enabled() -> bool:
+    """Return whether development-only cross-owner reads are explicitly enabled."""
+
+    try:
+        mode, _domain, _audience = auth_configuration()
+    except RuntimeError:
+        return False
+    return (
+        mode == "local-accounts"
+        and os.environ.get("APP_ENV", "development").lower() in {"development", "test"}
+        and os.environ.get("DEMO_ADMIN_ENABLED", "false").lower() == "true"
+    )
+
+
+def mutation_owner_id(user: User | None) -> int | None:
+    """Return the database owner for newly created or destructive data."""
+
+    if not isinstance(user, User):
         return None
     return user.id
 

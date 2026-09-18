@@ -14,6 +14,7 @@ from backend.app.eeg.model_input import (
     MODEL_SAMPLING_RATE,
     WINDOW_SECONDS,
     WINDOW_STEP_SECONDS,
+    validate_model_windows,
 )
 from backend.app.ml.h5_compat import h5_custom_objects
 from backend.app.ml.interface import WindowPrediction, score_crossed_threshold
@@ -104,12 +105,7 @@ class H5InferenceService:
     ) -> list[WindowPrediction]:
         """Return thresholded seizure probabilities for private model windows."""
 
-        if (
-            windows.ndim != 3
-            or windows.shape[1:] != (1024, 18)
-            or windows.dtype != np.float32
-        ):
-            raise ValueError("Model input must have shape (N, 1024, 18).")
+        validate_model_windows(windows, window_starts)
         probabilities = np.asarray(self.model.predict(windows, verbose=0)).reshape(-1)
         if (
             len(probabilities) != len(window_starts)

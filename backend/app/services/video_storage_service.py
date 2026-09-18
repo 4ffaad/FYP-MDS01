@@ -2,12 +2,32 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+import logging
 from pathlib import Path
 
 from fastapi import UploadFile
+from fastapi.responses import FileResponse
 
 from backend.app.core.config import MAX_VIDEO_UPLOAD_BYTES, SESSION_STORAGE_DIR
 from backend.app.services.storage_service import SessionStorage, StorageError
+
+
+class CleanupFileResponse(FileResponse):
+    """Stream a private plaintext file and always attempt its removal."""
+
+    def __init__(self, path: Path, cleanup: Callable[[], None], **kwargs) -> None:
+        super().__init__(path, **kwargs)
+        self._cleanup = cleanup
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            try:
+                self._cleanup()
+            except Exception:
+                logging.getLogger(__name__).exception("Private video work cleanup failed.")
 
 
 class VideoStorage:
@@ -43,22 +63,31 @@ class VideoStorage:
             filename="video.input.enc",
         )
 
-    def materialize_original(self, job_id: str, encrypted_path: Path) -> Path:
+    def materialize_original(
+        self, job_id: str, encrypted_path: Path, *, deadline: float | None = None
+    ) -> Path:
         """Decrypt the original into a short-lived private work directory."""
 
+        expected = self._artifact_path(job_id, "video.input.enc", "original")
+        self._require_canonical_path(encrypted_path, expected)
         return self._storage.materialize_retained_artifact(
-            self._validate_job_id(job_id), encrypted_path, "video.input"
+            self._validate_job_id(job_id), expected, "video.input", deadline=deadline
         )
 
     def output_path(self, job_id: str) -> Path:
         """Return the encrypted transformed-output path used internally."""
 
-        return self._storage.directory(self._validate_job_id(job_id), "retained") / "video.output.mp4.enc"
+        return self._artifact_path(job_id, "video.output.mp4.enc")
 
     def preview_path(self, job_id: str) -> Path:
         """Return the encrypted representative-preview path used internally."""
 
-        return self._storage.directory(self._validate_job_id(job_id), "retained") / "video.preview.jpg.enc"
+        return self._artifact_path(job_id, "video.preview.jpg.enc")
+
+    def visualization_path(self, job_id: str) -> Path:
+        """Return the encrypted privacy-safe review-video path."""
+
+        return self._artifact_path(job_id, "video.visualization.mp4.enc")
 
     def work_path(self, job_id: str, name: str) -> Path:
         """Return a safe private plaintext work path."""
@@ -75,16 +104,33 @@ class VideoStorage:
     def materialize_artifact(self, job_id: str, encrypted_path: Path, name: str) -> Path:
         """Decrypt one retained artifact into temporary private work storage."""
 
-        return self._storage.materialize_retained_artifact(
-            self._validate_job_id(job_id), encrypted_path, name
-        )
+        expected_paths = {
+            self.visualization_path(job_id),
+            self._artifact_path(job_id, "predictions.json.enc"),
+            self._artifact_path(job_id, "video.output.mp4.enc"),
+            self._artifact_path(job_id, "video.preview.jpg.enc"),
+        }
+        if encrypted_path not in expected_paths:
+            raise StorageError("Stored artifact path is not canonical.")
+        return self._storage.materialize_retained_artifact(self._validate_job_id(job_id), encrypted_path, name)
+
+    def _artifact_path(self, job_id: str, filename: str, area: str = "retained") -> Path:
+        return self.root / self._validate_job_id(job_id) / area / filename
+
+    @staticmethod
+    def _require_canonical_path(value: Path, expected: Path) -> None:
+        if value != expected:
+            raise StorageError("Stored artifact path is not canonical.")
 
     def delete_work_file(self, path: Path) -> None:
         """Remove one response-scoped plaintext file without touching peers."""
 
-        candidate = path.resolve()
-        work_root = (self.root / path.parent.parent.name / "work").resolve()
-        if work_root not in candidate.parents:
+        job_id = self._validate_job_id(path.parent.parent.name)
+        candidate = path.absolute()
+        work_root = (self.root / job_id / "work").absolute()
+        if work_root.is_symlink() or not work_root.is_dir() or candidate.parent != work_root:
+            raise StorageError("Video work path is invalid.")
+        if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
             raise StorageError("Video work path is invalid.")
         candidate.unlink(missing_ok=True)
 

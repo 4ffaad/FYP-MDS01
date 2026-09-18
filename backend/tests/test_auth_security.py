@@ -15,7 +15,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
+from backend.app.core.config import MAX_UPLOAD_BYTES, auth_configuration
+from backend.app.core.security import owner_id
 from backend.app.database.db import get_session
+from backend.app.database.models.auth import User
+from backend.app.services.auth_service import DEMO_ADMIN_PUBLIC_ID
 from backend.app.main import app
 
 
@@ -127,8 +131,102 @@ class AuthenticationSecurityTests(unittest.TestCase):
                     with TestClient(app):
                         pass
 
-    def test_local_mode_preserves_existing_api_behavior(self) -> None:
+    def test_unauthenticated_compatibility_mode_is_test_only(self) -> None:
         with auth_environment(AUTH_MODE="local"):
+            with self.assertRaisesRegex(RuntimeError, "only when APP_ENV=test"):
+                with TestClient(app):
+                    pass
+
+    def test_development_defaults_to_authenticated_local_accounts(self) -> None:
+        with auth_environment(APP_ENV="development"):
+            self.assertEqual(auth_configuration()[0], "local-accounts")
+
+    def test_login_rate_limit_rejects_before_password_verification(self) -> None:
+        with auth_environment(APP_ENV="test", AUTH_MODE="local-accounts"), patch(
+            "backend.app.api.auth.auth_rate_limiter.allow", return_value=False
+        ), patch("backend.app.api.auth.authenticate_local_user") as authenticate:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/auth/login",
+                    json={"email": "alice@example.test", "password": "wrong"},
+                    headers={"Origin": "http://localhost:3000"},
+                )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.headers.get("retry-after"), "60")
+        authenticate.assert_not_called()
+
+    def test_non_demo_admin_is_still_owner_scoped(self) -> None:
+        admin = User(id=73, public_id="USR-ADMIN", email="admin@example.test", is_admin=True)
+        with auth_environment(APP_ENV="development", AUTH_MODE="local-accounts"), patch.dict(
+            os.environ, {"DEMO_ADMIN_ENABLED": "false"}
+        ):
+            self.assertEqual(owner_id(admin), 73)
+
+    def test_enabled_development_demo_admin_can_use_global_read_scope(self) -> None:
+        admin = User(id=74, public_id=DEMO_ADMIN_PUBLIC_ID, email="demo@example.test", is_admin=True)
+        with auth_environment(APP_ENV="development", AUTH_MODE="local-accounts"), patch.dict(
+            os.environ, {"DEMO_ADMIN_ENABLED": "true"}
+        ):
+            self.assertIsNone(owner_id(admin))
+
+    def test_cloudflare_state_changes_require_configured_origin(self) -> None:
+        with auth_environment(
+            AUTH_MODE="cloudflare",
+            CLOUDFLARE_ACCESS_TEAM_DOMAIN="test.cloudflareaccess.com",
+            CLOUDFLARE_ACCESS_AUD="test-audience",
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/sessions/upload",
+                    files={"archive": ("recordings.zip", b"not a zip", "application/zip")},
+                )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_inactive_cloudflare_identity_is_rejected(self) -> None:
+        with Session(self.engine) as db:
+            db.add(
+                User(
+                    public_id="USR-INACTIVE-CF",
+                    email="inactive@example.test",
+                    auth_provider="cloudflare",
+                    external_subject="inactive-subject",
+                    active=False,
+                )
+            )
+            db.commit()
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        assertion = jwt.encode(
+            {
+                "aud": "test-audience",
+                "iss": "https://test.cloudflareaccess.com",
+                "sub": "inactive-subject",
+                "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+            },
+            private_key,
+            algorithm="RS256",
+            headers={"kid": "test-key"},
+        )
+        with auth_environment(
+            AUTH_MODE="cloudflare",
+            CLOUDFLARE_ACCESS_TEAM_DOMAIN="test.cloudflareaccess.com",
+            CLOUDFLARE_ACCESS_AUD="test-audience",
+        ), patch(
+            "backend.app.core.security.PyJWKClient.get_signing_key_from_jwt",
+            return_value=SimpleNamespace(key=private_key.public_key()),
+        ):
+            with TestClient(app) as client:
+                response = client.get(
+                    "/api/sessions",
+                    headers={"Cf-Access-Jwt-Assertion": assertion},
+                )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_local_mode_preserves_existing_api_behavior(self) -> None:
+        with auth_environment(APP_ENV="test", AUTH_MODE="local"):
             with TestClient(app) as client:
                 response = client.get("/api/sessions")
 
@@ -195,8 +293,26 @@ class AuthenticationSecurityTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
 
+    def test_private_api_responses_are_not_cacheable(self) -> None:
+        with auth_environment(APP_ENV="test", AUTH_MODE="local"):
+            with TestClient(app) as client:
+                response = client.get("/api/sessions")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store, private")
+        self.assertEqual(response.headers["pragma"], "no-cache")
+        self.assertIn("Cookie", response.headers["vary"])
+
+    def test_openapi_advertises_protected_api_security(self) -> None:
+        schema = app.openapi()
+        schemes = schema["components"]["securitySchemes"]
+        self.assertIn("SessionCookie", schemes)
+        self.assertIn("CloudflareAccess", schemes)
+        self.assertTrue(schema["paths"]["/api/sessions"]["get"]["security"])
+        self.assertNotIn("security", schema["paths"]["/api/auth/session"]["get"])
+
     def test_security_headers_are_added(self) -> None:
-        with auth_environment(AUTH_MODE="local"):
+        with auth_environment(APP_ENV="test", AUTH_MODE="local"):
             with TestClient(app) as client:
                 response = client.get("/health")
 
@@ -204,6 +320,21 @@ class AuthenticationSecurityTests(unittest.TestCase):
         self.assertEqual(response.headers["x-frame-options"], "DENY")
         self.assertEqual(response.headers["referrer-policy"], "no-referrer")
         self.assertNotIn("strict-transport-security", response.headers)
+
+    def test_oversized_upload_body_is_rejected_before_multipart_parsing(self) -> None:
+        with auth_environment(APP_ENV="test", AUTH_MODE="local"):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/uploads/drafts",
+                    content=b"x",
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "Content-Length": str(MAX_UPLOAD_BYTES + 2 * 1024 * 1024),
+                    },
+                )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.json()["detail"], "Request body exceeds the configured upload limit.")
 
 
 if __name__ == "__main__":

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Any, cast
 
-from sqlalchemy import and_, delete, func
+from sqlalchemy import and_, delete, func, or_
 from sqlmodel import Session, select
 
 from backend.app.database.models.eeg import (
@@ -16,16 +17,41 @@ from backend.app.database.models.eeg import (
     RecordingStatus,
     UploadDraft,
 )
-from backend.app.database.models.video import VideoPrivacyJob
+from backend.app.database.models.video import VideoPrivacyJob, VideoPrivacyStatus
 
 
-def get_upload_draft(db: Session, draft_id: str, owner_user_id: int | None = None) -> UploadDraft | None:
+def get_upload_draft(
+    db: Session,
+    draft_id: str,
+    owner_user_id: int | None = None,
+    *,
+    for_update: bool = False,
+) -> UploadDraft | None:
     """Find one staged upload by its opaque draft identifier."""
 
     statement = select(UploadDraft).where(UploadDraft.draft_id == draft_id)
     if owner_user_id is not None:
         statement = statement.where(UploadDraft.owner_user_id == owner_user_id)
+    if for_update:
+        statement = statement.with_for_update()
     return db.exec(statement).first()
+
+
+def list_upload_drafts_for_owner(db: Session, owner_user_id: int | None) -> list[UploadDraft]:
+    """Return unexpired staged uploads belonging to one owner."""
+
+    statement = select(UploadDraft).where(UploadDraft.expires_at > datetime.now(timezone.utc))
+    if owner_user_id is None:
+        statement = statement.where(UploadDraft.owner_user_id == None)  # noqa: E711
+    else:
+        statement = statement.where(UploadDraft.owner_user_id == owner_user_id)
+    return list(db.exec(statement).all())
+
+
+def list_upload_drafts(db: Session) -> list[UploadDraft]:
+    """Return all staged uploads for retention reconciliation."""
+
+    return list(db.exec(select(UploadDraft)).all())
 
 
 def get_video_job(db: Session, job_id: str, owner_user_id: int | None = None) -> VideoPrivacyJob | None:
@@ -51,6 +77,45 @@ def count_video_jobs(db: Session, owner_user_id: int | None = None) -> int:
 
     statement = select(func.count()).select_from(VideoPrivacyJob)
     if owner_user_id is not None:
+        statement = statement.where(VideoPrivacyJob.owner_user_id == owner_user_id)
+    return int(db.exec(statement).one())
+
+
+def _active_video_status_clause():
+    """Build the active standalone privacy status predicate."""
+
+    status_column = cast(Any, VideoPrivacyJob.status)
+    return or_(
+        status_column == VideoPrivacyStatus.QUEUED,
+        status_column == VideoPrivacyStatus.PREFLIGHT,
+        status_column == VideoPrivacyStatus.PROCESSING,
+        status_column == VideoPrivacyStatus.VALIDATING,
+    )
+
+
+def count_active_video_jobs(db: Session) -> int:
+    """Count all queued or running standalone privacy jobs."""
+
+    return int(
+        db.exec(
+            select(func.count())
+            .select_from(VideoPrivacyJob)
+            .where(_active_video_status_clause())
+        ).one()
+    )
+
+
+def count_active_video_jobs_for_owner(db: Session, owner_user_id: int | None) -> int:
+    """Count active standalone privacy jobs for one owner."""
+
+    statement = (
+        select(func.count())
+        .select_from(VideoPrivacyJob)
+        .where(_active_video_status_clause())
+    )
+    if owner_user_id is None:
+        statement = statement.where(VideoPrivacyJob.owner_user_id == None)  # noqa: E711
+    else:
         statement = statement.where(VideoPrivacyJob.owner_user_id == owner_user_id)
     return int(db.exec(statement).one())
 

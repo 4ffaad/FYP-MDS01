@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Column, Enum as SAEnum
+from sqlalchemy import Column, Text, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
+from backend.app.database.models.types import EnumString
 
 def utc_now() -> datetime:
     """Return the current timezone-aware UTC timestamp.
@@ -70,10 +71,11 @@ class EEGSession(SQLModel, table=True):
     """Database metadata for one uploaded EEG archive."""
 
     __tablename__ = "sessions"
+    __table_args__ = (UniqueConstraint("session_id"),)
 
     id: int | None = Field(default=None, primary_key=True)
     owner_user_id: int | None = Field(default=None, foreign_key="users.id", index=True)
-    session_id: str = Field(index=True, unique=True)
+    session_id: str = Field(index=True)
     case_id: str | None = Field(default=None, index=True, max_length=64)
     privacy_method: str = Field(default="metadata-scrub", max_length=64)
     original_filename: str = ""
@@ -83,7 +85,7 @@ class EEGSession(SQLModel, table=True):
     status: AnalysisStatus = Field(
         default=AnalysisStatus.QUEUED,
         sa_column=Column(
-            SAEnum(AnalysisStatus, native_enum=False, create_constraint=False),
+            EnumString(AnalysisStatus),
             nullable=False,
             index=True,
         ),
@@ -98,10 +100,11 @@ class UploadDraft(SQLModel, table=True):
     """Encrypted, short-lived upload waiting for a privacy selection."""
 
     __tablename__ = "upload_drafts"
+    __table_args__ = (UniqueConstraint("draft_id"),)
 
     id: int | None = Field(default=None, primary_key=True)
     owner_user_id: int | None = Field(default=None, foreign_key="users.id", index=True)
-    draft_id: str = Field(index=True, unique=True, max_length=64)
+    draft_id: str = Field(index=True, max_length=64)
     encrypted_path: str = Field(max_length=1024)
     created_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
@@ -111,9 +114,10 @@ class EEGRecording(SQLModel, table=True):
     """Database metadata for one EDF file extracted from a session archive."""
 
     __tablename__ = "recordings"
+    __table_args__ = (UniqueConstraint("record_id"),)
 
     id: int | None = Field(default=None, primary_key=True)
-    record_id: str = Field(index=True, unique=True)
+    record_id: str = Field(index=True)
     session_db_id: int = Field(foreign_key="sessions.id", index=True)
     sequence_index: int = Field(default=1, ge=1)
     original_filename: str
@@ -125,11 +129,14 @@ class EEGRecording(SQLModel, table=True):
     sampling_rate: int | None = None
     channel_count: int | None = None
     reference_annotation_source: str | None = None
-    reference_intervals_json: str | None = None
+    reference_intervals_json: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
     status: RecordingStatus = Field(
         default=RecordingStatus.UPLOADED,
         sa_column=Column(
-            SAEnum(RecordingStatus, native_enum=False, create_constraint=False),
+            EnumString(RecordingStatus),
             nullable=False,
             index=True,
         ),
@@ -148,14 +155,14 @@ class ProcessingAttempt(SQLModel, table=True):
     session_db_id: int = Field(foreign_key="sessions.id", index=True)
     stage: ProcessingStage = Field(
         sa_column=Column(
-            SAEnum(ProcessingStage, native_enum=False, create_constraint=False),
+            EnumString(ProcessingStage),
             nullable=False,
         ),
     )
     status: ProcessingStatus = Field(
         default=ProcessingStatus.PENDING,
         sa_column=Column(
-            SAEnum(ProcessingStatus, native_enum=False, create_constraint=False),
+            EnumString(ProcessingStatus),
             nullable=False,
         ),
     )

@@ -18,6 +18,7 @@ class VideoDetectionJob(SQLModel, table=True):
     fps: float = 0
     original_path: str | None = None
     video_path: str | None = None
+    visualization_path: str | None = None
     predictions_path: str | None = None
     error_code: str | None = None
     created_at: datetime = Field(default_factory=utc_now)

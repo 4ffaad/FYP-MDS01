@@ -18,6 +18,18 @@ Python environment; Docker keeps those packages inside the image.
 
 The backend image uses Python 3.12 and `linux/amd64` for the bundled scientific/media dependencies. Docker Desktop can emulate it on Apple Silicon; the first build and H5 processing may be slow. Python dependencies are not yet fully locked, so retain build logs when comparing environments.
 
+Docker is the inference runtime, not merely a database wrapper. The VSViG and
+Lightweight OpenPose Python code and dependencies run inside the backend
+container. The large official checkpoints are deliberately supplied through a
+named Docker volume initialized by `vsvig-assets-init`, instead of Git or the
+application image. The backend mounts that volume read-only at `/opt/vsvig`.
+On a remote Linux Docker host, initialize the volume on that host and point the
+frontend at that API. The laptop then only opens the browser; it does not run
+inference and does not provide a model path.
+Docker still needs a machine somewhere with CPU/RAM and persistent encrypted
+storage. It does not make model computation free or remove the need to protect
+the model bundle.
+
 ## First run: Docker
 
 Start Docker, then:
@@ -43,13 +55,18 @@ These commands also work in PowerShell. On Linux, Docker may require your user t
 
 Both frontend and API bind to loopback. Each teammate runs their own database, files and keys. Do not share your `.env` or connect classmates to an unauthenticated network-facing instance.
 
-The default local mode is `local-accounts`. Development mode seeds a demo
-administrator that can review all local records:
+The tracked `docker-compose.yml` includes the secure video runtime by default:
+it builds the video image, runs `vsvig-assets-init` as a completed dependency,
+verifies the named model volume, and starts the backend only after verification
+succeeds. The browser upload still needs no absolute video path; the model
+volume is an operator-managed Docker resource on the host. See [the video
+runbook](video-detection.md) for the asset approval gate and remote-host details.
 
-```text
-Email:    admin@mds01.local
-Password: 12345678
-```
+The default local mode is `local-accounts`. When `DEMO_ADMIN_PASSWORD` is
+present, development mode seeds the demo administrator `admin@mds01.local`,
+which can review all local records. `node scripts/setup.mjs` generates this
+credential into the ignored `.env`; read it locally when you need the demo
+login and never paste it into tickets, logs or chat.
 
 The first browser visit shows the MDS01 sign-in page. For another teammate,
 choose **Create an account** and use a non-patient email and a password of at
@@ -57,6 +74,12 @@ least 8 characters. The API stores only a salted password hash and an opaque
 server-side session token. Sign out from the header when switching teammates.
 The seeded administrator is intentionally development-only; production rejects
 local authentication and requires Cloudflare Access.
+
+Each authenticated account may keep at most two active EEG upload drafts and a
+default of 2 GiB of pending encrypted draft storage. Drafts expire after
+`UPLOAD_DRAFT_TTL_SECONDS` and are swept in the background even when no request
+arrives. Adjust `MAX_UPLOAD_BYTES`, `MAX_ACTIVE_UPLOAD_DRAFTS` and
+`MAX_PENDING_DRAFT_BYTES` only with a storage-capacity review.
 
 ## First run: native
 
@@ -83,15 +106,15 @@ local encrypted storage, applies migrations, and starts FastAPI on
 not at `.venv`. Do not set `DATABASE_URL` if you want the SQLite default.
 
 The native path is intentionally a single-process prototype profile. Keep the
-Docker profile for the official VSViG runtime when PyTorch, MediaPipe, pose
-weights, or platform-specific wheels are not already verified on the host.
+Docker profile for the official VSViG runtime when PyTorch, pose weights, or
+platform-specific wheels are not already verified on the host.
 
 ## Runtime choices
 
 | Mode | Configuration | What it tests |
 | --- | --- | --- |
 | Backend development stub (default) | Root `.env`: `MODEL_RUNTIME=stub`, `INSTALL_RESEARCH=false` | Real uploads, database, privacy pipeline and synthetic model scores |
-| H5 research runtime | Root `.env`: `MODEL_RUNTIME=h5`, `INSTALL_RESEARCH=true` | Supplied H5 model under the reviewed contract |
+| H5 research runtime | Root `.env`: `MODEL_RUNTIME=h5`, `INSTALL_RESEARCH=true`, operator-populated `mds01-eeg-model-assets` volume | External H5 model under the reviewed contract |
 | Local accounts (default) | Root `.env`: `AUTH_MODE=local-accounts` | Backend-enforced login and owner-filtered data |
 | Unauthenticated backend test mode | Root `.env`: `AUTH_MODE=local` | API/service tests only; never expose this mode to a network |
 | Browser-only stub | Frontend test config: `NEXT_PUBLIC_USE_API_STUB=true`, `NEXT_PUBLIC_AUTH_MODE=stub` | UI flows with synthetic browser data; no actual EEG/video processing |
@@ -104,13 +127,23 @@ An existing checkout retains its current mode; setup does not silently switch it
 
 H5 startup validates the model hash, input/output contract and reviewed status. A failure must be investigated; do not reshape data or mark a replacement artifact reviewed merely to get past startup.
 
+Populate the named volume from an operator-controlled server directory before
+selecting H5 mode. The browser and end users never provide this path:
+
+```sh
+docker run --rm \
+  -v mds01-eeg-model-assets:/opt/eeg-model \
+  -v "/absolute/private/eeg-model:/source:ro" \
+  alpine:3.22 sh -c 'cp /source/best_seizure_model.h5 /source/model-contract.json /opt/eeg-model/'
+```
+
 With the research image built, verify the artifact:
 
 ```sh
-docker compose run --rm --no-deps backend python backend/scripts/verify_h5_model.py backend/model/best_seizure_model.h5
+docker compose run --rm --no-deps backend python backend/scripts/verify_h5_model.py /opt/eeg-model/best_seizure_model.h5
 ```
 
-The checked-in contract currently emits **uncalibrated scores**. Fitting and reviewing both privacy-profile calibrators is a separate research task. See [backend research tools](backend.md#profile-specific-calibration). Never present the development stub or an uncalibrated score as confidence.
+The mounted contract currently emits **uncalibrated scores**. Fitting and reviewing both privacy-profile calibrators is a separate research task. See [backend research tools](backend.md#profile-specific-calibration). Never present the development stub or an uncalibrated score as confidence.
 
 ## Try a patient-free EEG demo
 
@@ -129,7 +162,7 @@ The generated archive contains synthetic signals and explicit test identifiers, 
 4. Open a recording to review its timeline, threshold, flagged windows and model version.
 5. Delete the completed session through the confirmation dialog when finished.
 
-For analysis, open **New analysis** and choose an EEG ZIP, a video, or both. EEG is encrypted and follows the selected EEG privacy path before H5 scoring. Video is encrypted, face-redacted, and sent to the visual-only VSViG path when its external assets are mounted. A paired upload opens one status page with links to the EEG session and video review. To create a protected video with original audio retained for owner-only review, use the separate **Video privacy** page. The browser stub does not validate the actual privacy transform. Docker builds smoke-test both video adapters as the unprivileged application user. Face detection can miss frames; affected frames use full-frame blur and missing/failed transforms must not return source video.
+For analysis, open **New analysis** and choose one EEG ZIP, one separate video, or both. EEG is encrypted and follows the selected EEG privacy path before H5 scoring. Video is encrypted, face-redacted, converted into one shared pose pass, and sent to the visual-only VSViG path; the same pose samples generate an encrypted audio-free, full-frame-blurred skeleton visualization for owner-only review. A paired upload opens one status page with links to the EEG session and video review. Detection excludes audio from model input and deletes source/protected work after processing, retaining only the encrypted results and privacy-safe visualization until expiry. The standalone **Video privacy** page also emits an audio-free protected transform. The browser stub does not validate the actual privacy transform. Docker builds smoke-test the installed video privacy dependencies as the unprivileged application user; the VSViG checkpoints are verified from the read-only named volume before startup. Face detection can miss frames; affected frames use full-frame blur and missing/failed transforms must not return source video.
 
 ## Enable waveform review for a local prototype
 
@@ -199,7 +232,7 @@ To test real Next.js → FastAPI → PostgreSQL behavior, run from `frontend/`:
 npm run test:e2e:real
 ```
 
-This creates and removes only the disposable Compose project `mds01-security`, including its test volumes, on API port 18000 and frontend port 3002. The synthetic EEG archive is generated inside the backend container, so this workflow needs only Docker and npm. Never store real data in that project. It exercises registration through the UI, the authenticated migration, upload, background processing, safe results and deletion; it does not establish H5 accuracy or video anonymization.
+This creates and removes only the disposable Compose project `mds01-security`, including its test volumes, on an available loopback API port and frontend port 3002. Set `MDS01_SECURITY_PORT` to use a specific API port. The synthetic EEG archive is generated inside the backend container, so this workflow needs only Docker and npm. Never store real data in that project. It exercises registration through the UI, the authenticated migration, upload, background processing, safe results and deletion; it does not establish H5 accuracy or video anonymization.
 
 ## Stop, restart and troubleshoot
 
@@ -209,6 +242,11 @@ docker compose up
 ```
 
 `down` preserves data. Do not add `-v` unless you intend to delete the project's database and private storage volumes.
+
+The automatic video overlay also means `docker compose down -v` deletes the
+`mds01-vsvig-assets` model volume. Run `node scripts/setup.mjs` if needed, then
+run `docker compose up --build` again; the completed initializer will rebuild
+the volume before the backend starts.
 
 | Problem | Check |
 | --- | --- |
@@ -229,6 +267,11 @@ docker compose exec backend alembic -c backend/alembic.ini current
 ```
 
 Before network deployment, configure authenticated access, HTTPS and the remaining controls in [the security audit](security-audit.md). Local demonstration setup is not a deployment guide.
-# Optional video seizure detection
+## Video seizure detection
 
-The normal stack exposes the video detection workspace, but inference requires an external VSViG bundle and reviewed preprocessing. Follow [video detection setup](video-detection.md) for the optional Docker image, read-only mounts and safe inventory command. Python is provided inside Docker. The login email/password you register in the browser also controls video job ownership.
+The normal one-command stack exposes the video review workspace. Real inference
+requires the pinned VSViG and Lightweight OpenPose bundle; the initializer and
+startup verifier run automatically before the backend. Follow the [video review
+runbook](video-detection.md) for the named-volume approval gate, read-only
+mount, input contract and failure meanings. Python is provided inside Docker.
+The login account controls video-job ownership.

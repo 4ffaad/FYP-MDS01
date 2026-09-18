@@ -16,10 +16,12 @@ from backend.app.database.db import get_session
 from backend.app.database.models.eeg import AnalysisStatus, EEGRecording, EEGSession, RecordingStatus, UploadDraft, utc_now
 from backend.app.database.models.video import VideoPrivacyJob, VideoPrivacyProfile
 from backend.app.main import app
-from backend.app.database.models.auth import AuthSession
+from backend.app.database.models.auth import AuthSession, User
+from backend.app.core.security import owner_id
 from backend.app.services.auth_service import (
     authenticate_local_user,
     ensure_demo_admin,
+    purge_expired_auth_sessions,
     register_user,
     token_hash,
 )
@@ -78,14 +80,27 @@ class LocalAuthenticationTests(unittest.TestCase):
             headers=self._headers(),
         )
         self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["mode"], "local-accounts")
 
     def test_eight_character_password_is_accepted(self) -> None:
         with Session(self.engine) as db:
-            register_user(db, "eight@example.test", "12345678")
+            register_user(db, "eight@example.test", "x" * 8)
             with self.assertRaisesRegex(ValueError, "8 characters"):
                 register_user(db, "seven@example.test", "1234567")
 
+    def test_password_length_is_bounded_before_hashing(self) -> None:
+        with Session(self.engine) as db:
+            with self.assertRaisesRegex(ValueError, "at most 1024"):
+                register_user(db, "long@example.test", "x" * 1025)
+
+    def test_login_rejects_an_oversized_password_without_hashing(self) -> None:
+        with Session(self.engine) as db:
+            register_user(db, "alice@example.test", "correct horse battery")
+            with self.assertRaisesRegex(ValueError, "incorrect"):
+                authenticate_local_user(db, "alice@example.test", "x" * 1025)
+
     def test_demo_admin_is_seeded_and_can_see_all_sessions(self) -> None:
+        demo_password = os.urandom(16).hex()
         with Session(self.engine) as db, patch.dict(
             os.environ,
             {
@@ -93,7 +108,7 @@ class LocalAuthenticationTests(unittest.TestCase):
                 "AUTH_MODE": "local-accounts",
                 "DEMO_ADMIN_ENABLED": "true",
                 "DEMO_ADMIN_EMAIL": "admin@mds01.local",
-                "DEMO_ADMIN_PASSWORD": "12345678",
+                "DEMO_ADMIN_PASSWORD": demo_password,
             },
         ):
             admin = ensure_demo_admin(db)
@@ -119,17 +134,29 @@ class LocalAuthenticationTests(unittest.TestCase):
             )
             db.commit()
 
-        with self._client() as client:
-            login = client.post(
-                "/api/auth/login",
-                json={"email": "admin@mds01.local", "password": "12345678"},
-                headers=self._headers(),
-            )
-            self.assertEqual(login.status_code, 200, login.text)
-            self.assertEqual(
-                {item["session_id"] for item in client.get("/api/sessions").json()},
-                {"SES-ALICE", "SES-BOB"},
-            )
+            with patch("backend.app.main.engine", self.engine), self._client() as client:
+                login = client.post(
+                    "/api/auth/login",
+                    json={"email": "admin@mds01.local", "password": demo_password},
+                    headers=self._headers(),
+                )
+                self.assertEqual(login.status_code, 200, login.text)
+                self.assertEqual(
+                    {item["session_id"] for item in client.get("/api/sessions").json()},
+                    {"SES-ALICE", "SES-BOB"},
+                )
+
+    def test_demo_admin_requires_an_explicit_local_password(self) -> None:
+        with Session(self.engine) as db, patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "development",
+                "AUTH_MODE": "local-accounts",
+                "DEMO_ADMIN_ENABLED": "true",
+                "DEMO_ADMIN_PASSWORD": "",
+            },
+        ):
+            self.assertIsNone(ensure_demo_admin(db))
 
     def test_register_login_session_and_logout(self) -> None:
         with self._client() as client:
@@ -157,7 +184,8 @@ class LocalAuthenticationTests(unittest.TestCase):
                 json={"email": "ALICE@example.test", "password": "correct horse battery"},
                 headers=self._headers(),
             )
-            self.assertEqual(duplicate.status_code, 409)
+            self.assertEqual(duplicate.status_code, 422)
+            self.assertNotIn("already exists", duplicate.text)
             weak = client.post(
                 "/api/auth/register",
                 json={"email": "weak@example.test", "password": "short"},
@@ -180,6 +208,19 @@ class LocalAuthenticationTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 403)
 
+    def test_non_demo_admin_remains_owner_scoped(self) -> None:
+        with Session(self.engine) as db, patch.dict(
+            os.environ,
+            {"APP_ENV": "development", "AUTH_MODE": "local-accounts", "DEMO_ADMIN_ENABLED": "true"},
+        ):
+            admin = register_user(db, "other-admin@example.test", "correct horse battery")
+            admin.is_admin = True
+            db.add(admin)
+            db.commit()
+            db.refresh(admin)
+
+            self.assertEqual(owner_id(admin), admin.id)
+
     def test_expired_session_fails_closed(self) -> None:
         with Session(self.engine) as db:
             register_user(db, "alice@example.test", "correct horse battery")
@@ -192,6 +233,35 @@ class LocalAuthenticationTests(unittest.TestCase):
         with self._client() as client:
             client.cookies.set("mds01_session", raw_token)
             self.assertEqual(client.get("/api/sessions").status_code, 401)
+
+    def test_expired_and_revoked_sessions_are_purgeable(self) -> None:
+        with Session(self.engine) as db:
+            user = register_user(db, "cleanup@example.test", "correct horse battery")
+            now = datetime.now(timezone.utc)
+            db.add_all(
+                [
+                    AuthSession(
+                        token_hash="expired",
+                        user_id=user.id or 0,
+                        expires_at=now - timedelta(minutes=1),
+                    ),
+                    AuthSession(
+                        token_hash="revoked",
+                        user_id=user.id or 0,
+                        expires_at=now + timedelta(hours=1),
+                        revoked_at=now,
+                    ),
+                    AuthSession(
+                        token_hash="active",
+                        user_id=user.id or 0,
+                        expires_at=now + timedelta(hours=1),
+                    ),
+                ]
+            )
+            db.commit()
+
+            self.assertEqual(purge_expired_auth_sessions(db), 2)
+            self.assertEqual([session.token_hash for session in db.exec(select(AuthSession)).all()], ["active"])
 
     def test_users_only_see_owned_and_not_legacy_records(self) -> None:
         with Session(self.engine) as db:

@@ -4,15 +4,14 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => window.localStorage.clear());
 });
 
-test("legacy video privacy route redirects to unified VEEG video review", async ({
+test("video privacy route opens its protected transform workflow", async ({
   page,
 }) => {
   await page.goto("/video-privacy");
-  await expect(page).toHaveURL(/\/video-detection$/);
   await expect(
-    page.getByRole("heading", { name: "Video seizure detection" }),
+    page.getByRole("heading", {
+      name: "Protect a patient video before review",
+    }),
   ).toBeVisible();
-  await expect(
-    page.getByText(/Face redaction runs before pose extraction/i),
-  ).toBeVisible();
+  await expect(page.getByText("Audio excluded:")).toBeVisible();
 });

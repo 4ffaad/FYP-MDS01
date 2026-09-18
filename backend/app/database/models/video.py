@@ -6,9 +6,10 @@ import json
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Column, Enum as SAEnum
+from sqlalchemy import Column, Text
 from sqlmodel import Field, SQLModel
 
+from backend.app.database.models.types import EnumString
 
 def utc_now() -> datetime:
     """Return a timezone-aware UTC timestamp."""
@@ -46,7 +47,7 @@ class VideoPrivacyJob(SQLModel, table=True):
     job_id: str = Field(index=True, unique=True, max_length=64)
     profile: VideoPrivacyProfile = Field(
         sa_column=Column(
-            SAEnum(VideoPrivacyProfile, native_enum=False, create_constraint=False),
+            EnumString(VideoPrivacyProfile),
             nullable=False,
             index=True,
         )
@@ -54,7 +55,7 @@ class VideoPrivacyJob(SQLModel, table=True):
     status: VideoPrivacyStatus = Field(
         default=VideoPrivacyStatus.QUEUED,
         sa_column=Column(
-            SAEnum(VideoPrivacyStatus, native_enum=False, create_constraint=False),
+            EnumString(VideoPrivacyStatus),
             nullable=False,
             index=True,
         ),
@@ -70,7 +71,7 @@ class VideoPrivacyJob(SQLModel, table=True):
     original_path: str | None = Field(default=None, max_length=1024)
     output_path: str | None = Field(default=None, max_length=1024)
     preview_path: str | None = Field(default=None, max_length=1024)
-    quality_flags_json: str = Field(default="[]")
+    quality_flags_json: str = Field(default="[]", sa_column=Column(Text, nullable=False))
     output_usable: bool = False
     acknowledged_at: datetime | None = None
     retention_expires_at: datetime | None = None

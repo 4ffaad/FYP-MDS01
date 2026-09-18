@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getSession } from "@/lib/api";
+import { getSession, pollRetryDelay, shouldRetryRequest } from "@/lib/api";
 import { getDetection, type DetectionJob } from "@/lib/video-detection";
 import type { Session } from "@/lib/types";
 import { Icon } from "./Icon";
@@ -40,6 +40,7 @@ export function CombinedAnalysisScreen({
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let mounted = true;
+    let retryAttempt = 0;
 
     async function load() {
       try {
@@ -56,6 +57,7 @@ export function CombinedAnalysisScreen({
         const nextVideoJob = videoResult?.job ?? null;
         setVideoJob(nextVideoJob);
         setError(null);
+        retryAttempt = 0;
         if (
           (eegResult && ACTIVE_VEEG.has(eegResult.status)) ||
           (nextVideoJob && ACTIVE_VIDEO.has(nextVideoJob.status))
@@ -63,7 +65,13 @@ export function CombinedAnalysisScreen({
           timer = setTimeout(() => void load(), 2500);
         }
       } catch (loadError) {
-        if (
+        if (mounted && shouldRetryRequest(loadError)) {
+          retryAttempt += 1;
+          timer = setTimeout(
+            () => void load(),
+            pollRetryDelay(retryAttempt, 2500),
+          );
+        } else if (
           mounted &&
           !(
             loadError instanceof DOMException && loadError.name === "AbortError"
@@ -150,7 +158,12 @@ export function CombinedAnalysisScreen({
                   ? videoJob.current_stage.replaceAll("-", " ")
                   : "Loading the owner-scoped video job…"
               }
-              steps={["Face redaction", "VSViG model", "Evidence timeline"]}
+              steps={[
+                "Face redaction",
+                "Pose keypoints",
+                "VSViG model",
+                "Evidence timeline",
+              ]}
               href={
                 videoJob
                   ? `/video-detection/${encodeURIComponent(videoJob.job_id)}`
@@ -221,7 +234,9 @@ function AnalysisCard({
           {status}
         </span>
       </div>
-      <ol className="mt-7 grid gap-2 sm:grid-cols-3">
+      <ol
+        className={`mt-7 grid gap-2 ${steps.length > 3 ? "sm:grid-cols-4" : "sm:grid-cols-3"}`}
+      >
         {steps.map((step, index) => (
           <li
             key={step}

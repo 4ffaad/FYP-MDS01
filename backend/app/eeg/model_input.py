@@ -22,6 +22,20 @@ WINDOW_STEP_SECONDS = 2
 WINDOW_STEP_SAMPLES = MODEL_SAMPLING_RATE * WINDOW_STEP_SECONDS
 
 
+def validate_model_windows(windows: np.ndarray, window_starts: np.ndarray) -> None:
+    """Validate the shared finite float32 model-input contract."""
+
+    if windows.ndim != 3 or windows.shape[1:] != (WINDOW_SAMPLES, len(MODEL_CHANNELS)):
+        raise ValueError("Model input must have shape (N, 1024, 18).")
+    if windows.dtype != np.float32:
+        raise ValueError("Model input must use float32 values.")
+    if not np.isfinite(windows).all():
+        raise ValueError("Model input must contain only finite values.")
+    starts = np.asarray(window_starts)
+    if starts.ndim != 1 or len(starts) != len(windows) or not np.isfinite(starts).all():
+        raise ValueError("Model window starts must contain one finite value per window.")
+
+
 def prepare_model_windows(
     processed_signals: np.ndarray,
     sampling_rate: int,
@@ -42,7 +56,17 @@ def prepare_model_windows(
             f"Model requires {MODEL_SAMPLING_RATE} Hz EEG; received {sampling_rate} Hz."
         )
 
-    label_to_index = {label.strip(): index for index, label in enumerate(channel_labels)}
+    if processed_signals.ndim != 2 or processed_signals.shape[0] != len(channel_labels):
+        raise ValueError("EDF signal data does not match its channel labels.")
+    if not np.isfinite(processed_signals).all():
+        raise ValueError("EEG signal contains non-finite values.")
+
+    normalized_labels = [label.strip() for label in channel_labels]
+    if len(normalized_labels) != len(set(normalized_labels)):
+        raise ValueError("EDF contains duplicate channel labels.")
+    if len(normalized_labels) != len(MODEL_CHANNELS) or set(normalized_labels) != set(MODEL_CHANNELS):
+        raise ValueError("EDF must contain exactly the model's required channels.")
+    label_to_index = {label: index for index, label in enumerate(normalized_labels)}
     missing_channels = [label for label in MODEL_CHANNELS if label not in label_to_index]
     if missing_channels:
         raise ValueError(
@@ -64,6 +88,7 @@ def prepare_model_windows(
         [selected[:, start : start + WINDOW_SAMPLES] for start in starts],
         axis=0,
     ).transpose(0, 2, 1).astype(np.float32, copy=False)
+    validate_model_windows(windows, starts.astype(np.float32))
     last_end = int(starts[-1] + WINDOW_SAMPLES)
     discarded_tail_samples = selected.shape[1] - last_end
     window_start_seconds = (

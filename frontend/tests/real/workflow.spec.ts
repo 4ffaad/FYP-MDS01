@@ -1,8 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { resolve } from "node:path";
 
-const API = "http://127.0.0.1:18000";
+const API = process.env.MDS01_SECURITY_API_BASE_URL;
 const CANARY = "CANARY_";
+
+if (!API) throw new Error("MDS01_SECURITY_API_BASE_URL is required");
 
 test("real encrypted upload completes without leaking canary metadata", async ({
   page,

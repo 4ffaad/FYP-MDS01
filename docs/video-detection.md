@@ -1,94 +1,267 @@
-# Video seizure detection
+# Video seizure review: VSViG runbook
 
-This feature lives on `feat/video-seizure-vsvig`. EEG processing and the existing video privacy workflow are independent. Video detection uses the signed-in account's ownership ID, encrypted storage, and a CPU subprocess. The UI is at `/video-detection`.
+This is the operator and implementation guide for the visual video-review
+workflow. It is a research prototype, not a diagnosis, a calibrated probability
+system, or a guarantee of anonymity.
 
-## Current readiness
+## The boundary
 
-The web/API workflow can be tested without patient data. Real inference requires **both official checkpoints and a reviewed preprocessing contract**. No clinical performance has been established on HUKM data. Annotations are not required to execute inference; onset/offset labels are required to evaluate accuracy or detection latency.
+MDS01 has two separate modalities:
 
-The [official source](https://github.com/xuyankun/VSViG/tree/1026e7e7f2287b96f3cc375830f2836ffdf4588e) provides the base network, weights and patch extraction, but not a complete runnable inference pipeline. Its training script contains placeholder paths, describes two coordinate features while `Stem_pe` requires three, and has differing patch/keypoint order conventions. Frame sampling, coordinate normalization and the checkpoint's exact preprocessing must be confirmed with training evidence or the authors. Do not mark the contract reviewed just to bypass this gate.
+- One EEG ZIP archive containing EDF recordings.
+- One separate video file.
 
-The implemented adapter supports the published base architecture, 30 frames, 15 RGB/BGR patches of 32×32 pixels, and three positional features `(x, y, confidence)`. This supported convention is **not claimed to be the checkpoint's validated training convention**. If review establishes another convention, update the adapter and its tests first. Missing people, multiple people, missing landmarks, nonfinite patches, variable frame timing, geometry mismatch and incompatible checkpoints fail the job. The first version is deliberately limited to single-patient clips with complete poses; staff entering the frame or bedding occlusion can prevent inference.
+A paired submission appears in one workspace, but the backend does not put video
+inside the EEG archive or run the video model on EEG data.
 
-## Laptop setup
+The video path is:
 
-The normal stack can run natively with SQLite, but the official VSViG runtime is
-the dependency-heavy path. Use native mode for the API, privacy workflow and
-stub demos; use the Docker overlay when the host cannot install the pinned
-PyTorch/MediaPipe/OpenPose dependencies.
-
-For the native prototype:
-
-```sh
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r backend/requirements-dev.txt
-node scripts/start-native.mjs
+```text
+video upload
+  → encrypt source
+  → face redaction
+  → one shared Lightweight OpenPose keypoint pass
+       ├── pose-derived patches → VSViG scores → evidence timeline
+       └── full-frame blur + skeleton overlay → privacy-safe video
 ```
 
-For the reproducible VSViG runtime, install Docker Desktop and Node.js 22+ with npm. Run the normal setup first:
+Audio is excluded from every retained visual output and from the visual model
+input. The uploaded source can still contain audio while it is encrypted and
+waiting for processing; the model and visualization runtime read visual frames
+only. The original and temporary full-frame-blurred model-input video files are
+deleted after the job. Only an encrypted, owner-scoped privacy-safe
+visualization and prediction result are retained until job expiry. The separate
+`/video-privacy` utility is audio-free but is not the seizure detector.
+
+## What the GitHub repository provides
+
+The official [VSViG repository](https://github.com/xuyankun/VSViG) is a research
+source release, not an end-to-end service. At the pinned revision it provides:
+
+- `VSViG.py`: the STViG/VSViG model implementation.
+- `VSViG-base.pth`: the published base checkpoint.
+- `extract_patches.py`: Gaussian patch extraction.
+- `pose.pth`: a pose-estimation checkpoint.
+- `dy_point_order.pt`: dynamic point-partition data used by the model.
+- `train.py` and the README, which document training context but are not an
+  inference command for arbitrary uploaded videos.
+
+`pose.pth` is interpreted with the [Lightweight Human Pose Estimation
+implementation](https://github.com/Daniil-Osokin/lightweight-human-pose-estimation.pytorch).
+The VSViG repository does not contain that full import tree, so MDS01 pins and
+mounts the required OpenPose source files separately. This is why a VSViG-only
+folder produces an asset/runtime error.
+
+The source and weights are research artifacts. A successful checkpoint load
+proves technical compatibility; it does not prove accuracy on HUKM footage or
+any other new camera/site.
+
+## Model stack
+
+| Stage | MDS01 implementation | Required external asset | Output |
+| --- | --- | --- | --- |
+| Source protection | AES-GCM upload storage | Installation storage key | Encrypted source bytes |
+| Face protection | OpenCV Haar face detector; full-frame Gaussian blur on a miss | OpenCV cascade shipped with the runtime | Protected visual frames plus coverage flags |
+| Keypoint extraction | Lightweight OpenPose MobileNet pose network | `pose.pth` plus pinned OpenPose source | One complete 18-joint `(x, y, confidence)` pose |
+| Patch construction | Pinned VSViG `extract_patches.py` | `extract_patches.py` | Fifteen `32×32×3` model patches per sampled frame |
+| Seizure score | Pinned VSViG STViG/VSViG base model | `VSViG.py`, `VSViG-base.pth`, `dy_point_order.pt` | One uncalibrated score per temporal window |
+| Review visualization | Shared pose samples, full-frame blur and OpenCV rendering | No additional model weight | Encrypted audio-free protected video with skeleton overlay |
+| Review evidence | Bounded patch occlusion on the strongest flagged window | No additional weight | Input-region sensitivity, not a clinical explanation |
+
+The pose network is the keypoint model. It is not the face-redaction model and it
+does not make a seizure decision. The dynamic point-order file is model input
+data, not a second classifier.
+
+## Pinned release and provenance
+
+The installer and contract currently pin:
+
+| Dependency | Revision | Role |
+| --- | --- | --- |
+| [xuyankun/VSViG](https://github.com/xuyankun/VSViG/tree/1026e7e7f2287b96f3cc375830f2836ffdf4588e) | `1026e7e7f2287b96f3cc375830f2836ffdf4588e` | VSViG source, base/pose checkpoints and dynamic partitions |
+| [Daniil-Osokin/lightweight-human-pose-estimation.pytorch](https://github.com/Daniil-Osokin/lightweight-human-pose-estimation.pytorch/tree/d23c284b09acf27a163e1febd511e7482cac25ed) | `d23c284b09acf27a163e1febd511e7482cac25ed` | Python implementation for `pose.pth` |
+| [VSViG paper](https://arxiv.org/abs/2311.14775) | Published research reference | Clip, patch and temporal-method context |
+
+The installer verifies SHA-256 for every downloaded checkpoint, tensor, Python
+source file and retained license. The application verifies the same hashes again
+from the mounted `contract.json`; a container cannot approve a changed bundle
+with a changed manifest because the manifest hash is supplied separately through
+environment configuration.
+
+## One-time Docker setup
+
+Use Docker for the real VSViG path. It is the reproducible project profile and
+runs the pinned CPU dependencies in a `linux/amd64` image. Docker Desktop on
+Apple Silicon may use emulation and can be slow.
+
+The model executes in the backend container. There are two deployment choices:
+
+| Deployment | Where Docker and the bundle live | Laptop role |
+| --- | --- | --- |
+| Local development | Docker Desktop and the `mds01-vsvig-assets` named volume | Runs Docker and opens the UI |
+| Remote/team deployment | A Linux `amd64` VM, server or managed Docker host with a private image registry and protected model volume | Opens the UI or calls the API; does not run inference |
+
+The default Compose stack uses the same deployment shape locally and remotely:
+the `vsvig-assets-init` service downloads and verifies the pinned bundle into the
+named Docker volume `mds01-vsvig-assets`, and the backend mounts that volume
+read-only at `/opt/vsvig`. The backend's separately configured
+`VSVIG_CONTRACT_SHA256` still gates startup. No host filesystem path is needed
+for the model.
+
+For a remote deployment, run these commands on the Linux Docker host, not on a
+developer laptop. Build and push the application image without model weights,
+then run the initializer on the server. If the server pulls from a private
+registry, set `VIDEO_DETECTION_IMAGE` in its private `.env` to the immutable
+registry tag or digest and run `docker compose ... pull` before `up`; the default
+`:local` tag is for an image built on that host. Do not copy a laptop `.env`,
+commit checkpoints, or expose the volume to the browser. A private object store
+or protected persistent volume can be used to provision the named volume, but
+the runtime should still mount the verified bundle read-only.
+
+### 1. Create normal local configuration
+
+From the repository root:
 
 ```sh
 node scripts/setup.mjs
-docker compose build backend
 ```
 
-Supply this bundle **outside Git**, from trusted official releases/source checkouts. The application never downloads weights or patient data:
+This creates `.env` and `frontend/.env.local` only when they do not exist. It
+generates the local database/storage keys and the development demo-admin
+password into the ignored `.env`. Read that credential only on the local
+machine; it is intentionally absent from this guide, slides and API responses.
+
+### 2. Start the secure one-command stack
+
+The tracked `docker-compose.yml` includes the secure video services. The
+initializer uses the Python standard-library installer inside the Docker image.
+It downloads only the pinned VSViG files, the
+pinned Lightweight OpenPose import tree and the retained licenses. It does not
+download patient media or execute downloaded Python. The generated bundle stays
+inside the Docker volume and is never copied into the repository. Run one
+command from the repository root:
+
+```sh
+docker compose up --build
+```
+
+Compose builds the video image, runs `vsvig-assets-init` to completion, verifies
+the read-only named model volume, applies migrations and starts the backend.
+The initializer is idempotent, so normal restarts reuse an already verified
+bundle rather than downloading it again.
+
+The upload route performs extension/MIME, model-contract and basic readable
+metadata checks before returning `202`. Full video-contract checks (geometry,
+constant timing, FPS, readable frame count and pose completeness) run once in the
+background path; an invalid clip becomes a terminal failed job rather than
+being decoded a second time synchronously. This is intentional for the
+asynchronous API and is surfaced through the job error state.
+
+The default bounded transform accepts 6–60 FPS, no more than 1920×1080 pixels,
+216,000 decoded frames, 1 GiB of retained preview output and 900 seconds of
+privacy-processing wall time. Operators can tune these limits in the private
+environment, but increasing them increases CPU, memory, disk and retention risk.
+
+The initializer prints the contract SHA-256 and then performs the tensor-only
+runtime verification. A new `.env` created by `node scripts/setup.mjs` already
+contains the reviewed hash for the pinned contract. If an older `.env` has no
+hash or a different hash, set `VSVIG_CONTRACT_SHA256` in that ignored file to
+the value printed by the initializer, then rerun the command. The hash is
+public model metadata, not a credential. `VSVIG_ASSET_DIR` is now an internal
+container setting (`/opt/vsvig`); do not set a laptop path for it.
+
+For a source/manifest inspection before approval, use the initializer service's
+image but omit the approval flag. This intentionally leaves the volume
+unreviewed and blocks startup until the normal approved initializer is run
+again:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
+  run --rm --no-deps --entrypoint python vsvig-assets-init \
+  backend/scripts/install_vsvig_assets.py --asset-dir /opt/vsvig
+```
+
+`--approve-source-contract` means that the pinned source, checkpoint loading,
+and MDS01 adapter choices have passed a technical contract review. The upstream
+repository does not publish a complete arbitrary-video inference recipe, so this
+flag does not prove that every choice matches the authors' hidden training
+pipeline. It is not clinical validation, privacy certification or approval to
+use the model for patient care. If you want to inspect the generated manifest
+first, omit the flag and rerun with the flag after review; an unreviewed manifest
+correctly fails closed.
+
+The bundle layout is generated inside the named volume at `/opt/vsvig`:
 
 ```text
-external-model-bundle/
-  contract.json
-  VSViG-base.pth
-  pose.pth
-  dy_point_order.pt
-  vsvig/
-    VSViG.py
-    extract_patches.py
-    LICENSE
-  openpose/
-    demo.py
-    val.py
-    models/...
-    modules/...
-    LICENSE
+/opt/vsvig/
+├── contract.json
+├── VSViG-base.pth
+├── pose.pth
+├── dy_point_order.pt
+├── vsvig/
+│   ├── VSViG.py
+│   ├── extract_patches.py
+│   └── LICENSE
+└── openpose/
+    ├── demo.py
+    ├── val.py
+    ├── datasets/
+    ├── models/
+    ├── modules/
+    └── LICENSE
 ```
 
-VSViG source is pinned to commit `1026e7e7f2287b96f3cc375830f2836ffdf4588e`; the two executable VSViG source files also have pinned SHA-256 hashes in the adapter. Supply the official [lightweight OpenPose implementation](https://github.com/Daniil-Osokin/lightweight-human-pose-estimation.pytorch) used by `pose.pth`, and retain its license. Every mounted Python file and checkpoint must have a manifest hash. Record the OpenPose source revision in the contract review reference. Never approve an arbitrary downloaded Python file merely because its hash was computed locally.
+Do not move these files into the repository or commit them. Do not replace a
+pinned file with a similarly named checkpoint. A replacement requires a new
+source revision, hash set, contract review and tests. The volume is initialized
+again safely on later starts; already verified files are reused.
 
-Add absolute paths to the existing ignored `.env` (Windows Docker Desktop also accepts an absolute host folder path):
+### 3. Browser uploads and optional operator diagnostics
 
-```dotenv
-VSVIG_ASSET_DIR=/absolute/path/to/external-model-bundle
-VIDEO_DATA_DIR=/absolute/path/to/approved-videos
-VSVIG_CONTRACT_SHA256=the-reviewed-sha256-of-contract-json
-```
+The normal browser workflow does not require a host video path. The user selects
+a local video in the frontend; the API receives it as multipart form data and
+stores it in encrypted backend session storage. The browser never sends an
+absolute filesystem path.
 
-Generate an **unreviewed** manifest template on stdout; save it as `contract.json` in the external bundle, outside this repository:
+`VIDEO_DATA_DIR` is only an optional operator setting for inventory or detector
+inspection commands that read an already-approved server-side clip. Do not put
+it in the user workflow or ask users to configure it. Mount it explicitly and
+read-only for the individual diagnostic command when needed:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml run --rm --no-deps backend python -m backend.scripts.video_contract /opt/vsvig
+VIDEO_DATA_DIR=/absolute/path/to/approved-video-data
+docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
+  run --rm --no-deps -v "$VIDEO_DATA_DIR:/private-video-data:ro" backend \
+  python -m backend.scripts.video_inventory /private-video-data
 ```
 
-After review, calculate the contract's SHA-256 and place that value in the ignored root `.env`. This separate value is required: a modified mounted bundle cannot approve its own altered manifest.
+### 4. Explicit verification and recovery commands
+
+The normal command already performs initialization and backend startup
+verification. Use these commands only when inspecting a failed or deliberately
+removed model volume:
 
 ```sh
-shasum -a 256 /absolute/path/to/external-model-bundle/contract.json
+docker compose run --rm --no-deps vsvig-assets-init
+docker compose run --rm --no-deps backend python -m backend.scripts.verify_vsvig_runtime
 ```
 
-The runtime image must be built before the command above on a fresh machine:
+The verification command must print JSON showing `VSViG-base`,
+`Lightweight OpenPose`, input shape `[1, 30, 15, 3, 32, 32]`, and output shape
+`[1]`. It loads both checkpoints and performs a tensor-only forward pass; it
+does not open a video or access patient storage.
+
+The overlay also runs this verification before migrations and Uvicorn startup:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml build backend
+docker compose up --build
 ```
 
-Fill the null fields only from reviewed checkpoint preprocessing evidence. `patch_order` and `keypoint_order` are explicit, unique 15-element index lists referencing the 18 OpenPose joints; `pixel_scale` multiplies extracted patch values; `coordinate_scale` multiplies x/y coordinates; `sample_fps`, `stride_frames`, `pose_height`, exact video `width`/`height`, `color_order` and `min_keypoint_score` are explicit. Set `third_feature` to `confidence` only when that convention is verified. Record a stable version and review reference, then set `reviewed` to true. The provisional threshold is 0.5 and remains a research setting.
+If verification fails, the API is intentionally not started. Fix the named
+volume, contract hash or dependency rather than enabling a fallback. The
+initializer runs as a completed dependency before the backend starts.
 
-Start the stack:
-
-```sh
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml up --build
-```
-
-In another terminal:
+Start the frontend in a second terminal:
 
 ```sh
 cd frontend
@@ -96,118 +269,264 @@ npm ci
 npm run dev
 ```
 
-Open `http://127.0.0.1:3000`, register/sign in, and select **Video detection**. Use the same hostname for frontend and API; cookies are required for video playback. Video inference is CPU-only in this pass and may take substantially longer than the clip duration on Docker Desktop. One video job runs at a time, with a one-hour execution ceiling bounded by retention. There is no real-time latency claim.
+Open `http://127.0.0.1:3000`, sign in, and choose **New analysis** or **Video
+review**. The standalone video route is `/video-detection`.
 
-## Inventory before uploads
+## Input contract
 
-```sh
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml exec backend python -m backend.scripts.video_inventory /private-video-data
+The current adapter makes its source-informed technical choices explicit in the
+generated contract. Values marked as MDS01 choices are not claims that the
+upstream release provides a complete inference recipe:
+
+| Field | MDS01 contract value | Reason |
+| --- | --- | --- |
+| Container | MP4, MOV or WebM readable by OpenCV | Current upload allow-list |
+| Geometry | `1920×1080` | Official patch geometry/context; the adapter fails closed instead of silently distorting it |
+| Frame timing | Constant frame timing; source FPS at least `6` | The runtime samples the source at 6 FPS |
+| Minimum duration | Five seconds of readable visual frames | One complete 30-frame window at 6 FPS |
+| Sampled window | `30` frames | 5-second VSViG window |
+| Window stride | `3` sampled frames | MDS01 review choice for 0.5-second score spacing; not specified by the upstream reader |
+| Pose input | `256` pixel pose height | Lightweight OpenPose demo convention |
+| Pose output | 18 joints, each with x, y and confidence | Required complete single-person pose |
+| Patch kernel | `128`, Gaussian σ `0.3`, scale `0.25` | Produces `32×32` patches using the pinned extractor |
+| Patch tensor | `15×32×32×3`, transposed to `15×3×32×32` | VSViG input per frame |
+| Coordinates | x, y, confidence; coordinate scale `1.0` | MDS01 choice because the checkpoint path requires three positional features; upstream comments are inconsistent |
+| Pixel values | BGR, pixel scale `1.0` | MDS01 choice preserving OpenCV/source patch values; upstream extractor does not state a color/scale contract |
+| Person count | Exactly one usable pose | The v1 adapter never chooses among multiple people |
+| Score | Per-window sigmoid output, threshold `0.5` | Research threshold; not calibrated |
+
+The 15 model inputs follow the adapter order reconstructed from the upstream
+`train.py` reorder:
+
+```text
+nose, left eye, right eye,
+right shoulder, right elbow, right wrist,
+left shoulder, left elbow, left wrist,
+right hip, right knee, right ankle,
+left hip, left knee, left ankle
 ```
 
-This command prints aggregate counts, durations, frame rates and resolutions without filenames, paths or file contents. It identifies possible annotation files by extension only; it does not validate labels. Empty/unreadable input exits with code 2. MP4, MOV and WebM are accepted by the app; other formats require a separately reviewed conversion. The last inspected patient folder had no videos; inventory it again when data arrives.
+These names identify model input regions. They are not causal explanations. The
+source release contains preprocessing conventions that are not packaged as a
+single official inference command, so the contract records an MDS01 technical
+choice and its evidence. Confirm the mapping against the original training
+artifacts before making a reproduction claim. Do not claim that a runnable input
+contract is the same as validated performance on a new hospital or camera
+distribution.
 
-## Local computer-vision inspection
+The VSViG paper describes a separate temporal accumulation decision rule. The
+current application does not claim to reproduce that final rule; it reports
+per-window scores and merges overlapping windows after thresholding. A paper-
+faithful accumulation implementation is a remaining research task, not an
+implicit feature of this endpoint.
 
-Use the diagnostic script to see what the detectors find on one approved clip.
-It prints per-frame counts and writes an annotated video to a path outside Git.
-The output contains the source appearance, so keep it local and delete it when
-the review is finished.
+## Privacy and retention
+
+### Detection workflow
+
+1. The multipart upload is written to encrypted application storage before
+   background processing. Multipart parsing may use a private short-lived
+   framework spool for large parts; that spool is backend-internal and cleaned
+   with the job.
+2. Processing materializes the source briefly in a job-scoped private work
+   directory.
+3. OpenCV face detection records coverage and the model-input transform full-frame
+   blurs every frame; zero or multiple detections are marked ambiguous.
+4. The protected visual file is read for pose/keypoint extraction and VSViG
+   scoring. OpenCV writes a video-only model-input file; audio is not decoded
+   into model input.
+5. The result records face coverage, quality flags and whether human review is
+   required. It does not record raw keypoint coordinates.
+6. The runtime fans the same in-memory pose samples into two outputs: VSViG
+   patches/scores and a visualization that masks the pose region and draws the
+   skeleton. It does not run a second pose model. The original and temporary
+   model-input files are deleted after success or failure. Only encrypted
+   `predictions.json` and `video.visualization.mp4` are retained for the job;
+   expiry and startup recovery sweep both artifacts and abandon interrupted
+   work.
+
+Face redaction reduces visual exposure but does not guarantee anonymity. Haar
+face detection can miss profile, low-light, masked or occluded faces. Coverage
+below the job policy fails the detection; intermittent coverage is surfaced as
+a review flag. The privacy result is evidence about the transform, not a proof
+that no identifying feature remains.
+
+EEG draft uploads are bounded separately from video jobs: the HTTP body is
+rejected before multipart parsing when it exceeds the configured upload limit,
+each account has a pending-draft count/byte cap, and a background retention
+sweep removes expired rows and old orphaned encrypted draft directories. These
+limits protect temporary storage but are not a substitute for a host-level
+disk quota and encrypted backups policy.
+
+### Separate video-privacy utility
+
+The `/video-privacy` workflow is intentionally different. It can retain an
+encrypted audio-free protected output and preview for owner-only review. It is a
+privacy transform utility, not the input or evidence artifact for visual
+seizure detection.
+
+## API surface
+
+The detection API is intentionally small:
+
+```text
+POST /api/video-detection/jobs
+GET  /api/video-detection/jobs
+GET  /api/video-detection/jobs/{job_id}
+GET  /api/video-detection/jobs/{job_id}/predictions
+GET  /api/video-detection/jobs/{job_id}/visualization
+```
+
+The separate audio-free privacy utility uses:
+
+```text
+POST /api/video-privacy/jobs
+GET  /api/video-privacy/jobs
+GET  /api/video-privacy/jobs/{job_id}
+POST /api/video-privacy/jobs/{job_id}/acknowledge
+GET  /api/video-privacy/jobs/{job_id}/preview
+GET  /api/video-privacy/jobs/{job_id}/download
+```
+
+There is no detection source-video endpoint. The `/visualization` endpoint
+returns only the encrypted, owner-filtered, audio-free privacy-safe artifact
+after authentication; it never returns the original or the internal model-input
+video. Result responses contain generated job IDs, status, privacy provenance,
+model provenance, window scores, a time-indexed timeline, merged events,
+summary metadata and optional patch-sensitivity evidence. They do not contain
+patient references, original filenames, storage paths, raw video, audio or pose
+coordinates. Normal users are owner-filtered; the development demo
+administrator can review local users’ records.
+
+The prediction response adds review-oriented projections without exposing raw
+keypoints:
+
+```json
+{
+  "timeline": [{"timestamp": 2.0, "start_time": 1.0, "end_time": 3.0, "score": 0.8, "seizure_detected": true}],
+  "events": [{"start_time": 1.0, "end_time": 3.0, "peak_score": 0.8, "peak_timestamp": 2.0}],
+  "summary": {"peak_score": 0.8, "potential_event_detected": true, "event_count": 1, "threshold": 0.5},
+  "visualization": {
+    "available": true,
+    "media_type": "video/mp4",
+    "audio_included": false,
+    "privacy_method": "full-frame-blur-and-skeleton-overlay",
+    "overlay": {"skeleton": true, "model_score": false, "event_markers": false},
+    "frontend_overlay": {"model_score": true, "event_markers": true}
+  }
+}
+```
+
+The timeline timestamp is the midpoint of each VSViG window. Event boundaries
+are produced by the existing configured per-window threshold and overlap merge;
+no new clinical threshold is introduced. The frontend score and event overlays
+are synchronized views of these stored values, not a second inference pass.
+
+
+```text
+queued → preflight → privacy-transform → pose-and-inference (model + protected visualization) → complete
+```
+
+Failure and expiry are terminal states. A separate background task processes one
+job at a time in the current prototype.
+
+## Why the error appears
+
+The old message, “Mount the official model assets before starting detection,” is
+the safe response when the service cannot see a valid named-volume bundle. The
+current messages map to these causes:
+
+| Error code/message family | Meaning | Fix |
+| --- | --- | --- |
+| `assets_missing` | The named volume is empty or `/opt/vsvig`/`contract.json` is absent | Run `vsvig-assets-init` with the two-file Compose command |
+| `contract_unreviewed` | The manifest hash is absent/wrong or the contract was generated without review approval | Set the ignored `.env` hash to the initializer output and rerun the initializer |
+| `asset_mismatch` | A pinned checkpoint/source/license/partition hash, repository or revision differs | Reinstall the pinned bundle; do not substitute a checkpoint |
+| `contract_invalid` | A required preprocessing field or shape is malformed | Regenerate the contract; do not hand-edit values to bypass validation |
+| `runtime_incompatible` | PyTorch, timm, OpenCV, the OpenPose import tree or either checkpoint failed to load | Run `verify_vsvig_runtime`; rebuild the overlay image |
+| `video_incompatible` | The clip is not readable, constant-timed, `1920×1080`, at least 6 FPS, or long enough | Convert a consented demo clip to the input contract |
+| `privacy_transform_failed` | Face-redaction output could not be validated or coverage was too low | Inspect detector coverage; use a clearer one-person clip |
+| `visualization_failed` | The protected audio-free review artifact could not be encoded or validated | Check the video runtime/codec and retry the consented clip |
+| `ambiguous_or_missing_pose` / `incomplete_pose` | No single complete pose was available | Use one visible person with adequate framing and lighting |
+| `no_usable_windows` | No complete 30-sampled-frame window was produced | Use at least five seconds of readable video |
+
+Do not put exception traces, local paths, filenames or patient media into a bug
+report. The worker deliberately converts upstream exceptions into fixed public
+error codes.
+
+## Inspection and evaluation
+
+The inventory helper reports aggregate media counts, durations, frame rates and
+resolutions without printing filenames or file contents:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
+  run --rm --no-deps -v "$VIDEO_DATA_DIR:/private-video-data:ro" backend \
+  python -m backend.scripts.video_inventory /private-video-data
+```
+
+For approved local detector inspection, write any annotated output outside the
+repository and delete it afterward. An annotated video contains source
+appearance and is not an evidence artifact:
 
 ```sh
 mkdir -p /tmp/mds01-vision-check
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml run --rm --no-deps \
+docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
+  run --rm --no-deps -v "$VIDEO_DATA_DIR:/private-video-data:ro" \
   -v /tmp/mds01-vision-check:/out backend \
   python -m backend.scripts.inspect_video_vision \
-  /private-video-data/Normal/<approved-clip>.mp4 \
-  --mode both --output /out/face-detector-comparison.mp4
+  /private-video-data/approved-clip.mp4 \
+  --mode haar --output /out/face-detector-check.mp4
 ```
 
-The `both` mode compares the current OpenCV Haar detector with MediaPipe Face
-Detection. To draw the pose-landmark view used for visual inspection:
+Detector coverage is not seizure-detection accuracy. Accuracy requires
+clinician-reviewed onset/offset labels, patient-disjoint splits and a declared
+evaluation unit. Use [presentation-readiness.md](presentation-readiness.md) for
+the complete scientific, privacy and deployment checklist.
+
+## Verification checklist
+
+Run the checks that apply to the change. The practical commands are:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml run --rm --no-deps \
-  -v /tmp/mds01-vision-check:/out backend \
-  python -m backend.scripts.inspect_video_vision \
-  /private-video-data/Seizure/<approved-clip>.mp4 \
-  --mode pose --output /out/pose-landmarks.mp4
-```
+docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
+  run --rm --no-deps vsvig-assets-init
 
-This is a detector-coverage check, not an accuracy score. Accuracy requires
-reviewed frame-level face boxes or landmarks. The inspection script does not
-change the production transform: new privacy jobs still use the fail-closed
-face-redaction path.
+docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
+  run --rm --no-deps backend python -m backend.scripts.verify_vsvig_runtime
 
-## Architecture and data handling
-
-```mermaid
-flowchart LR
-    Login[Login cookie] --> API[Owner-filtered video API]
-    API --> DB[(SQLite native / PostgreSQL Docker job metadata)]
-    API --> Encrypted[(Encrypted video storage)]
-    Encrypted --> Work[Temporary plaintext]
-    Work --> Pose[Official OpenPose + pose checkpoint]
-    Pose --> Patches[Reviewed Gaussian patch extraction]
-    Patches --> VSViG[VSViG base checkpoint]
-    VSViG --> Scores[Encrypted window scores]
-    Work --> Playback[Audio and container metadata removed]
-    Playback --> Encrypted
-    Scores --> Review[Owner-only evidence timeline]
-    Encrypted --> Review
-    Timer[Retention sweep every 30 seconds] --> Encrypted
-```
-
-FastAPI routes remain thin; persistence is in the dedicated repository, processing in the video detection service, and model code in the video detection adapter. Migration 015 creates an independent table with a mandatory account owner. The frontend shares the existing transport, session expiry handling, buttons and design tokens.
-
-Endpoints are `POST /api/video-detection/jobs`, `GET /api/video-detection/jobs`, and `GET /api/video-detection/jobs/{job_id}` with `/predictions` and `/video` subresources. Upload takes multipart `video`; there is no patient name or filesystem path field. Unauthorized ownership returns 404. Unauthenticated requests return 401, including unauthenticated test mode. Missing or unreviewed assets return 503 before input is retained; unsupported input returns 422. A busy processor returns 409.
-
-Jobs move through queued, processing, ready, failed or expired. Scores carry checkpoint hashes, model version, preprocessing version and threshold. Adjacent/overlapping positive window supports merge into event intervals. Raw sigmoid scores remain uncalibrated model scores. `recording_probability_available` stays false. The timeline positions points at window centers and the table preserves exact supports.
-
-Before pose extraction and VSViG scoring, the source is face-redacted. The model receives the redacted video; the owner-only review output is that same redacted video with audio, container metadata, chapters, subtitles and attachments removed. A face-detector miss falls back to full-frame blur and is surfaced as a review warning. This reduces visual identity exposure but is not a guarantee of anonymity. No raw video URL bypasses ownership checks. Range requests are authenticated; decrypted response files are removed in `finally`, including unsuccessful responses. API/browser responses use `Cache-Control: no-store`.
-
-For the highest flagged window, the runtime can neutralise each of its 15 anonymous VSViG input patches once and report the score change. This patch-occlusion result is bounded model-input sensitivity only; it does not identify anatomy, establish seizure cause, or provide a diagnosis. It must not be used to claim that privacy preservation maintained clinical performance. That requires a separate patient-disjoint evaluation with approved labelled video and seizure onset/offset annotations.
-
-Run that comparison outside the application container. The manifest stays outside Git and contains only dataset-relative paths, pseudonymous subject IDs, a fixed split, and reviewed `[start_seconds, end_seconds]` seizure intervals:
-
-```bash
-python backend/scripts/evaluate_video_privacy.py /approved/video-data /approved/video-manifest.json \
-  --split test --output reports/video-face-redaction.json
-```
-
-The report contains only aggregate raw-versus-face-redacted metrics, score drift, and threshold agreement. It never writes video paths, subject IDs, frames, poses, or audio.
-
-If an approved dataset uses `Normal/` and `Seizure/` MP4 folders and every Seizure clip is labelled positive for its full duration, create that external manifest first:
-
-```bash
-python backend/scripts/create_video_evaluation_manifest.py /approved/video-data /approved/video-manifest.json \
-  --seizure-folder-is-fully-positive
-```
-
-Do not use this helper if a Seizure clip contains pre- or post-event footage; provide reviewed onset/offset intervals instead.
-
-After processing, the encrypted upload and temporary files are removed; encrypted review video and results remain for `VIDEO_RETENTION_SECONDS` (default 24 hours). A background sweep deletes expired artifacts within 30 seconds while the backend is running. Access after expiry is denied immediately. Restart clears interrupted jobs and leftover playback plaintext. While the laptop/backend is off, physical deletion resumes on startup; do not describe retention as an always-running external deletion guarantee.
-
-No Docker or Git history is rewritten. Existing Postgres volumes keep their current database password; removing a Compose fallback does not rotate a database credential. Do not change an existing `.env` password without coordinating its database password rotation. New installations receive random credentials through setup.
-
-## HUKM handoff checklist
-
-- Confirm approved retrospective use, permitted users, retention and whether source appearance can be reviewed locally.
-- Record camera angle/height, bed framing, resolution, frame rate, visible people, lighting/infrared mode and common occlusions.
-- Confirm audio policy and remove audio from review exports.
-- Obtain pseudonymous clip IDs and clinician-reviewed onset/offset labels. Keep the identity key at HUKM.
-- Distinguish EEG onset from visible clinical onset; document timestamps, timezone, clock offsets and drift when preparing evaluation labels.
-- Include positive events and representative negative clips; keep patient-disjoint evaluation sets.
-- Report event sensitivity, false alarms per hour and onset latency only when annotations and sample coverage justify them.
-
-## Checks
-
-```sh
-docker compose exec -e AUTH_MODE=local -e MODEL_RUNTIME=stub -e VIDEO_DETECTION_ENABLED=false backend python -m unittest discover -s backend/tests
+.venv/bin/python -m unittest discover -s backend/tests
 cd frontend
+npm run format:check
 npm run lint
+npx tsc --noEmit
 npm run build
-npm run test:e2e -- video-detection.spec.ts
-npm run test:e2e:real
 ```
 
-Unit/browser tests use synthetic media or explicitly injected results. They validate application behavior, not VSViG accuracy. Real model verification is separate and must use the reviewed mounted bundle and approved videos. Record failures honestly; no stub fallback is available for patient video detection.
+The full backend suite and frontend checks verify application contracts; they do
+not measure VSViG accuracy. A real model demo additionally needs an approved,
+non-patient or consented clip satisfying the input contract.
+
+## HUKM and presentation gate
+
+Before using a HUKM clip or claiming a result, obtain the approved retrospective
+use/consent decision, retention policy, access list and model-license review.
+Keep the identity key at HUKM. Prepare patient-disjoint evaluation splits with
+reviewed visible-event onset/offset labels and document the relationship between
+EEG onset, visible onset, clock offsets and drift.
+
+Measure at minimum:
+
+- event sensitivity/recall and false alarms per hour;
+- precision, specificity, F1 and precision-recall performance where justified;
+- onset latency and confidence intervals;
+- face-redaction coverage and false-negative face cases;
+- raw-versus-redacted score drift;
+- CPU latency, memory and safe concurrency;
+- behavior for multiple people, staff entry, occlusion, poor lighting and no
+  pose.
+
+Keep the presentation wording at “research prototype”, “uncalibrated model
+score”, “flagged interval for human review” and “face-redacted model input” until
+those gates are complete. Do not use “anonymous”, “confidence”, “validated
+seizure detector”, “real-time” or “safe for clinical use” without separate
+reviewed evidence.

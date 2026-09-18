@@ -42,9 +42,10 @@ POST /api/auth/logout
 
 `local-accounts` uses email/password accounts with 8-character minimum
 passwords, salted `hashlib.scrypt` records and eight-hour opaque sessions. In
-development, it seeds the demo administrator `admin@mds01.local` with password
-`12345678`; this account is disabled outside development and is for local demos
-only. The
+development, it can seed the demo administrator `admin@mds01.local` when
+`DEMO_ADMIN_PASSWORD` is set in the ignored `.env`; setup generates that local
+credential and the value is never documented or returned by the API. This
+account is disabled outside development and is for local demos only. The
 raw session token is sent only as an HttpOnly, SameSite=Lax cookie; PostgreSQL
 stores its SHA-256 hash. `require_api_auth` resolves the current user before
 protected routes run. EEG sessions, upload drafts and video jobs are filtered
@@ -111,17 +112,19 @@ nor metadata scrubbing removes every possible EEG biometric signal.
 ## H5 runtime boundary
 
 New Docker installations default to the deterministic development stub. Set
-`MODEL_RUNTIME=h5` and `INSTALL_RESEARCH=true` in `.env`, then rebuild, to use
-the supplied `best_seizure_model.h5` through the reviewed adapter.
+`MODEL_RUNTIME=h5` and `INSTALL_RESEARCH=true` in `.env`, then populate the
+operator-managed `mds01-eeg-model-assets` volume with the reviewed H5 artifact
+and contract before rebuilding. The backend reads `/opt/eeg-model` read-only;
+model files are not stored in Git or copied into the image.
 The image is built as `linux/amd64` because the normal
 Apple Silicon host environment may not provide the required TensorFlow wheel.
 The adapter loads the model once, validates `(None, 1024, 18)` input and
 `(None, 1)` sigmoid output, and runs batched float32 predictions.
 
-The checked-in contract is reviewed for the supplied artifact, including its
-hash, output semantics, threshold, and training preprocessing. If the H5 file
-changes, rerun the verifier and set `reviewed` to false until the replacement
-has been reviewed.
+The external contract is reviewed for its mounted artifact, including its hash,
+output semantics, threshold, and training preprocessing. If the H5 file changes,
+rerun the verifier and set `reviewed` to false until the replacement has been
+reviewed.
 The H5 contract starts as an uncalibrated research score. It must not be
 presented as confidence, accuracy, or a clinical probability. After separate
 patient-disjoint temperature scaling has been fitted for both privacy
@@ -149,21 +152,21 @@ your external dataset directory (POSIX shell examples):
 mkdir -p reports
 docker compose run --rm --no-deps \
   -v "/absolute/private/chb-mit:/app/chb-mit:ro" \
-  -v "$(pwd)/backend/model:/app/backend/model" \
+  -v "/absolute/private/eeg-model:/opt/eeg-model" \
   -v "$(pwd)/reports:/app/reports" \
   backend python backend/scripts/fit_calibration.py /app/chb-mit \
   --privacy-method metadata-scrub \
   --output /app/reports/calibration-metadata-scrub.json \
-  --write-contract /app/backend/model/model-contract.json
+  --write-contract /opt/eeg-model/model-contract.json
 
 docker compose run --rm --no-deps \
   -v "/absolute/private/chb-mit:/app/chb-mit:ro" \
-  -v "$(pwd)/backend/model:/app/backend/model" \
+  -v "/absolute/private/eeg-model:/opt/eeg-model" \
   -v "$(pwd)/reports:/app/reports" \
   backend python backend/scripts/fit_calibration.py /app/chb-mit \
   --privacy-method metadata-scrub+signal-obfuscation \
   --output /app/reports/calibration-obfuscated.json \
-  --write-contract /app/backend/model/model-contract.json
+  --write-contract /opt/eeg-model/model-contract.json
 ```
 
 These commands store candidates, not reviewed probabilities. The explicit
@@ -324,6 +327,20 @@ owning `session_id`, `session_created_at`, and `privacy_method` so a recording
 result can show when its upload was submitted. They do not expose patient
 references, original names, filesystem paths, original files, or cryptographic
 hashes.
+
+## Video seizure detection boundary
+
+Video seizure review is an independent owner-filtered workflow. Its implementation
+is `app/services/video_detection_service.py`, `app/video_detection/runtime.py`,
+and `app/video_detection/contract.py`; the asset installation, exact VSViG
+contract, privacy lifecycle, and troubleshooting steps are in
+[`video-detection.md`](video-detection.md). The runtime is
+`encrypt → full-frame privacy blur → shared Lightweight OpenPose keypoints → { VSViG
+patches → scores; full-frame-blurred skeleton overlay } → evidence`
+The visual model does not consume the privacy visualization or audio. The
+original and temporary full-frame-blurred model-input video are deleted after the job
+completes or fails. A separate encrypted, owner-scoped, audio-free visualization
+is retained for the job retention period; no source-video endpoint exists.
 
 ## Video privacy boundary
 

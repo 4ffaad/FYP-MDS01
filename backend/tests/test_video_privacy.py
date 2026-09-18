@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import io
 import json
 import numpy as np
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -30,7 +31,7 @@ from backend.app.services.video_privacy_service import (
 )
 from backend.app.services.video_storage_service import VideoStorage
 from backend.app.services.storage_service import StorageError
-from backend.app.video_privacy.processor import VideoProcessingResult
+from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProcessingResult, VideoProcessorError
 
 
 class FakeProcessor:
@@ -56,6 +57,33 @@ class FakeProcessor:
 
 
 class VideoPrivacyTests(unittest.TestCase):
+    def test_preflight_rejects_fps_above_the_bounded_video_contract(self) -> None:
+        self.preflight_patch.stop()
+
+        class Capture:
+            def isOpened(self):
+                return True
+
+            def get(self, property_id):
+                return {5: 120.0, 3: 1920, 4: 1080, 7: 1200}[property_id]
+
+            def read(self):
+                return True, object()
+
+            def release(self):
+                return None
+
+        fake_cv2 = type("FakeCV2", (), {
+            "CAP_PROP_FPS": 5,
+            "CAP_PROP_FRAME_WIDTH": 3,
+            "CAP_PROP_FRAME_HEIGHT": 4,
+            "CAP_PROP_FRAME_COUNT": 7,
+            "VideoCapture": lambda _path: Capture(),
+        })
+        with patch.dict(sys.modules, {"cv2": fake_cv2}):
+            with self.assertRaisesRegex(VideoProcessorError, "frame rate"):
+                VideoPrivacyProcessor.preflight(Path("input.mp4"))
+
     storage_key = b"v" * 32
 
     def setUp(self) -> None:
@@ -111,12 +139,13 @@ class VideoPrivacyTests(unittest.TestCase):
             self.assertEqual(list((Path(directory) / "sessions").iterdir()), [])
 
     def test_api_rejects_pose_only_for_new_jobs_without_echoing_filename(self) -> None:
-        with TestClient(app) as client:
-            response = client.post(
-                "/api/video-privacy/jobs",
-                data={"profile": "pose-only"},
-                files={"video": ("patient-name.mp4", b"not a video", "video/mp4")},
-            )
+        with patch.dict(os.environ, {"APP_ENV": "test", "AUTH_MODE": "local"}, clear=False):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/video-privacy/jobs",
+                    data={"profile": "pose-only"},
+                    files={"video": ("patient-name.mp4", b"not a video", "video/mp4")},
+                )
         self.assertEqual(response.status_code, 422)
         self.assertNotIn("patient-name.mp4", response.text)
         self.assertNotIn("original_path", response.text)
@@ -125,6 +154,14 @@ class VideoPrivacyTests(unittest.TestCase):
         self.assertEqual(parse_profile("face-redacted"), VideoPrivacyProfile.FACE_REDACTED)
         with self.assertRaisesRegex(ValueError, "only available"):
             parse_profile("pose-only")
+
+    def test_legacy_pose_only_transform_fails_closed(self) -> None:
+        from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProcessorError
+
+        with self.assertRaisesRegex(VideoProcessorError, "Face redaction is the only available"):
+            VideoPrivacyProcessor._transform_frame(
+                None, None, VideoPrivacyProfile.POSE_ONLY, face_detector=None
+            )
 
     def test_processor_fails_closed_when_cv_runtime_is_missing(self) -> None:
         from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProcessorError
@@ -135,7 +172,7 @@ class VideoPrivacyTests(unittest.TestCase):
                 VideoPrivacyProcessor.preflight(Path("/private/input.mp4"))
         self.preflight_patch.start()
 
-    def test_face_redaction_keeps_context_and_blurs_detector_misses(self) -> None:
+    def test_face_redaction_full_frame_blurs_detected_and_missed_faces(self) -> None:
         from backend.app.video_privacy.processor import VideoPrivacyProcessor
 
         class Cv:
@@ -161,7 +198,7 @@ class VideoPrivacyTests(unittest.TestCase):
         )
         self.assertTrue(detected)
         self.assertEqual(int(transformed[0, 0, 0]), 255)
-        self.assertEqual(int(transformed[3, 3, 0]), 0)
+        self.assertEqual(int(transformed[3, 3, 0]), 255)
 
         class MissingFace:
             @staticmethod
@@ -170,6 +207,17 @@ class VideoPrivacyTests(unittest.TestCase):
 
         transformed, detected = VideoPrivacyProcessor._transform_frame(
             Cv, frame, VideoPrivacyProfile.FACE_REDACTED, face_detector=MissingFace(), pose=None,
+        )
+        self.assertFalse(detected)
+        self.assertTrue(np.all(transformed == 255))
+
+        class MultipleFaces:
+            @staticmethod
+            def detectMultiScale(*_args, **_kwargs):
+                return [(0, 0, 2, 2), (2, 2, 2, 2)]
+
+        transformed, detected = VideoPrivacyProcessor._transform_frame(
+            Cv, frame, VideoPrivacyProfile.FACE_REDACTED, face_detector=MultipleFaces(), pose=None,
         )
         self.assertFalse(detected)
         self.assertTrue(np.all(transformed == 255))
@@ -237,7 +285,7 @@ class VideoPrivacyTests(unittest.TestCase):
                 self.assertFalse(public["preview_available"])
                 self.assertFalse((root / job_id).exists())
 
-    def test_finalizer_keeps_one_audio_stream_and_removes_metadata(self) -> None:
+    def test_finalizer_removes_audio_and_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.mp4"
             visual = Path(directory) / "visual.mp4"
@@ -248,12 +296,12 @@ class VideoPrivacyTests(unittest.TestCase):
 
             def run(command, **kwargs):
                 calls.append(command)
-                if command[0] == "ffmpeg":
+                if Path(command[0]).name == "ffmpeg":
                     Path(command[-1]).write_bytes(b"protected")
                     return subprocess.CompletedProcess(command, 0)
                 return subprocess.CompletedProcess(
                     command, 0,
-                    stdout=json.dumps({"streams": [{"codec_type": "video"}, {"codec_type": "audio"}], "format": {}}).encode(),
+                    stdout=json.dumps({"streams": [{"codec_type": "video"}], "format": {}}).encode(),
                 )
 
             self.finalize_patch.stop()
@@ -264,7 +312,8 @@ class VideoPrivacyTests(unittest.TestCase):
                 self.finalize_patch.start()
 
             ffmpeg = calls[0]
-            self.assertIn("1:a:0?", ffmpeg)
+            self.assertIn("-an", ffmpeg)
+            self.assertNotIn("1:a:0?", ffmpeg)
             self.assertIn("-map_metadata", ffmpeg)
             self.assertIn("-sn", ffmpeg)
             self.assertIn("-dn", ffmpeg)

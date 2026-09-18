@@ -6,8 +6,8 @@ workflow and its evidence UI, use [video-detection.md](video-detection.md).
 
 The frontend is a small Next.js App Router application. It owns screens and
 browser state; the FastAPI backend owns sessions, processing, and results. The
-dashboard is the workspace home; `/upload` is the shared entry point for EEG,
-video, or both.
+The dashboard is the workspace home; `/upload` is the shared entry point for one
+EEG archive, one separate video, or both.
 
 MDS01 — EEG Research Review is a research workspace for clinicians and clinical
 researchers. Its job is to make upload state, privacy handling, and model
@@ -101,6 +101,8 @@ NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW=false
 - `src/app/login/page.tsx` renders sign-in and self-registration.
 - `src/components/UploadScreen.tsx` owns modality selection, EEG staging, privacy choices, and submission.
 - `src/components/CombinedAnalysisScreen.tsx` presents the two existing owner-scoped jobs together.
+- `src/components/VideoDetectionScreen.tsx` owns standalone video submission,
+  privacy provenance, VSViG score timelines and patch-sensitivity evidence.
 - `src/components/DashboardScreen.tsx` owns the workspace home, session grouping, and active-session polling.
 - `src/components/SessionDetailScreen.tsx` owns one session’s summary and recording list.
 - `src/components/SessionRecordings.tsx` renders safe recording rows and result links.
@@ -127,6 +129,10 @@ The frontend never displays patient references, original filenames, original
 paths, unrestricted original files, or waveform samples during upload
 configuration. CHB-MIT summary/sidecar intervals are not displayed to normal
 users; recording rows and alert states use only model alert windows.
+Video detection returns prediction/evidence metadata and an encrypted
+owner-scoped privacy-safe review visualization. It never exposes source video or
+filesystem paths; the standalone video-privacy screen has its own acknowledgement
+and download policy.
 The app shell checks `/api/auth/session` before rendering protected pages. It
 does not put credentials or auth state in local storage. A `401` from a
 protected request returns the user to `/login`; the backend remains the source

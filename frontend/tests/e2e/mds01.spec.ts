@@ -430,3 +430,58 @@ test("one upload can start VEEG and video review together", async ({
   ).toBeVisible();
   await expect(page.getByText("VSViG model", { exact: false })).toBeVisible();
 });
+
+test("paired upload can retry video after EEG submission", async ({ page }) => {
+  let videoPosts = 0;
+  const videoJob = {
+    job_id: "VID-retry",
+    label: "Retry video review",
+    status: "queued",
+    current_stage: "queued",
+    duration_seconds: null,
+    fps: null,
+    created_at: new Date().toISOString(),
+    retention_expires_at: new Date(Date.now() + 3600000).toISOString(),
+    video_available: false,
+    error: null,
+  };
+  await page.route("**/api/video-detection/jobs", async (route) => {
+    if (route.request().method() !== "POST")
+      return route.fulfill({ json: { jobs: [] } });
+    videoPosts += 1;
+    if (videoPosts === 1)
+      return route.fulfill({
+        status: 503,
+        json: { detail: "temporarily busy" },
+      });
+    return route.fulfill({ status: 202, json: { job: videoJob } });
+  });
+
+  await page.goto("/upload");
+  await page.locator("#eeg-file").setInputFiles({
+    name: "retry.zip",
+    mimeType: "application/zip",
+    buffer: Buffer.from("synthetic"),
+  });
+  await expect(
+    page.getByText("Required baseline", { exact: true }),
+  ).toBeVisible({
+    timeout: 15000,
+  });
+  await page.locator("#video-file").setInputFiles({
+    name: "retry.mp4",
+    mimeType: "video/mp4",
+    buffer: Buffer.from("synthetic"),
+  });
+  await page.getByRole("button", { name: "Submit for analysis" }).click();
+  await expect(
+    page.getByRole("link", { name: "Open the submitted EEG analysis" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("The VEEG analysis was submitted", { exact: false }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Submit for analysis" }).click();
+  await expect(page).toHaveURL(/\/analysis\?sessionId=.*&videoJobId=VID-retry/);
+  expect(videoPosts).toBe(2);
+});

@@ -255,7 +255,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               ? "Privacy transforms do not guarantee anonymity."
               : "Model output is not a diagnosis."}{" "}
             {isVideoDetection
-              ? "Protected video is not retained; only model results are available."
+              ? "Encrypted privacy-safe preview and model results are retained only for the configured review period."
               : "Original uploads are never displayed."}
           </p>
         </div>

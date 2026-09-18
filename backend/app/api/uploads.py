@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from sqlmodel import Session
 
 from backend.app.core.config import UPLOAD_DRAFT_TTL_SECONDS
-from backend.app.core.security import owner_id, require_api_auth
+from backend.app.core.security import mutation_owner_id, owner_id, require_api_auth
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
 from backend.app.database.repository import get_upload_draft
@@ -16,11 +16,14 @@ from backend.app.database.models.eeg import utc_now
 from backend.app.services.session_service import (
     cleanup_expired_drafts,
     create_upload_draft,
+    DRAFT_UPLOAD_LOCK,
+    DRAFT_LIFECYCLE_LOCK,
     finalize_upload_draft,
 )
 from backend.app.services.storage_service import SessionStorage, StorageError
 from backend.app.services.processing_capacity import processing_capacity
 from backend.app.privacy.methods import canonical_privacy_profile, normalize_privacy_methods
+from backend.app.services.case_service import CaseReferenceError
 
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
@@ -66,12 +69,17 @@ async def stage_upload(
     if not archive.filename or not archive.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Upload one ZIP archive containing EDF files.")
     storage = SessionStorage()
-    cleanup_expired_drafts(db, storage)
     expires_at = utc_now() + timedelta(seconds=UPLOAD_DRAFT_TTL_SECONDS)
     try:
-        draft = await create_upload_draft(db, storage, archive, expires_at, owner_id(current_user))
+        async with DRAFT_UPLOAD_LOCK:
+            cleanup_expired_drafts(db, storage)
+            draft = await create_upload_draft(
+                db, storage, archive, expires_at, mutation_owner_id(current_user)
+            )
     except StorageError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail="Private EEG storage is temporarily unavailable.") from exc
+    finally:
+        await archive.close()
     return _public_draft(draft)
 
 
@@ -138,26 +146,33 @@ def finalize_staged_upload(
     if not processing_capacity.reserve():
         raise HTTPException(status_code=503, detail="The analysis service is at capacity. Try again later.")
 
-    storage = SessionStorage()
-    cleanup_expired_drafts(db, storage)
+    handed_off = False
     try:
-        finalize_kwargs = {}
-        if (current_owner_id := owner_id(current_user)) is not None:
-            finalize_kwargs["owner_user_id"] = current_owner_id
-        if case_id:
-            finalize_kwargs["case_id"] = case_id
-        session = finalize_upload_draft(db, storage, draft_id, privacy_profile, **finalize_kwargs)
-    except ValueError as exc:
-        processing_capacity.release()
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        storage = SessionStorage()
+        cleanup_expired_drafts(db, storage)
+        try:
+            session = finalize_upload_draft(
+                db,
+                storage,
+                draft_id,
+                privacy_profile,
+                owner_user_id=mutation_owner_id(current_user),
+                case_id=case_id,
+            )
+        except CaseReferenceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except StorageError as exc:
+            raise HTTPException(status_code=503, detail="Private EEG storage is temporarily unavailable.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        background_tasks.add_task(processing_capacity.run_reserved, session.session_id)
+        handed_off = True
+        return {"session_id": session.session_id, "case_id": session.case_id, "status": session.status.value}
     except StorageError as exc:
-        processing_capacity.release()
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception:
-        processing_capacity.release()
-        raise
-    background_tasks.add_task(processing_capacity.run_reserved, session.session_id)
-    return {"session_id": session.session_id, "case_id": session.case_id, "status": session.status.value}
+        raise HTTPException(status_code=503, detail="Private EEG storage is temporarily unavailable.") from exc
+    finally:
+        if not handed_off:
+            processing_capacity.release()
 
 
 @router.delete("/drafts/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -168,10 +183,11 @@ def delete_staged_upload(
 ) -> None:
     """Delete one staged upload before it becomes an analysis session."""
 
-    storage = SessionStorage()
-    draft = get_upload_draft(db, draft_id, owner_id(current_user))
-    if draft is None:
-        raise HTTPException(status_code=404, detail="Upload draft was not found.")
-    storage.delete_draft(draft.draft_id)
-    db.delete(draft)
-    db.commit()
+    with DRAFT_LIFECYCLE_LOCK:
+        storage = SessionStorage()
+        draft = get_upload_draft(db, draft_id, mutation_owner_id(current_user))
+        if draft is None:
+            raise HTTPException(status_code=404, detail="Upload draft was not found.")
+        storage.delete_draft(draft.draft_id)
+        db.delete(draft)
+        db.commit()

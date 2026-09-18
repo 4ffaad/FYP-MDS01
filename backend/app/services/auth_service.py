@@ -8,16 +8,18 @@ import hmac
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
+from sqlalchemy import delete, inspect
 from sqlmodel import Session, select
 
 from backend.app.database.models.auth import AuthSession, User
 
 
 MIN_PASSWORD_LENGTH = 8
+MAX_PASSWORD_LENGTH = 1024
 DEMO_ADMIN_PUBLIC_ID = "USR-DEMO-ADMIN"
 DEFAULT_DEMO_ADMIN_EMAIL = "admin@mds01.local"
-DEFAULT_DEMO_ADMIN_PASSWORD = "12345678"
 SESSION_TTL = timedelta(hours=8)
 _SCRYPT_N = 2**14
 _SCRYPT_R = 8
@@ -46,6 +48,8 @@ def validate_password(password: str) -> None:
 
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+    if len(password) > MAX_PASSWORD_LENGTH:
+        raise ValueError(f"Password must be at most {MAX_PASSWORD_LENGTH} characters.")
 
 
 def hash_password(password: str) -> str:
@@ -117,13 +121,15 @@ def ensure_demo_admin(db: Session) -> User | None:
 
     if (
         os.getenv("APP_ENV", "development").strip().lower() != "development"
-        or os.getenv("AUTH_MODE", "local").strip().lower() != "local-accounts"
+        or os.getenv("AUTH_MODE", "local-accounts").strip().lower() != "local-accounts"
         or os.getenv("DEMO_ADMIN_ENABLED", "true").strip().lower() != "true"
     ):
         return None
 
     email = normalize_email(os.getenv("DEMO_ADMIN_EMAIL", DEFAULT_DEMO_ADMIN_EMAIL))
-    password = os.getenv("DEMO_ADMIN_PASSWORD", DEFAULT_DEMO_ADMIN_PASSWORD)
+    password = os.getenv("DEMO_ADMIN_PASSWORD", "")
+    if not password:
+        return None
     validate_password(password)
     user = db.exec(select(User).where(User.email == email)).first()
     if user is not None:
@@ -151,6 +157,8 @@ def ensure_demo_admin(db: Session) -> User | None:
 def authenticate_local_user(db: Session, email: str, password: str) -> tuple[User, str]:
     """Authenticate a local account and issue an opaque raw session token."""
 
+    if not isinstance(password, str) or len(password) > MAX_PASSWORD_LENGTH:
+        raise InvalidCredentials("Email or password is incorrect.")
     try:
         normalized_email = normalize_email(email)
     except ValueError as exc:
@@ -200,6 +208,22 @@ def revoke_session(db: Session, raw_token: str | None) -> None:
             db.commit()
 
 
+def purge_expired_auth_sessions(db: Session) -> int:
+    """Delete expired or revoked local-auth sessions and return the count."""
+
+    bind = db.get_bind()
+    if bind is None or not inspect(bind).has_table(str(AuthSession.__tablename__)):
+        return 0
+    now = datetime.now(timezone.utc)
+    result = db.exec(
+        delete(AuthSession).where(
+            (AuthSession.expires_at <= now) | cast(Any, AuthSession.revoked_at).is_not(None)
+        )
+    )
+    db.commit()
+    return int(result.rowcount or 0)
+
+
 def cloudflare_user(db: Session, claims: dict[str, object]) -> User:
     """Map a verified Cloudflare subject to a stable local ownership row."""
 
@@ -208,6 +232,8 @@ def cloudflare_user(db: Session, claims: dict[str, object]) -> User:
         raise InvalidCredentials("Authentication subject is missing.")
     user = db.exec(select(User).where(User.external_subject == subject)).first()
     if user is not None:
+        if not user.active:
+            raise InvalidCredentials("Authentication account is inactive.")
         return user
     claim_email = claims.get("email")
     email = claim_email.strip().casefold() if isinstance(claim_email, str) and claim_email.strip() else f"cloudflare:{subject}"

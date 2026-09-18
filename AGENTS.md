@@ -9,9 +9,12 @@ the API privacy boundaries described below.
 The backend flow is:
 
 ```text
-ZIP upload → FastAPI → PostgreSQL session → FastAPI BackgroundTasks
+EEG ZIP upload → FastAPI → PostgreSQL session → FastAPI BackgroundTasks
   → validation → de-identification → preprocessing
   → inference adapter → explanation artifact → PostgreSQL results
+
+separate video upload → encryption → face redaction →
+  Lightweight OpenPose keypoints → VSViG → encrypted predictions
 ```
 
 FastAPI routes must remain thin. Business logic belongs in services,
@@ -27,6 +30,9 @@ BackgroundTasks.
   original files through public API responses.
 - Delete original and transient EEG files after processing; retain only the
   encrypted, transformed model-positive artifact allowed by the configured policy.
+- Video detection deletes the source and protected model-input video after
+  processing; retain only its encrypted prediction artifact. The separate
+  video-privacy utility has its own explicitly documented output policy.
 - Do not log patient-identifying values.
 - Review EDF start dates and annotations before changing de-identification
   policy; they may contain sensitive timing information.
@@ -46,7 +52,9 @@ threshold: 0.5
 ```
 
 Do not invent a real model architecture, output contract, preprocessing
-parameters, or clinical explanation method.
+parameters, or clinical explanation method. For video, use the pinned VSViG
+and Lightweight OpenPose contract in `docs/video-detection.md`; do not replace
+its source, checkpoints, or preprocessing silently.
 
 ## API
 
@@ -70,7 +78,6 @@ POST /api/video-detection/jobs
 GET  /api/video-detection/jobs
 GET  /api/video-detection/jobs/{job_id}
 GET  /api/video-detection/jobs/{job_id}/predictions
-GET  /api/video-detection/jobs/{job_id}/video
 ```
 
 The old `/api/v1` prototype routes have been removed. EEG changes use the
@@ -87,4 +94,6 @@ owner-filtered workflow.
    FastAPI BackgroundTasks.
 6. Keep H5 inference behind the validated model contract and fail closed when
    the artifact, hash, runtime, or reviewed preprocessing contract is invalid.
-7. Treat all outputs as research-only; label stub predictions as development data.
+7. Keep VSViG assets outside Git, install them with the pinned installer, and
+   run the model verification command before enabling video detection.
+8. Treat all outputs as research-only; label stub predictions as development data.

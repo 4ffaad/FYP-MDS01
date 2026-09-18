@@ -1,6 +1,7 @@
 -r requirements.txt
-h5py
-scikit-learn
+h5py==3.16.0
+scikit-learn==1.9.1
 tensorflow-cpu==2.19.0
-shap>=0.46,<0.48
-matplotlib>=3.9,<4
+protobuf==5.29.6
+shap==0.47.2
+matplotlib==3.11.2

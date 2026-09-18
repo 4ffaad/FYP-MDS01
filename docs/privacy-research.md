@@ -14,14 +14,16 @@ provide a clinical diagnosis.
 | Minimization | Deletes the original archive, full temporary files, and non-flagged recording artifacts | It does not make the retained positive context risk-free. |
 | Research reference labels | Optional CHB-MIT sidecars and summary intervals stored for offline evaluation | They remain internal and never decide the dashboard model alert. |
 
-The public API exposes generated IDs, safe technical metadata, predictions,
+The public EEG API exposes generated IDs, safe technical metadata, predictions,
 score timelines, and non-clinical explanation JSON. It never exposes reference
 annotation labels, original names, patient references, filesystem paths,
-cryptographic hashes, or retained
-artifact contents. A local-only signal endpoint can return a bounded retained
-positive clip when explicitly enabled; it is disabled by default.
+cryptographic keys, or artifact contents. A local-only signal endpoint can
+return a bounded retained positive clip when explicitly enabled; it is disabled
+by default. Video detection separately returns fixed model-provenance hashes so
+reviewers can identify the loaded checkpoints; those hashes are not storage
+secrets and do not expose media.
 
-## Detection and retention rule
+## EEG detection and retention rule
 
 The model scores every preprocessed window. A recording is model-positive when
 at least one window crosses the reviewed threshold. Positive windows are
@@ -34,6 +36,30 @@ The development stub emits deterministic hash-derived values. Those values are
 not calibrated probabilities, confidence, accuracy, or evidence of clinical
 reasoning. The UI therefore calls them `Development score` and shows the peak
 window score, flagged-window count, threshold, and score timeline.
+
+## Visual detection privacy boundary
+
+The visual detector is a separate video workflow, not a second EEG input. Its
+source enters through multipart parsing and is then written to owner-scoped
+encrypted private storage before background processing. Face redaction runs
+before one shared pose/keypoint pass, and that pass fans out to the VSViG
+representation and a privacy-safe visualization. The visualization masks the
+pose region, draws the same keypoints, contains no audio, and is retained only
+as an encrypted owner-scoped artifact until job expiry. The visual model
+receives the face-redacted frames and pose-derived patches; it does not consume
+the blurred visualization. Audio is excluded from model input.
+
+The keypoint model is Lightweight OpenPose with the `pose.pth` checkpoint
+published alongside VSViG. VSViG then consumes fifteen Gaussian `32×32` patches
+over thirty sampled frames. Patch-occlusion evidence reports input-region
+sensitivity only. It does not identify a seizure cause, establish anatomy as a
+mechanism, or prove that redaction preserved clinical performance.
+
+Face redaction is a privacy transform, not formal anonymity. Haar detector
+misses trigger full-frame blur and coverage flags; low coverage fails the
+detection job. Privacy effectiveness still requires representative face-box
+review, false-negative analysis and a patient-disjoint raw-versus-redacted
+evaluation.
 
 ## Real-model evaluation gate
 

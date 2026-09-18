@@ -22,6 +22,11 @@ import type {
 } from "./types";
 
 function defaultApiBaseUrl(): string {
+  if (process.env.NODE_ENV === "production") {
+    // Production deployments must use the HTTPS UI origin or provide an
+    // explicit HTTPS API origin. Never construct a cleartext API URL here.
+    return typeof window === "undefined" ? "" : window.location.origin;
+  }
   // Local accounts use a SameSite=Lax cookie. Keep the UI and API on the same
   // hostname so both http://localhost and http://127.0.0.1 work in a browser.
   const hostname =
@@ -127,6 +132,23 @@ export class ApiError extends Error {
   }
 }
 
+export function shouldRetryRequest(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "AbortError")
+    return false;
+  const status =
+    error && typeof error === "object" && "status" in error
+      ? Number((error as { status?: unknown }).status)
+      : 0;
+  return status === 0 || status === 408 || status === 429 || status >= 500;
+}
+
+export function pollRetryDelay(
+  attempt: number,
+  base = 1500,
+  maximum = 15000,
+): number {
+  return Math.min(maximum, base * 2 ** Math.max(0, attempt - 1));
+}
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
@@ -1507,6 +1529,20 @@ export async function getJson<T>(
   return (await response.json()) as T;
 }
 
+export async function getBlob(
+  path: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    signal,
+    headers: { Accept: "video/mp4" },
+    credentials: REQUEST_CREDENTIALS,
+    cache: "no-store",
+  });
+  if (!response.ok) throw await readError(response);
+  return response.blob();
+}
+
 async function requestWithoutBody(
   path: string,
   method: string,
@@ -1589,6 +1625,9 @@ export function uploadJson<T>(
     request.addEventListener("load", () => {
       if (request.status >= 200 && request.status < 300)
         return resolve(request.response as T);
+      if (request.status === 401 && typeof window !== "undefined") {
+        window.dispatchEvent(new Event("mds01:auth-expired"));
+      }
       const detail = (request.response as ApiErrorPayload | null)?.detail;
       reject(
         new ApiError(

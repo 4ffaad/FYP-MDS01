@@ -10,6 +10,7 @@ overview; this page is the maintained map for teammates.
 | Change browser screens or API calls | [Frontend guide](frontend.md) | Backend internals |
 | Change API, processing or persistence | [Backend guide](backend.md) | Browser implementation |
 | Set up or review VSViG detection | [Video detection](video-detection.md) | EEG calibration material |
+| Prepare the demo/presentation | [Presentation readiness](presentation-readiness.md) | Deployment runbooks |
 | Understand visual rules | [Design rules](../DESIGN.md) | Component implementation |
 
 For the shortest handoff, read [Setup](setup.md) first, then use the
@@ -27,12 +28,15 @@ performance:
 - [Privacy research](privacy-research.md) records de-identification limits and
   evaluation questions.
 - [Security audit](security-audit.md) is a deployment-risk checklist.
+- [VSViG research](vsvig-research.md) records the upstream source facts used by
+  the pinned runtime contract.
 
 ## Source of truth
 
 - Runtime behavior: code and tests.
-- API and model contracts: `backend/model/model-contract.json` and the route
-  schemas.
+- API and EEG model contracts: the mounted H5 contract at `/opt/eeg-model/model-contract.json`
+  and the route schemas. Video model provenance and preprocessing: [video detection](video-detection.md)
+  plus the generated external `contract.json`.
 - Database schema: current Alembic migrations.
 - Patient data, model weights, calibration backgrounds, `.env`, and reports:
   local only, never Git.

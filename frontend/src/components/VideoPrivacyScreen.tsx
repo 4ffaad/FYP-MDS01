@@ -7,6 +7,8 @@ import { useRouter } from "next/navigation";
 import {
   acknowledgeVideoPrivacyJob,
   getVideoPrivacyJob,
+  pollRetryDelay,
+  shouldRetryRequest,
   submitVideoPrivacy,
 } from "@/lib/api";
 import type { VideoPrivacyJob } from "@/lib/types";
@@ -97,7 +99,7 @@ export function VideoPrivacyUploadScreen() {
                   className={`size-8 text-teal ${submitting ? "animate-spin" : ""}`}
                 />
                 <span className="mt-4 text-sm font-bold text-ink">
-                  {file ? "Video selected" : "Choose a patient video"}
+                  {file ? "Video selected" : "Choose a video"}
                 </span>
                 <span className="mt-1 text-xs text-ink-muted">
                   Client filenames are not shown after submission.
@@ -108,7 +110,7 @@ export function VideoPrivacyUploadScreen() {
                 <input
                   className="sr-only"
                   id="video-file"
-                  aria-label="Patient video"
+                  aria-label="Video"
                   type="file"
                   accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm"
                   onChange={handleFile}
@@ -174,9 +176,8 @@ export function VideoPrivacyUploadScreen() {
             </div>
             <div className="space-y-4 px-5 py-6 sm:px-7">
               <div className="rounded-md border border-amber/30 bg-amber-soft px-3.5 py-3 text-xs leading-5 text-ink-muted">
-                <span className="font-semibold text-ink">Sensitive audio:</span>{" "}
-                original audio is retained when present for private review and
-                may contain identifying speech.
+                <span className="font-semibold text-ink">Audio excluded:</span>{" "}
+                the retained privacy output contains no audio stream.
               </div>
               <div className="rounded-md border border-amber/30 bg-amber-soft px-3.5 py-3 text-xs leading-5 text-ink-muted">
                 <span className="font-semibold text-ink">Important:</span> this
@@ -215,18 +216,26 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
     const controller = new AbortController();
     let mounted = true;
     let timeoutId: number | undefined;
+    let retryAttempt = 0;
     const load = async () => {
       try {
         const next = await getVideoPrivacyJob(jobId, controller.signal);
         if (!mounted) return;
         setJob(next);
+        retryAttempt = 0;
         if (
           ["ready", "needs_review", "failed", "expired"].includes(next.status)
         )
           return;
         timeoutId = window.setTimeout(() => void load(), 700);
       } catch (loadError) {
-        if (mounted && (loadError as Error).name !== "AbortError")
+        if (mounted && shouldRetryRequest(loadError)) {
+          retryAttempt += 1;
+          timeoutId = window.setTimeout(
+            () => void load(),
+            pollRetryDelay(retryAttempt, 700, 10000),
+          );
+        } else if (mounted && (loadError as Error).name !== "AbortError")
           setError(
             loadError instanceof Error
               ? loadError.message

@@ -9,7 +9,13 @@ npm ci
 npm run dev
 ```
 
+If Next reports `Can't resolve '@hugeicons/core-free-icons'` after changing
+frontend dependencies, stop the existing `npm run dev` process, run `npm ci`
+from this directory, and start it again. Turbopack can cache a transient module
+resolution failure if `node_modules` is changed while it is compiling.
+
 - [Screens, API adapter and privacy behavior](../docs/frontend.md)
+- [Video seizure review setup and model contract](../docs/video-detection.md)
 - [Architecture](../docs/architecture.md)
 - [Design rules](../DESIGN.md)
 - [Testing](../docs/setup.md#tests)

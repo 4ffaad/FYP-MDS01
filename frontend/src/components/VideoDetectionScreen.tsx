@@ -5,22 +5,22 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/button";
+import { pollRetryDelay, shouldRetryRequest } from "@/lib/api";
+import {
+  VideoJobLoadingState,
+  VideoProcessingStatus,
+  VideoUploadStatus,
+} from "@/components/VideoProcessingStatus";
 import {
   getDetection,
+  getDetectionVisualization,
   getDetectionResults,
   listDetections,
   uploadDetection,
   type DetectionJob,
   type DetectionResult,
 } from "@/lib/video-detection";
-
-const stageNames: Record<string, string> = {
-  preflight: "Checking video",
-  "pose-and-inference": "Extracting poses and scoring windows",
-  complete: "Ready for analysis",
-  failed: "Processing stopped",
-  expired: "Retention expired",
-};
+import { VideoReviewPanel } from "@/components/VideoReviewPanel";
 
 function formatTime(seconds: number) {
   return `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(1).padStart(4, "0")}`;
@@ -76,11 +76,11 @@ export function VideoDetectionUploadScreen() {
     <div className="page-frame">
       <div className="mx-auto max-w-5xl">
         <h1 className="text-3xl font-semibold tracking-tight">
-          Video seizure detection
+          Video seizure review
         </h1>
         <p className="mt-3 max-w-2xl text-sm leading-6 text-ink-muted">
-          Upload a patient clip to review movement-based model scores and
-          possible event intervals.
+          Upload one video to review a privacy-safe skeleton visualization,
+          VSViG model scores, and possible event intervals.
         </p>
 
         <form onSubmit={submit} className="panel mt-8 max-w-2xl space-y-5 p-6">
@@ -89,15 +89,17 @@ export function VideoDetectionUploadScreen() {
               htmlFor="detection-video"
               className="block text-sm font-semibold"
             >
-              Patient video
+              Video
             </label>
             <p
               id="video-help"
               className="mt-2 text-sm leading-6 text-ink-muted"
             >
-              MP4, MOV or WebM. Use a clip showing one patient. Face redaction
-              runs before pose extraction and model scoring; audio is excluded.
-              Your account owns this upload.
+              MP4, MOV or WebM. Use a constant-frame-rate 1920×1080 clip showing
+              one patient for at least five seconds. Face redaction runs before
+              Lightweight OpenPose keypoint extraction and VSViG scoring. Audio
+              is excluded from the visual model input. Your account owns this
+              upload.
             </p>
             <input
               id="detection-video"
@@ -111,21 +113,19 @@ export function VideoDetectionUploadScreen() {
           </div>
 
           <p className="text-sm leading-6 text-ink-muted">
-            The source is encrypted immediately. Face-redacted frames are sent
-            directly to the model; no processed video is retained or returned.
+            The API stores the multipart upload in encrypted private storage
+            before background processing begins. One shared pose pass feeds the
+            VSViG model and the privacy-safe visualization; audio is excluded
+            from both visual outputs. The original and temporary model-input
+            files are deleted after processing; only the encrypted protected
+            review artifact is retained for the job’s retention period.
           </p>
           {error && (
             <p role="alert" className="text-sm text-red">
               {error}
             </p>
           )}
-          {busy && (
-            <p role="status" className="text-sm text-ink-muted">
-              {progress < 100
-                ? `Uploading ${progress}%`
-                : "Validating and securing video…"}
-            </p>
-          )}
+          {busy && <VideoUploadStatus progress={progress} />}
 
           <Button disabled={!file || busy} type="submit">
             <Icon
@@ -173,10 +173,21 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
   const [job, setJob] = useState<DetectionJob | null>(null);
   const [result, setResult] = useState<DetectionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [visualizationUrl, setVisualizationUrl] = useState<string | null>(null);
+  const [visualizationError, setVisualizationError] = useState<string | null>(
+    null,
+  );
+  const [visualizationJobId, setVisualizationJobId] = useState<string | null>(
+    null,
+  );
+  const [visualizationAttempt, setVisualizationAttempt] = useState(0);
+  const [visualizationAttemptForJobId, setVisualizationAttemptForJobId] =
+    useState<number | null>(null);
 
   useEffect(() => {
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
+    let retryAttempt = 0;
 
     async function poll() {
       try {
@@ -184,17 +195,37 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
         if (abort.signal.aborted) return;
 
         setJob(nextJob);
-        setResult(
-          nextJob.status === "ready"
-            ? await getDetectionResults(jobId, abort.signal)
-            : null,
-        );
+        retryAttempt = 0;
+        if (nextJob.status === "ready") {
+          try {
+            const nextResult = await getDetectionResults(jobId, abort.signal);
+            if (abort.signal.aborted) return;
+            setResult(nextResult);
+            setError(null);
+          } catch (resultError) {
+            if (abort.signal.aborted) return;
+            setError(
+              resultError instanceof Error
+                ? resultError.message
+                : "The job result could not be loaded.",
+            );
+            retryAttempt += 1;
+            timer = setTimeout(poll, pollRetryDelay(retryAttempt, 1_500));
+            return;
+          }
+        } else {
+          setResult(null);
+        }
+        setError(null);
 
         if (!["failed", "expired"].includes(nextJob.status)) {
           timer = setTimeout(poll, nextJob.status === "ready" ? 15_000 : 1_500);
         }
       } catch (error) {
-        if (!abort.signal.aborted) {
+        if (!abort.signal.aborted && shouldRetryRequest(error)) {
+          retryAttempt += 1;
+          timer = setTimeout(poll, pollRetryDelay(retryAttempt, 1_500));
+        } else if (!abort.signal.aborted) {
           setError(
             error instanceof Error
               ? error.message
@@ -211,7 +242,58 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
     };
   }, [jobId]);
 
+  const visualizationPath =
+    job?.status === "ready" && job.visualization_available
+      ? job.visualization_url
+      : null;
+
+  useEffect(() => {
+    if (!visualizationPath) return;
+
+    const abort = new AbortController();
+    let objectUrl: string | null = null;
+
+    getDetectionVisualization(jobId, abort.signal)
+      .then((blob) => {
+        if (abort.signal.aborted) return;
+        objectUrl = URL.createObjectURL(blob);
+        setVisualizationUrl(objectUrl);
+        setVisualizationJobId(jobId);
+        setVisualizationAttemptForJobId(visualizationAttempt);
+      })
+      .catch((mediaError: unknown) => {
+        if (abort.signal.aborted) return;
+        setVisualizationJobId(jobId);
+        setVisualizationAttemptForJobId(visualizationAttempt);
+        setVisualizationError(
+          mediaError instanceof Error
+            ? mediaError.message
+            : "The protected visualization could not be loaded.",
+        );
+      });
+
+    return () => {
+      abort.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [jobId, visualizationAttempt, visualizationPath]);
+
   const duration = job?.duration_seconds || 1;
+  const protectedVideoUrl =
+    visualizationJobId === jobId &&
+    visualizationAttemptForJobId === visualizationAttempt
+      ? visualizationUrl
+      : null;
+  const protectedVideoError =
+    visualizationJobId === jobId &&
+    visualizationAttemptForJobId === visualizationAttempt
+      ? visualizationError
+      : null;
+  const protectedVideoLoading = Boolean(
+    visualizationPath &&
+      (visualizationJobId !== jobId ||
+        visualizationAttemptForJobId !== visualizationAttempt),
+  );
 
   return (
     <div className="page-frame">
@@ -220,7 +302,7 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
           href="/video-detection"
           className="text-sm text-teal hover:underline"
         >
-          Video detection
+          Video review
         </Link>
         <h1 className="mt-5 text-3xl font-semibold tracking-tight">
           {job?.label ?? "Video review"}
@@ -232,14 +314,10 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
         )}
 
         {!job ? (
-          <p role="status" className="mt-6 text-sm">
-            Loading video job…
-          </p>
+          <VideoJobLoadingState />
         ) : (
           <>
-            <p role="status" className="mt-3 text-sm text-ink-muted">
-              {stageNames[job.current_stage] ?? job.current_stage}
-            </p>
+            <VideoProcessingStatus job={job} />
             {job.error && (
               <p
                 role="alert"
@@ -250,16 +328,23 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
             )}
             {job.status === "expired" && (
               <p className="mt-5 text-sm">
-                The retention period ended. Source video and results have been
-                removed.
+                The retention period ended. Source video, the temporary model
+                input, and retained review artifacts have been removed.
               </p>
             )}
 
             {result && (
               <>
-                <PrivacyTreatment privacy={result.privacy} />
-                <ScoreTimeline result={result} duration={duration} />
-                <FlaggedIntervals intervals={result.intervals} />
+                <VideoReviewPanel
+                  result={result}
+                  duration={duration}
+                  videoUrl={protectedVideoUrl}
+                  mediaLoading={protectedVideoLoading}
+                  mediaError={protectedVideoError}
+                  onRetryVisualization={() =>
+                    setVisualizationAttempt((attempt) => attempt + 1)
+                  }
+                />
                 <VideoEvidence
                   prediction={result.predictions.find(
                     (prediction) => prediction.model_evidence,
@@ -275,166 +360,6 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
         <ResearchOnlyNotice />
       </div>
     </div>
-  );
-}
-
-function PrivacyTreatment({
-  privacy,
-}: {
-  privacy: DetectionResult["privacy"];
-}) {
-  return (
-    <section className="panel mt-6 p-5" aria-labelledby="video-privacy-heading">
-      <h2 id="video-privacy-heading" className="text-base font-semibold">
-        Privacy treatment
-      </h2>
-      {privacy ? (
-        <>
-          <p className="mt-2 text-sm leading-6 text-ink-muted">
-            Face redaction ran before pose extraction and VSViG scoring. The
-            model receives only the protected frames; the source is encrypted
-            and removed after processing. The protected video is not retained.
-          </p>
-          {privacy.quality_flags.length ? (
-            <p className="mt-3 rounded-md bg-amber-soft px-3 py-2 text-xs leading-5 text-amber">
-              Face detection was intermittent, so full-frame blur protected
-              affected frames. Review this result carefully before relying on
-              it.
-            </p>
-          ) : (
-            <p className="mt-3 text-xs text-ink-muted">
-              Face redaction coverage:{" "}
-              {Math.round(privacy.face_detection_coverage * 100)}%
-            </p>
-          )}
-        </>
-      ) : (
-        <p className="mt-2 text-sm leading-6 text-amber">
-          Privacy provenance is unavailable for this legacy job. Do not treat
-          its result as de-identified.
-        </p>
-      )}
-    </section>
-  );
-}
-
-function ScoreTimeline({
-  result,
-  duration,
-}: {
-  result: DetectionResult;
-  duration: number;
-}) {
-  const { model, predictions } = result;
-  const flaggedWindows = predictions.filter(
-    (prediction) => prediction.seizure_detected,
-  ).length;
-
-  return (
-    <section className="panel mt-6 p-5" aria-labelledby="score-heading">
-      <h2 id="score-heading" className="text-base font-semibold">
-        Uncalibrated model score
-      </h2>
-      <p className="mt-2 text-sm leading-6 text-ink-muted">
-        Each point covers {(model.window_frames / model.sample_fps).toFixed(2)}{" "}
-        seconds, stepping {(model.stride_frames / model.sample_fps).toFixed(2)}{" "}
-        seconds. Scores are not calibrated probabilities.
-      </p>
-      <svg
-        viewBox="0 0 900 190"
-        role="img"
-        aria-label={`Window scores from 0 to 1. Threshold ${model.threshold}.`}
-        className="mt-4 w-full overflow-visible"
-      >
-        {[0, 0.5, 1].map((tick) => (
-          <g key={tick}>
-            <line
-              x1="35"
-              x2="875"
-              y1={155 - tick * 130}
-              y2={155 - tick * 130}
-              stroke="currentColor"
-              opacity="0.12"
-            />
-            <text x="0" y={160 - tick * 130} fontSize="12" fill="currentColor">
-              {tick.toFixed(1)}
-            </text>
-          </g>
-        ))}
-        <line
-          x1="35"
-          x2="875"
-          y1={155 - model.threshold * 130}
-          y2={155 - model.threshold * 130}
-          stroke="var(--color-amber, #8a5a00)"
-          strokeDasharray="5 5"
-        />
-        <polyline
-          fill="none"
-          stroke="var(--color-teal, #0066cc)"
-          strokeWidth="2"
-          points={predictions
-            .map(
-              (prediction) =>
-                `${35 + ((prediction.start_time + prediction.end_time) / 2 / duration) * 840},${155 - prediction.score * 130}`,
-            )
-            .join(" ")}
-        />
-
-        <text x="35" y="185" fontSize="12" fill="currentColor">
-          0:00
-        </text>
-        <text
-          x="875"
-          y="185"
-          textAnchor="end"
-          fontSize="12"
-          fill="currentColor"
-        >
-          {formatTime(duration)}
-        </text>
-      </svg>
-      <p className="mt-2 text-xs text-ink-muted">
-        Dashed line: research threshold {model.threshold.toFixed(2)} ·{" "}
-        {flaggedWindows} of {predictions.length} windows flagged
-      </p>
-    </section>
-  );
-}
-
-function FlaggedIntervals({
-  intervals,
-}: {
-  intervals: DetectionResult["intervals"];
-}) {
-  return (
-    <section className="mt-7" aria-labelledby="interval-heading">
-      <h2 id="interval-heading" className="text-lg font-semibold">
-        Flagged intervals
-      </h2>
-      <p className="mt-2 text-sm text-ink-muted">
-        Intervals where the model score crossed the configured research
-        threshold.
-      </p>
-      <div className="mt-4 flex flex-wrap gap-3">
-        {intervals.length ? (
-          intervals.map((interval, index) => (
-            <span
-              key={interval.start_time}
-              className="rounded-md border border-rule px-3 py-2 text-sm"
-            >
-              Event {index + 1} · {formatTime(interval.start_time)}–
-              {formatTime(interval.end_time)}
-            </span>
-          ))
-        ) : (
-          <p className="text-sm text-ink-muted">
-            No windows crossed the configured threshold. This does not rule out
-            a seizure.
-          </p>
-        )}
-      </div>
-    </section>
   );
 }
 
@@ -482,8 +407,15 @@ function ModelDetails({ model }: { model: DetectionResult["model"] }) {
     Model: model.model_name,
     Version: model.model_version,
     Checkpoint: model.weights_hash,
+    "Pose model": model.pose_model,
+    "Pose checkpoint": model.pose_weights_hash,
+    "Dynamic partitions": model.partition_hash,
     Preprocessing: model.preprocessing_version,
+    Input: model.input_resolution
+      ? `${model.input_resolution.width}×${model.input_resolution.height} · ${model.window_frames} frames @ ${model.sample_fps} fps`
+      : `${model.window_frames} frames @ ${model.sample_fps} fps`,
     Threshold: model.threshold,
+    Postprocessing: model.postprocessing,
   };
 
   return (
@@ -544,18 +476,18 @@ function VideoEvidence({
       <p className="mt-2 text-sm leading-6 text-ink-muted">
         Sensitivity for the highest flagged window (
         {formatTime(prediction.start_time)}–{formatTime(prediction.end_time)}).
-        Each anonymous VSViG input patch was neutralised once; a larger score
-        change means the model relied on that patch more. This is not a clinical
-        explanation.
+        Each VSViG input patch was neutralised once; a larger score change means
+        the model relied on that input region more. Labels identify the pose
+        keypoint region, not a clinical explanation.
       </p>
       <div className="mt-4 space-y-2">
         {evidence.patches.slice(0, 5).map((patch) => (
           <div
-            className="grid grid-cols-[4.5rem_minmax(0,1fr)_4rem] items-center gap-3 text-xs"
+            className="grid grid-cols-[8rem_minmax(0,1fr)_4rem] items-center gap-3 text-xs"
             key={patch.patch_index}
           >
             <span className="font-mono text-ink-muted">
-              Patch {patch.patch_index + 1}
+              {patch.component ?? `Patch ${patch.patch_index + 1}`}
             </span>
             <span className="h-2 rounded-full bg-surface-muted">
               <span

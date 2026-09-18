@@ -6,6 +6,7 @@ import hashlib
 import numpy as np
 
 from backend.app.core.config import MODEL_NAME, MODEL_THRESHOLD, MODEL_VERSION
+from backend.app.eeg.model_input import validate_model_windows
 from backend.app.ml.interface import WindowPrediction, score_crossed_threshold
 
 
@@ -58,8 +59,7 @@ class StubInferenceService:
             configured contract.
         """
 
-        if windows.ndim != 3 or windows.shape[1:] != (1024, 18):
-            raise ValueError("Model input must have shape (N, 1024, 18).")
+        validate_model_windows(windows, window_starts)
         predictions: list[WindowPrediction] = []
         for index, start in enumerate(window_starts.tolist()):
             window_digest = hashlib.sha256(windows[index].tobytes()).hexdigest()

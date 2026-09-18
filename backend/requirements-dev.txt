@@ -1,2 +1,3 @@
 -r requirements.txt
-mne
+mne==1.13.2
+httpx>=0.28.1,<1

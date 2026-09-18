@@ -9,10 +9,11 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import UploadFile
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
@@ -57,7 +58,7 @@ class VideoDetectionTests(unittest.TestCase):
             from backend.app.database.models.auth import User
             self.owner = db.exec(select(User).where(User.email == "alice@example.test")).one().id
 
-    def seed(self, status="ready"):
+    def seed(self, status="ready", with_visualization=False):
         with Session(self.engine) as db:
             job = VideoDetectionJob(owner_user_id=self.owner, job_id="VID-" + os.urandom(16).hex(), status=status,
                                     duration_seconds=10, fps=30, retention_expires_at=utc_now() + timedelta(hours=1))
@@ -66,6 +67,10 @@ class VideoDetectionTests(unittest.TestCase):
                 {"start_time": 0, "end_time": 2, "raw_score": 0.8},
             ], 10, {"threshold": 0.5})))
             job.predictions_path = str(self.storage.store_artifact(job.job_id, results, "predictions.json"))
+            if with_visualization:
+                visualization = self.storage.work_path(job.job_id, "privacy-safe-review.mp4")
+                visualization.write_bytes(b"protected-review-video")
+                job.visualization_path = str(self.storage.store_artifact(job.job_id, visualization, "video.visualization.mp4"))
             db.add(job); db.commit(); db.refresh(job)
             return job.job_id
 
@@ -83,29 +88,43 @@ class VideoDetectionTests(unittest.TestCase):
 
     def test_demo_admin_can_read_other_users_video_detection_jobs(self):
         job_id = self.seed()
+        admin_password = os.urandom(16).hex()
         with patch.dict(
             os.environ,
             {
                 "APP_ENV": "development",
                 "AUTH_MODE": "local-accounts",
                 "DEMO_ADMIN_ENABLED": "true",
+                "DEMO_ADMIN_PASSWORD": admin_password,
             },
         ), Session(self.engine) as db:
             ensure_demo_admin(db)
+            admin = TestClient(app)
+            self.addCleanup(admin.close)
+            login = admin.post(
+                "/api/auth/login",
+                json={"email": "admin@mds01.local", "password": admin_password},
+                headers=self.headers,
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+            self.assertEqual(admin.get(f"/api/video-detection/jobs/{job_id}").status_code, 200)
+            self.assertEqual(
+                [item["job_id"] for item in admin.get("/api/video-detection/jobs").json()["jobs"]],
+                [job_id],
+            )
 
-        admin = TestClient(app)
-        self.addCleanup(admin.close)
-        login = admin.post(
-            "/api/auth/login",
-            json={"email": "admin@mds01.local", "password": "12345678"},
-            headers=self.headers,
-        )
-        self.assertEqual(login.status_code, 200, login.text)
-        self.assertEqual(admin.get(f"/api/video-detection/jobs/{job_id}").status_code, 200)
-        self.assertEqual(
-            [item["job_id"] for item in admin.get("/api/video-detection/jobs").json()["jobs"]],
-            [job_id],
-        )
+    def test_admin_flag_is_owner_scoped_outside_development_demo_mode(self):
+        job_id = self.seed()
+        with Session(self.engine) as db:
+            from backend.app.database.models.auth import User
+
+            bob = db.exec(select(User).where(User.email == "bob@example.test")).one()
+            bob.is_admin = True
+            db.add(bob)
+            db.commit()
+        with patch.dict(os.environ, {"APP_ENV": "development", "AUTH_MODE": "local-accounts", "DEMO_ADMIN_ENABLED": "false"}):
+            response = self.bob.get(f"/api/video-detection/jobs/{job_id}")
+        self.assertEqual(response.status_code, 404)
 
     def test_range_playback_is_not_published(self):
         job_id = self.seed()
@@ -122,6 +141,15 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertFalse((self.storage.root / job_id).exists())
         self.assertEqual(self.alice.get(f"/api/video-detection/jobs/{job_id}/video").status_code, 404)
         self.assertEqual(self.alice.get(f"/api/video-detection/jobs/{job_id}/predictions").status_code, 409)
+
+    def test_ready_sweep_removes_leftover_plaintext_work(self):
+        job_id = self.seed(with_visualization=True)
+        leftover = self.storage.work_path(job_id, "response.mp4")
+        leftover.write_bytes(b"plaintext")
+
+        service.sweep()
+
+        self.assertFalse(leftover.exists())
 
     def test_expiry_converts_aware_non_utc_timestamps_before_comparing(self):
         job = VideoDetectionJob(
@@ -155,7 +183,55 @@ class VideoDetectionTests(unittest.TestCase):
             self.assertEqual(self.alice.get(f"/api/video-detection/jobs/{job.job_id}").json()["job"]["status"], "failed")
         response = self.alice.post("/api/video-detection/jobs", files={"video": ("secret.txt", b"x", "text/plain")}, headers=self.headers)
         self.assertEqual(response.status_code, 422)
+
+    def test_cancelled_upload_rolls_back_queued_job_and_storage(self):
+        owner = self.owner
+        if owner is None:
+            self.fail("test owner was not created")
+        video = UploadFile(filename="patient.mp4", file=io.BytesIO(b"private-source"), headers=Headers({"content-type": "video/mp4"}))
+        with patch.object(service, "load_contract", return_value=(Path(self.temp.name), {})), patch.object(
+            self.storage, "save_upload", new=AsyncMock(side_effect=asyncio.CancelledError),
+        ):
+            with Session(self.engine) as db:
+                with self.assertRaises(asyncio.CancelledError):
+                    asyncio.run(service.create_job(db, self.storage, video, self.owner))
+                self.assertEqual(db.exec(select(VideoDetectionJob)).all(), [])
+        self.assertEqual(list(self.storage.root.glob("VID-*")), [])
         self.assertEqual(self.alice.post("/api/video-detection/jobs", files={"video": ("a.mp4", b"x", "video/mp4")}, headers={"Origin": "https://wrong.invalid"}).status_code, 403)
+
+    def test_processing_cancellation_marks_job_interrupted_and_cleans_storage(self):
+        with patch.object(service, "load_contract", return_value=(Path(self.temp.name), {})), patch.object(
+            service.VideoPrivacyProcessor, "preflight", return_value={"fps": 30, "frame_count": 300},
+        ):
+            with Session(self.engine) as db:
+                video = UploadFile(filename="patient.mp4", file=io.BytesIO(b"private-source"), headers=Headers({"content-type": "video/mp4"}))
+                job = asyncio.run(service.create_job(db, self.storage, video, self.owner))
+
+        with patch.object(service.VideoPrivacyProcessor, "process", side_effect=asyncio.CancelledError):
+            with self.assertRaises(asyncio.CancelledError):
+                service.process_job(job.job_id)
+        with Session(self.engine) as db:
+            saved = db.exec(select(VideoDetectionJob).where(VideoDetectionJob.job_id == job.job_id)).one()
+            self.assertEqual(saved.status, "failed")
+            self.assertEqual(saved.current_stage, "interrupted")
+            self.assertEqual(saved.error_code, "interrupted")
+            self.assertIsNone(saved.original_path)
+        self.assertFalse((self.storage.root / job.job_id).exists())
+
+    def test_forced_expiry_removes_active_detection_job_media(self):
+        job_id = self.seed()
+        with Session(self.engine) as db:
+            job = db.exec(select(VideoDetectionJob).where(VideoDetectionJob.job_id == job_id)).one()
+            job.status = "processing"
+            job.retention_expires_at = utc_now() - timedelta(seconds=1)
+            db.add(job)
+            db.commit()
+            marker = self.storage.work_path(job_id, "inference.tmp")
+            marker.write_bytes(b"private")
+            service.expire_job(db, job, self.storage, force=True)
+            self.assertEqual(job.status, "expired")
+        self.assertFalse(marker.exists())
+        self.assertFalse((self.storage.root / job_id).exists())
 
     def test_processing_success_encrypts_results_and_removes_plaintext(self):
         with patch.object(service, "load_contract", return_value=(Path(self.temp.name), {})), patch.object(
@@ -169,11 +245,35 @@ class VideoDetectionTests(unittest.TestCase):
 
         def fake_execute(command, timeout):
             commands.append(command)
-            target = Path(command[-1])
             if "backend.app.video_detection.runtime" in command:
-                target.write_text(json.dumps({"predictions": [{"start_time": 0, "end_time": 2, "raw_score": 0.8}]}))
+                result = validate_predictions(
+                    [{"start_time": 0, "end_time": 2, "raw_score": 0.8}],
+                    10,
+                    {"threshold": 0.5},
+                )
+                result.update(
+                    {
+                        "duration_seconds": 10.0,
+                        "fps": 30.0,
+                        "frame_count": 300,
+                        "visualization": {
+                            "available": True,
+                            "media_type": "video/mp4",
+                            "audio_included": False,
+                            "privacy_method": "full-frame-blur-and-skeleton-overlay",
+                            "frame_count": 300,
+                            "fps": 30,
+                            "width": 1920,
+                            "height": 1080,
+                            "duration_seconds": 10,
+                            "overlay": {"skeleton": True, "model_score": False, "event_markers": False},
+                        },
+                    }
+                )
+                Path(command[4]).write_text(json.dumps(result))
+                Path(command[5]).write_bytes(b"review-video")
             else:
-                target.write_bytes(b"review-video")
+                Path(command[-1]).write_bytes(b"review-video")
             return subprocess.CompletedProcess(command, 0)
 
         protected = VideoProcessingResult(
@@ -182,7 +282,7 @@ class VideoDetectionTests(unittest.TestCase):
         )
         with patch.object(service, "execute", side_effect=fake_execute), patch.object(
             service.VideoPrivacyProcessor, "process", return_value=protected,
-        ):
+        ), patch.object(service, "validate_visualization_artifact"):
             service.process_job(job.job_id)
 
         with Session(self.engine) as db:
@@ -190,13 +290,81 @@ class VideoDetectionTests(unittest.TestCase):
             self.assertEqual(saved.status, "ready")
             self.assertIsNone(saved.original_path)
             self.assertIsNone(saved.video_path)
-            self.assertTrue(saved.predictions_path.endswith(".enc"))
+            predictions_path = saved.predictions_path
+            if predictions_path is None:
+                self.fail("predictions artifact path was not stored")
+            self.assertTrue(predictions_path.endswith(".enc"))
+            visualization_path = saved.visualization_path
+            if visualization_path is None:
+                self.fail("visualization artifact path was not stored")
+            self.assertTrue(visualization_path.endswith(".enc"))
         runtime = next(command for command in commands if "backend.app.video_detection.runtime" in command)
-        self.assertTrue(runtime[-2].endswith("model-input.mp4"))
+        self.assertTrue(runtime[3].endswith("model-input.mp4"))
         result = self.alice.get(f"/api/video-detection/jobs/{job.job_id}/predictions").json()
-        self.assertEqual(result["privacy"]["method"], "face-redaction")
+        self.assertEqual(result["privacy"]["method"], "face-detection-and-full-frame-blur")
         self.assertTrue(result["privacy"]["review_required"])
+        self.assertEqual(result["timeline"][0]["score"], 0.8)
+        self.assertEqual(result["events"][0]["peak_score"], 0.8)
+        self.assertTrue(self.alice.get(f"/api/video-detection/jobs/{job.job_id}/visualization").content == b"review-video")
         self.assertEqual(list((self.storage.root / job.job_id / "work").glob("*")), [])
+
+    def test_owner_can_read_only_the_protected_visualization(self):
+        job_id = self.seed(with_visualization=True)
+        response = self.alice.get(f"/api/video-detection/jobs/{job_id}/visualization")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["content-type"], "video/mp4")
+        self.assertIn("inline", response.headers["content-disposition"])
+        self.assertEqual(response.content, b"protected-review-video")
+        self.assertEqual(self.bob.get(f"/api/video-detection/jobs/{job_id}/visualization").status_code, 404)
+        with TestClient(app) as anon:
+            self.assertEqual(anon.get(f"/api/video-detection/jobs/{job_id}/visualization").status_code, 401)
+
+    def test_processing_rejects_a_visualization_that_contains_audio(self):
+        owner_id = self.owner
+        if owner_id is None:
+            self.fail("test owner was not created")
+        with patch.object(service, "load_contract", return_value=(Path(self.temp.name), {})), patch.object(
+            service.VideoPrivacyProcessor, "preflight", return_value={"fps": 30, "frame_count": 300},
+        ):
+            with Session(self.engine) as db:
+                video = UploadFile(filename="patient.mp4", file=io.BytesIO(b"private-source"), headers=Headers({"content-type": "video/mp4"}))
+                job = asyncio.run(service.create_job(db, self.storage, video, owner_id))
+
+        def fake_execute(command, timeout):
+            result = validate_predictions(
+                [{"start_time": 0, "end_time": 2, "raw_score": 0.8}],
+                10,
+                {"threshold": 0.5},
+            )
+            result["duration_seconds"] = 10.0
+            result["fps"] = 30.0
+            result["frame_count"] = 300
+            result["visualization"] = {
+                "available": True,
+                "media_type": "video/mp4",
+                "audio_included": True,
+                "privacy_method": "full-frame-blur-and-skeleton-overlay",
+                "overlay": {"skeleton": True, "model_score": False, "event_markers": False},
+            }
+            Path(command[4]).write_text(json.dumps(result))
+            Path(command[5]).write_bytes(b"review-video")
+            return subprocess.CompletedProcess(command, 0)
+
+        protected = VideoProcessingResult(
+            duration_seconds=10, fps=30, width=1920, height=1080, frame_count=300,
+            detected_frames=300, quality_flags=[], usable=True, needs_review=False,
+        )
+        with patch.object(service, "execute", side_effect=fake_execute), patch.object(
+            service.VideoPrivacyProcessor, "process", return_value=protected,
+        ), patch.object(service, "validate_visualization_artifact"):
+            service.process_job(job.job_id)
+
+        with Session(self.engine) as db:
+            saved = db.exec(select(VideoDetectionJob).where(VideoDetectionJob.job_id == job.job_id)).one()
+            self.assertEqual(saved.status, "failed")
+            self.assertEqual(saved.error_code, "visualization_failed")
+            self.assertIsNone(saved.visualization_path)
+        self.assertFalse((self.storage.root / job.job_id).exists())
 
     def test_contract_manifest_requires_an_external_hash(self):
         root = Path(self.temp.name)
