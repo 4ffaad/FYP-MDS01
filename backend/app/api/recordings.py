@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 
@@ -172,6 +173,61 @@ def get_prediction(
             }
             for item in predictions
         ],
+    }
+
+
+@router.get("/recordings/{record_id}/annotations")
+def get_annotations(
+    record_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
+    """Return sanitized embedded EEG event timing for review alignment.
+
+    Raw Nicolet annotation text and sensitive report metadata are intentionally
+    never returned. Event kinds are research labels and require human review;
+    they are not clinical diagnoses or model ground truth.
+    """
+
+    record = _get_record(db, record_id, owner_id(current_user))
+    events: list[dict] = []
+    if record.annotation_events_json:
+        try:
+            decoded = json.loads(record.annotation_events_json)
+        except json.JSONDecodeError:
+            decoded = []
+        if isinstance(decoded, list):
+            for event in decoded:
+                if not isinstance(event, dict):
+                    continue
+                onset = event.get("onset_seconds")
+                duration = event.get("duration_seconds")
+                kind = event.get("kind")
+                text_present = event.get("text_present")
+                if (
+                    not isinstance(onset, (int, float))
+                    or not isinstance(duration, (int, float))
+                    or not math.isfinite(float(onset))
+                    or not math.isfinite(float(duration))
+                    or onset < 0
+                    or duration < 0
+                ):
+                    continue
+                if kind not in {"seizure_event", "manual_annotation", "other"}:
+                    continue
+                events.append(
+                    {
+                        "onset_seconds": float(onset),
+                        "duration_seconds": float(duration),
+                        "kind": kind,
+                        "text_present": bool(text_present),
+                    }
+                )
+    return {
+        "record_id": record.record_id,
+        "source": record.reference_annotation_source,
+        "human_review_required": True,
+        "events": events,
     }
 
 

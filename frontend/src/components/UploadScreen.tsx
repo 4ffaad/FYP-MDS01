@@ -231,7 +231,7 @@ export function UploadScreen() {
               id="eeg-file"
               title="EEG archive"
               eyebrow="Required"
-              description="A ZIP containing EDF recordings. The archive is encrypted and staged before you choose the signal treatment."
+              description="A ZIP containing EDF/EDF+, legacy Nicolet .e, or Nicolet .data files with matching .head sidecars. The archive is encrypted and staged before you choose the signal treatment."
               accept=".zip,application/zip"
               icon="activity"
               busy={step === "staging"}
@@ -249,8 +249,8 @@ export function UploadScreen() {
               id="video-file"
               title="Video"
               eyebrow="Optional"
-              description="An MP4, MOV, or WebM clip. Face redaction runs before VSViG pose extraction and visual scoring."
-              accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm"
+              description="An AVI, MP4, MOV, or WebM clip. The pinned contract requires 1920×1080 by default; explicitly approved smaller inputs are letterboxed before full-frame-blurred frames feed both models."
+              accept=".avi,.mp4,.mov,.webm,video/x-msvideo,video/mp4,video/quicktime,video/webm"
               icon="video"
               busy={step === "staging"}
               selected={Boolean(videoFile)}
@@ -330,7 +330,7 @@ export function UploadScreen() {
                 <AdditionalPicker
                   id="video-file"
                   label="Add video"
-                  accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm"
+                  accept=".avi,.mp4,.mov,.webm,video/x-msvideo,video/mp4,video/quicktime,video/webm"
                   onChange={handleVideoChange}
                 />
               )}
@@ -348,7 +348,7 @@ export function UploadScreen() {
                   <PipelineRow
                     icon="activity"
                     title="EEG analysis"
-                    detail={`Encrypt → metadata scrub${signalObfuscation ? " → signal obfuscation" : ""} → H5 model → report`}
+                    detail={`Encrypt → metadata scrub${signalObfuscation ? " → signal obfuscation" : ""} → configured EEG inference adapter (development stub by default; reviewed H5 runtime opt-in) → research report`}
                   />
                   <p className="mt-2 pl-8 text-xs font-semibold text-teal-dark">
                     Required baseline
@@ -360,12 +360,12 @@ export function UploadScreen() {
                   <PipelineRow
                     icon="activity"
                     title="Video seizure review"
-                    detail="Encrypt → face redaction → pose keypoints → VSViG model → evidence timeline"
+                    detail="Encrypt → protected VSViG input + transient pose pass → evidence timeline"
                   />
                   <p className="mt-3 pl-8 text-xs leading-5 text-ink-muted">
-                    Lightweight OpenPose supplies the keypoints that VSViG
-                    scores. Audio is excluded from this visual-only detection
-                    workflow.
+                    Lightweight OpenPose and VSViG use the same
+                    full-frame-blurred model-input frames. Audio is excluded
+                    from this visual-only detection workflow.
                   </p>
                 </div>
               )}
@@ -497,7 +497,9 @@ function ModalityPicker({
         >
           {title}
         </h2>
-        <p className="mt-2 text-sm leading-6 text-ink-muted">{description}</p>
+        <p id={`${id}-help`} className="mt-2 text-sm leading-6 text-ink-muted">
+          {description}
+        </p>
       </div>
       <label
         className={`upload-dropzone mt-6 flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed px-5 py-6 text-center outline-none transition-all focus-within:border-teal focus-within:ring-4 focus-within:ring-teal/20 ${dragging ? "is-dragging border-teal bg-teal-soft/60" : "border-rule-strong bg-surface-soft hover:border-teal hover:bg-teal-soft/35"}`}
@@ -533,6 +535,7 @@ function ModalityPicker({
           className="sr-only"
           id={id}
           aria-label={title}
+          aria-describedby={`${id}-help`}
           type="file"
           accept={accept}
           onChange={onChange}
@@ -568,11 +571,18 @@ function AdditionalPicker({
       <span className="rounded-full bg-surface px-2.5 py-1 text-[0.68rem] font-bold uppercase tracking-[0.08em] text-ink-faint">
         Optional
       </span>
+      <span id={`${id}-help`} className="sr-only">
+        Optional video upload. AVI, MP4, MOV, and WebM are accepted. The pinned
+        contract requires 1920×1080 by default; approved smaller inputs are
+        letterboxed. The protected visual path excludes audio from model input
+        and retained outputs.
+      </span>
       <input
         ref={inputRef}
         className="sr-only"
         id={id}
         aria-label={label}
+        aria-describedby={`${id}-help`}
         type="file"
         accept={accept}
         onChange={onChange}
@@ -614,9 +624,11 @@ function PipelinePreview() {
         )}
       </div>
       <p className="mt-4 text-xs leading-5 text-ink-muted">
-        VEEG uses the reviewed H5 contract. Video uses face-redacted frames with
-        Lightweight OpenPose keypoints and a separate VSViG review output; audio
-        is excluded from model input. Both remain research-only.
+        EEG uses the configured inference adapter. The deterministic development
+        stub is the local demo default; the reviewed H5 runtime is opt-in. Video
+        uses full-frame-blurred frames with Lightweight OpenPose keypoints and a
+        separate VSViG review output; audio is excluded from model input. Both
+        remain research-only.
       </p>
     </section>
   );
@@ -666,7 +678,7 @@ function VideoPrivacySummary() {
             Video privacy is fixed for detection
           </h2>
           <p className="mt-2 text-sm leading-6 text-ink-muted">
-            The detector receives face-redacted visual frames and pose
+            The detector receives full-frame-blurred visual frames and pose
             keypoints. Audio is excluded from model input, and the output is
             labeled as an uncalibrated model score until a video calibration
             process is validated.

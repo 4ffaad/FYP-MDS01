@@ -8,7 +8,8 @@ system, or a guarantee of anonymity.
 
 MDS01 has two separate modalities:
 
-- One EEG ZIP archive containing EDF recordings.
+- One EEG ZIP archive containing EDF/EDF+, legacy Nicolet `.e`, or paired Nicolet
+  `.data` and `.head` files.
 - One separate video file.
 
 A paired submission appears in one workspace, but the backend does not put video
@@ -19,17 +20,19 @@ The video path is:
 ```text
 video upload
   → encrypt source
-  → face redaction
-  → one shared Lightweight OpenPose keypoint pass
+  → transient bounded timestamp-validated source
+  → optional operator-approved aspect-preserving letterbox adaptation
+  → face detection and full-frame blur on every model-input frame
+       → shared protected model-input video
        ├── pose-derived patches → VSViG scores → evidence timeline
-       └── full-frame blur + skeleton overlay → privacy-safe video
+       └── protected frames + skeleton overlay → privacy-safe video
 ```
 
 Audio is excluded from every retained visual output and from the visual model
 input. The uploaded source can still contain audio while it is encrypted and
 waiting for processing; the model and visualization runtime read visual frames
-only. The original and temporary full-frame-blurred model-input video files are
-deleted after the job. Only an encrypted, owner-scoped privacy-safe
+only. The original, normalized source, and temporary full-frame-blurred model-input
+video files are deleted after the job. Only an encrypted, owner-scoped privacy-safe
 visualization and prediction result are retained until job expiry. The separate
 `/video-privacy` utility is audio-free but is not the seizure detector.
 
@@ -58,15 +61,15 @@ any other new camera/site.
 
 ## Model stack
 
-| Stage | MDS01 implementation | Required external asset | Output |
-| --- | --- | --- | --- |
-| Source protection | AES-GCM upload storage | Installation storage key | Encrypted source bytes |
-| Face protection | OpenCV Haar face detector; full-frame Gaussian blur on a miss | OpenCV cascade shipped with the runtime | Protected visual frames plus coverage flags |
-| Keypoint extraction | Lightweight OpenPose MobileNet pose network | `pose.pth` plus pinned OpenPose source | One complete 18-joint `(x, y, confidence)` pose |
-| Patch construction | Pinned VSViG `extract_patches.py` | `extract_patches.py` | Fifteen `32×32×3` model patches per sampled frame |
-| Seizure score | Pinned VSViG STViG/VSViG base model | `VSViG.py`, `VSViG-base.pth`, `dy_point_order.pt` | One uncalibrated score per temporal window |
-| Review visualization | Shared pose samples, full-frame blur and OpenCV rendering | No additional model weight | Encrypted audio-free protected video with skeleton overlay |
-| Review evidence | Bounded patch occlusion on the strongest flagged window | No additional weight | Input-region sensitivity, not a clinical explanation |
+| Stage                | MDS01 implementation                                                                     | Required external asset                           | Output                                                     |
+| -------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------- |
+| Source protection    | AES-GCM upload storage                                                                   | Installation storage key                          | Encrypted source bytes                                     |
+| Face protection      | OpenCV Haar detector for quality flags; full-frame Gaussian blur on every frame          | OpenCV cascade shipped with the runtime           | Protected visual frames plus coverage flags                |
+| Keypoint extraction  | Lightweight OpenPose MobileNet pose network on the shared full-frame-blurred model input | `pose.pth` plus pinned OpenPose source            | One complete 18-joint `(x, y, confidence)` pose            |
+| Patch construction   | Pinned VSViG `extract_patches.py` on the same full-frame-blurred model input             | `extract_patches.py`                              | Fifteen `32×32×3` model patches per sampled frame          |
+| Seizure score        | Pinned VSViG STViG/VSViG base model                                                      | `VSViG.py`, `VSViG-base.pth`, `dy_point_order.pt` | One uncalibrated score per temporal window                 |
+| Review visualization | Shared pose samples, full-frame blur and OpenCV rendering                                | No additional model weight                        | Encrypted audio-free protected video with skeleton overlay |
+| Review evidence      | Bounded patch occlusion on the strongest flagged window                                  | No additional weight                              | Input-region sensitivity, not a clinical explanation       |
 
 The pose network is the keypoint model. It is not the face-redaction model and it
 does not make a seizure decision. The dynamic point-order file is model input
@@ -76,11 +79,11 @@ data, not a second classifier.
 
 The installer and contract currently pin:
 
-| Dependency | Revision | Role |
-| --- | --- | --- |
-| [xuyankun/VSViG](https://github.com/xuyankun/VSViG/tree/1026e7e7f2287b96f3cc375830f2836ffdf4588e) | `1026e7e7f2287b96f3cc375830f2836ffdf4588e` | VSViG source, base/pose checkpoints and dynamic partitions |
-| [Daniil-Osokin/lightweight-human-pose-estimation.pytorch](https://github.com/Daniil-Osokin/lightweight-human-pose-estimation.pytorch/tree/d23c284b09acf27a163e1febd511e7482cac25ed) | `d23c284b09acf27a163e1febd511e7482cac25ed` | Python implementation for `pose.pth` |
-| [VSViG paper](https://arxiv.org/abs/2311.14775) | Published research reference | Clip, patch and temporal-method context |
+| Dependency                                                                                                                                                                          | Revision                                   | Role                                                       |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------- |
+| [xuyankun/VSViG](https://github.com/xuyankun/VSViG/tree/1026e7e7f2287b96f3cc375830f2836ffdf4588e)                                                                                   | `1026e7e7f2287b96f3cc375830f2836ffdf4588e` | VSViG source, base/pose checkpoints and dynamic partitions |
+| [Daniil-Osokin/lightweight-human-pose-estimation.pytorch](https://github.com/Daniil-Osokin/lightweight-human-pose-estimation.pytorch/tree/d23c284b09acf27a163e1febd511e7482cac25ed) | `d23c284b09acf27a163e1febd511e7482cac25ed` | Python implementation for `pose.pth`                       |
+| [VSViG paper](https://arxiv.org/abs/2311.14775)                                                                                                                                     | Published research reference               | Clip, patch and temporal-method context                    |
 
 The installer verifies SHA-256 for every downloaded checkpoint, tensor, Python
 source file and retained license. The application verifies the same hashes again
@@ -96,9 +99,9 @@ Apple Silicon may use emulation and can be slow.
 
 The model executes in the backend container. There are two deployment choices:
 
-| Deployment | Where Docker and the bundle live | Laptop role |
-| --- | --- | --- |
-| Local development | Docker Desktop and the `mds01-vsvig-assets` named volume | Runs Docker and opens the UI |
+| Deployment             | Where Docker and the bundle live                                                                           | Laptop role                                           |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Local development      | Docker Desktop and the `mds01-vsvig-assets` named volume                                                   | Runs Docker and opens the UI                          |
 | Remote/team deployment | A Linux `amd64` VM, server or managed Docker host with a private image registry and protected model volume | Opens the UI or calls the API; does not run inference |
 
 The default Compose stack uses the same deployment shape locally and remotely:
@@ -158,17 +161,27 @@ background path; an invalid clip becomes a terminal failed job rather than
 being decoded a second time synchronously. This is intentional for the
 asynchronous API and is surfaced through the job error state.
 
-The default bounded transform accepts 6–60 FPS, no more than 1920×1080 pixels,
+The default bounded transform accepts 6–60 FPS, no more than 1920×1080 source
+pixels, and requires the source to already match the pinned 1920×1080 model
+geometry. Smaller sources such as 640×480 are rejected unless the operator
+explicitly sets `VSVIG_ALLOW_LETTERBOX_ADAPTATION=true` after reviewing that
+adaptation against the mounted contract; when enabled, they are letterboxed to
+the pinned geometry without stretching. It accepts one bounded
+constant timestamp origin per stream, but rejects timestamp jitter, missing
+timestamps, and decode truncation. It also accepts no more than 1920×1080 pixels,
 216,000 decoded frames, 1 GiB of retained preview output and 900 seconds of
 privacy-processing wall time. Operators can tune these limits in the private
 environment, but increasing them increases CPU, memory, disk and retention risk.
 
 The initializer prints the contract SHA-256 and then performs the tensor-only
 runtime verification. A new `.env` created by `node scripts/setup.mjs` already
-contains the reviewed hash for the pinned contract. If an older `.env` has no
-hash or a different hash, set `VSVIG_CONTRACT_SHA256` in that ignored file to
-the value printed by the initializer, then rerun the command. The hash is
-public model metadata, not a credential. `VSVIG_ASSET_DIR` is now an internal
+contains the reviewed hash for the pinned contract. On an older installation,
+run `node scripts/setup.mjs` before Compose; it fills a missing or empty
+`VSVIG_CONTRACT_SHA256` from the tracked template so Compose can parse its
+configuration. A nonempty, different hash is preserved: investigate the
+contract change and approve the matching bundle before changing it. Do not use
+an initializer-generated hash to approve an unreviewed model contract. The hash
+is public model metadata, not a credential. `VSVIG_ASSET_DIR` is an internal
 container setting (`/opt/vsvig`); do not set a laptop path for it.
 
 For a source/manifest inspection before approval, use the initializer service's
@@ -279,22 +292,22 @@ The current adapter makes its source-informed technical choices explicit in the
 generated contract. Values marked as MDS01 choices are not claims that the
 upstream release provides a complete inference recipe:
 
-| Field | MDS01 contract value | Reason |
-| --- | --- | --- |
-| Container | MP4, MOV or WebM readable by OpenCV | Current upload allow-list |
-| Geometry | `1920×1080` | Official patch geometry/context; the adapter fails closed instead of silently distorting it |
-| Frame timing | Constant frame timing; source FPS at least `6` | The runtime samples the source at 6 FPS |
-| Minimum duration | Five seconds of readable visual frames | One complete 30-frame window at 6 FPS |
-| Sampled window | `30` frames | 5-second VSViG window |
-| Window stride | `3` sampled frames | MDS01 review choice for 0.5-second score spacing; not specified by the upstream reader |
-| Pose input | `256` pixel pose height | Lightweight OpenPose demo convention |
-| Pose output | 18 joints, each with x, y and confidence | Required complete single-person pose |
-| Patch kernel | `128`, Gaussian σ `0.3`, scale `0.25` | Produces `32×32` patches using the pinned extractor |
-| Patch tensor | `15×32×32×3`, transposed to `15×3×32×32` | VSViG input per frame |
-| Coordinates | x, y, confidence; coordinate scale `1.0` | MDS01 choice because the checkpoint path requires three positional features; upstream comments are inconsistent |
-| Pixel values | BGR, pixel scale `1.0` | MDS01 choice preserving OpenCV/source patch values; upstream extractor does not state a color/scale contract |
-| Person count | Exactly one usable pose | The v1 adapter never chooses among multiple people |
-| Score | Per-window sigmoid output, threshold `0.5` | Research threshold; not calibrated |
+| Field            | MDS01 contract value                           | Reason                                                                                                          |
+| ---------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Container        | AVI, MP4, MOV or WebM readable by OpenCV       | Current upload allow-list                                                                                       |
+| Geometry         | `1920×1080`                                    | Official patch geometry/context; the adapter fails closed instead of silently distorting it                     |
+| Frame timing     | Constant frame timing; source FPS at least `6` | The runtime samples the source at 6 FPS                                                                         |
+| Minimum duration | Five seconds of readable visual frames         | One complete 30-frame window at 6 FPS                                                                           |
+| Sampled window   | `30` frames                                    | 5-second VSViG window                                                                                           |
+| Window stride    | `3` sampled frames                             | MDS01 review choice for 0.5-second score spacing; not specified by the upstream reader                          |
+| Pose input       | `256` pixel pose height                        | Lightweight OpenPose demo convention                                                                            |
+| Pose output      | 18 joints, each with x, y and confidence       | Required complete single-person pose                                                                            |
+| Patch kernel     | `128`, Gaussian σ `0.3`, scale `0.25`          | Produces `32×32` patches using the pinned extractor                                                             |
+| Patch tensor     | `15×32×32×3`, transposed to `15×3×32×32`       | VSViG input per frame                                                                                           |
+| Coordinates      | x, y, confidence; coordinate scale `1.0`       | MDS01 choice because the checkpoint path requires three positional features; upstream comments are inconsistent |
+| Pixel values     | BGR, pixel scale `1.0`                         | MDS01 choice preserving OpenCV/source patch values; upstream extractor does not state a color/scale contract    |
+| Person count     | Exactly one usable pose                        | The v1 adapter never chooses among multiple people                                                              |
+| Score            | Per-window sigmoid output, threshold `0.5`     | Research threshold; not calibrated                                                                              |
 
 The 15 model inputs follow the adapter order reconstructed from the upstream
 `train.py` reorder:
@@ -331,26 +344,31 @@ implicit feature of this endpoint.
    with the job.
 2. Processing materializes the source briefly in a job-scoped private work
    directory.
-3. OpenCV face detection records coverage and the model-input transform full-frame
-   blurs every frame; zero or multiple detections are marked ambiguous.
-4. The protected visual file is read for pose/keypoint extraction and VSViG
-   scoring. OpenCV writes a video-only model-input file; audio is not decoded
-   into model input.
+3. OpenCV face detection records coverage and quality flags. Every model-input
+   frame receives a full-frame Gaussian blur regardless of detection outcome.
+4. The transient original and normalized files are used only to produce the
+   full-frame-blurred model-input video. OpenPose and VSViG both read that protected
+   video; audio is not decoded into model input.
 5. The result records face coverage, quality flags and whether human review is
    required. It does not record raw keypoint coordinates.
 6. The runtime fans the same in-memory pose samples into two outputs: VSViG
-   patches/scores and a visualization that masks the pose region and draws the
-   skeleton. It does not run a second pose model. The original and temporary
-   model-input files are deleted after success or failure. Only encrypted
+   patches/scores and a visualization that keeps every frame full-frame
+   blurred and draws the skeleton. It does not run a second pose model. The
+   original and temporary model-input files are deleted after success or
+   failure. Only encrypted
    `predictions.json` and `video.visualization.mp4` are retained for the job;
    expiry and startup recovery sweep both artifacts and abandon interrupted
    work.
 
-Face redaction reduces visual exposure but does not guarantee anonymity. Haar
-face detection can miss profile, low-light, masked or occluded faces. Coverage
-below the job policy fails the detection; intermittent coverage is surfaced as
-a review flag. The privacy result is evidence about the transform, not a proof
-that no identifying feature remains.
+Full-frame blur reduces visual exposure but does not guarantee anonymity. Every
+frame is blurred regardless of Haar face detection. The detector can miss
+profile, low-light, masked or occluded faces; coverage below the job policy fails
+the detection, while intermittent coverage is surfaced as a review flag. The
+privacy result is evidence about the transform, not a proof that no identifying
+feature remains. Both pinned model components receive the same
+full-frame-blurred frames, and all retained visual artifacts are blurred and
+audio-free. The original and normalized transient files remain a private-work
+boundary until cleanup.
 
 EEG draft uploads are bounded separately from video jobs: the HTTP body is
 rejected before multipart parsing when it exceeds the configured upload limit,
@@ -404,16 +422,40 @@ keypoints:
 
 ```json
 {
-  "timeline": [{"timestamp": 2.0, "start_time": 1.0, "end_time": 3.0, "score": 0.8, "seizure_detected": true}],
-  "events": [{"start_time": 1.0, "end_time": 3.0, "peak_score": 0.8, "peak_timestamp": 2.0}],
-  "summary": {"peak_score": 0.8, "potential_event_detected": true, "event_count": 1, "threshold": 0.5},
+  "timeline": [
+    {
+      "timestamp": 2.0,
+      "start_time": 1.0,
+      "end_time": 3.0,
+      "score": 0.8,
+      "seizure_detected": true
+    }
+  ],
+  "events": [
+    {
+      "start_time": 1.0,
+      "end_time": 3.0,
+      "peak_score": 0.8,
+      "peak_timestamp": 2.0
+    }
+  ],
+  "summary": {
+    "peak_score": 0.8,
+    "potential_event_detected": true,
+    "event_count": 1,
+    "threshold": 0.5
+  },
   "visualization": {
     "available": true,
     "media_type": "video/mp4",
     "audio_included": false,
     "privacy_method": "full-frame-blur-and-skeleton-overlay",
-    "overlay": {"skeleton": true, "model_score": false, "event_markers": false},
-    "frontend_overlay": {"model_score": true, "event_markers": true}
+    "overlay": {
+      "skeleton": true,
+      "model_score": false,
+      "event_markers": false
+    },
+    "frontend_overlay": { "model_score": true, "event_markers": true }
   }
 }
 ```
@@ -422,7 +464,6 @@ The timeline timestamp is the midpoint of each VSViG window. Event boundaries
 are produced by the existing configured per-window threshold and overlap merge;
 no new clinical threshold is introduced. The frontend score and event overlays
 are synchronized views of these stored values, not a second inference pass.
-
 
 ```text
 queued → preflight → privacy-transform → pose-and-inference (model + protected visualization) → complete
@@ -437,18 +478,18 @@ The old message, “Mount the official model assets before starting detection,�
 the safe response when the service cannot see a valid named-volume bundle. The
 current messages map to these causes:
 
-| Error code/message family | Meaning | Fix |
-| --- | --- | --- |
-| `assets_missing` | The named volume is empty or `/opt/vsvig`/`contract.json` is absent | Run `vsvig-assets-init` with the two-file Compose command |
-| `contract_unreviewed` | The manifest hash is absent/wrong or the contract was generated without review approval | Set the ignored `.env` hash to the initializer output and rerun the initializer |
-| `asset_mismatch` | A pinned checkpoint/source/license/partition hash, repository or revision differs | Reinstall the pinned bundle; do not substitute a checkpoint |
-| `contract_invalid` | A required preprocessing field or shape is malformed | Regenerate the contract; do not hand-edit values to bypass validation |
-| `runtime_incompatible` | PyTorch, timm, OpenCV, the OpenPose import tree or either checkpoint failed to load | Run `verify_vsvig_runtime`; rebuild the overlay image |
-| `video_incompatible` | The clip is not readable, constant-timed, `1920×1080`, at least 6 FPS, or long enough | Convert a consented demo clip to the input contract |
-| `privacy_transform_failed` | Face-redaction output could not be validated or coverage was too low | Inspect detector coverage; use a clearer one-person clip |
-| `visualization_failed` | The protected audio-free review artifact could not be encoded or validated | Check the video runtime/codec and retry the consented clip |
-| `ambiguous_or_missing_pose` / `incomplete_pose` | No single complete pose was available | Use one visible person with adequate framing and lighting |
-| `no_usable_windows` | No complete 30-sampled-frame window was produced | Use at least five seconds of readable video |
+| Error code/message family                       | Meaning                                                                                 | Fix                                                                             |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `assets_missing`                                | The named volume is empty or `/opt/vsvig`/`contract.json` is absent                     | Run `vsvig-assets-init` with the two-file Compose command                       |
+| `contract_unreviewed`                           | The manifest hash is absent/wrong or the contract was generated without review approval | Set the ignored `.env` hash to the initializer output and rerun the initializer |
+| `asset_mismatch`                                | A pinned checkpoint/source/license/partition hash, repository or revision differs       | Reinstall the pinned bundle; do not substitute a checkpoint                     |
+| `contract_invalid`                              | A required preprocessing field or shape is malformed                                    | Regenerate the contract; do not hand-edit values to bypass validation           |
+| `runtime_incompatible`                          | PyTorch, timm, OpenCV, the OpenPose import tree or either checkpoint failed to load     | Run `verify_vsvig_runtime`; rebuild the overlay image                           |
+| `video_incompatible`                            | The clip is not readable, constant-timed, `1920×1080`, at least 6 FPS, or long enough   | Convert a consented demo clip to the input contract                             |
+| `privacy_transform_failed`                      | Face-redaction output could not be validated or coverage was too low                    | Inspect detector coverage; use a clearer one-person clip                        |
+| `visualization_failed`                          | The protected audio-free review artifact could not be encoded or validated              | Check the video runtime/codec and retry the consented clip                      |
+| `ambiguous_or_missing_pose` / `incomplete_pose` | No single complete pose was available                                                   | Use one visible person with adequate framing and lighting                       |
+| `no_usable_windows`                             | No complete 30-sampled-frame window was produced                                        | Use at least five seconds of readable video                                     |
 
 Do not put exception traces, local paths, filenames or patient media into a bug
 report. The worker deliberately converts upstream exceptions into fixed public
@@ -520,14 +561,14 @@ Measure at minimum:
 - event sensitivity/recall and false alarms per hour;
 - precision, specificity, F1 and precision-recall performance where justified;
 - onset latency and confidence intervals;
-- face-redaction coverage and false-negative face cases;
-- raw-versus-redacted score drift;
+- face-detection coverage and false-negative face cases;
+- raw-versus-full-frame-blurred score drift;
 - CPU latency, memory and safe concurrency;
 - behavior for multiple people, staff entry, occlusion, poor lighting and no
   pose.
 
 Keep the presentation wording at “research prototype”, “uncalibrated model
-score”, “flagged interval for human review” and “face-redacted model input” until
+score”, “flagged interval for human review” and “full-frame-blurred model input” until
 those gates are complete. Do not use “anonymous”, “confidence”, “validated
 seizure detector”, “real-time” or “safe for clinical use” without separate
 reviewed evidence.

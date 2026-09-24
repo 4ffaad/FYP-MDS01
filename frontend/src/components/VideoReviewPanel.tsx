@@ -330,6 +330,22 @@ function RiskTimeline({
     const bounds = event.currentTarget.getBoundingClientRect();
     onSeek(((event.clientX - bounds.left) / bounds.width) * duration);
   };
+  const handleChartKeyDown = (event: KeyboardEvent<SVGSVGElement>) => {
+    const step = Math.max(1, duration / 20);
+    const nextTime =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? duration
+          : event.key === "ArrowLeft"
+            ? currentTime - step
+            : event.key === "ArrowRight"
+              ? currentTime + step
+              : null;
+    if (nextTime === null) return;
+    event.preventDefault();
+    onSeek(nextTime);
+  };
 
   return (
     <section
@@ -347,15 +363,19 @@ function RiskTimeline({
           </h3>
         </div>
         <p className="text-xs text-ink-muted">
-          Click the chart or an event to seek the video.
+          Click the chart or an event to seek the video. Focus the chart and use
+          Home, End, or the arrow keys for keyboard seeking.
         </p>
       </div>
       <svg
         className="mt-5 h-auto w-full cursor-crosshair overflow-visible text-ink-muted"
         viewBox="0 0 900 190"
-        role="img"
+        role="group"
         aria-label="VSViG model scores over video time"
+        aria-describedby="risk-timeline-help"
+        tabIndex={0}
         onClick={handleChartClick}
+        onKeyDown={handleChartKeyDown}
       >
         {[0, 0.5, 1].map((tick) => (
           <g key={tick}>
@@ -427,7 +447,7 @@ function RiskTimeline({
             }
             role="button"
             tabIndex={0}
-            aria-label={`${formatTime(point.timestamp)} score ${point.score.toFixed(2)}`}
+            aria-label={`${formatTime(point.start_time)} to ${formatTime(point.end_time)}, score ${point.score.toFixed(2)}, ${point.seizure_detected ? "flagged window" : "not flagged"}`}
             onClick={(event) => {
               event.stopPropagation();
               onSeek(point.timestamp);
@@ -460,7 +480,7 @@ function RiskTimeline({
           {formatTime(duration)}
         </text>
       </svg>
-      <p className="mt-2 text-xs text-ink-muted">
+      <p id="risk-timeline-help" className="mt-2 text-xs text-ink-muted">
         Dashed line: configured research threshold {threshold.toFixed(2)} ·
         scores are not calibrated probabilities.
       </p>

@@ -51,7 +51,8 @@ async def stage_upload(
     Parameters
     ----------
     archive : fastapi.UploadFile
-        ZIP archive containing EDF recordings.
+        ZIP archive containing EDF/EDF+, legacy Nicolet ``.e``, or Nicolet
+        ``.data`` files with matching ``.head`` sidecars.
     db : sqlmodel.Session
         Request-scoped database session.
 
@@ -67,7 +68,10 @@ async def stage_upload(
     """
 
     if not archive.filename or not archive.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Upload one ZIP archive containing EDF files.")
+        raise HTTPException(
+            status_code=400,
+            detail="Upload one ZIP archive containing EDF/EDF+, legacy Nicolet .e, or Nicolet .data files with matching .head sidecars.",
+        )
     storage = SessionStorage()
     expires_at = utc_now() + timedelta(seconds=UPLOAD_DRAFT_TTL_SECONDS)
     try:

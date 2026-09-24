@@ -69,6 +69,8 @@ def module_from_file(name, path):
 
 
 def run(source: Path, visualization_output: Path | None = None) -> dict:
+    """Run VSViG and OpenPose on the same protected video stream."""
+
     root, contract = load_contract()
     import cv2
     import numpy as np
@@ -127,7 +129,9 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
                 if index < round(next_sample * fps / p["sample_fps"]):
                     continue
                 next_sample += 1
-                heatmaps, pafs, scale, pad = infer_fast(pose, frame, int(p["pose_height"]), 8, 4, True)
+                heatmaps, pafs, scale, pad = infer_fast(
+                    pose, frame, int(p["pose_height"]), 8, 4, True
+                )
                 by_type, total = [], 0
                 for k in range(18):
                     total += extract_keypoints(heatmaps[:, :, k], by_type, total)
@@ -186,6 +190,7 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
                     del patches[:step], coordinates[:step], times[:step]
     finally:
         capture.release()
+
     if frame_index != count:
         raise DetectionError("truncated_video")
     metadata = {
@@ -201,7 +206,7 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
         "source_repository": contract.get("upstream_repository"),
         "pose_repository": contract.get("pose_repository"),
         "pose_model": "Lightweight OpenPose",
-        "privacy_input": "full-frame-blurred video; audio is not decoded by the model",
+        "privacy_input": "VSViG and OpenPose receive the same full-frame-blurred video",
         "postprocessing": "per-window threshold; score is not calibrated",
     }
     if strongest_flagged is not None:

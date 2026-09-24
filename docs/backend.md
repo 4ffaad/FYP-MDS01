@@ -3,6 +3,8 @@
 Use this after [setup](setup.md) and [architecture](architecture.md). It is the
 implementation reference for API, persistence, processing and EEG research
 tools. Video-detection runtime setup lives in [video-detection.md](video-detection.md).
+For a shorter request-by-request tour of every backend service, start with
+[Backend services explained](backend-services.md).
 
 The backend is a FastAPI application backed by SQLite in native prototype mode
 or PostgreSQL in Docker/team mode, plus private session-scoped storage. Routes
@@ -67,9 +69,9 @@ flowchart TD
     Draft --> Select[Select privacy method]
     Select --> Finalize[POST /api/uploads/drafts/{id}/finalize]
     Finalize --> Queue[Create session, return 202, schedule BackgroundTasks]
-    Queue --> Validate[Validate archive and EDF files]
+    Queue --> Validate[Validate archive and EDF/Nicolet EEG files]
     Validate --> RecordLoop{Each recording independently}
-    RecordLoop --> Scrub[Blank identifying EDF fields\nand annotation descriptions]
+    RecordLoop --> Scrub[Convert to scrubbed EDF\nand blank identifying metadata]
     Scrub --> Preprocess[Bandpass, notch, normalize, clip]
     Preprocess --> Windows[(N, 1024, 18) float32<br/>4s windows / 2s step]
     Windows --> Method{Privacy method}
@@ -86,11 +88,34 @@ flowchart TD
     Retain -->|no| Delete[Delete recording temporary files]
     Clip --> SafeResults[Public result endpoints]
     Delete --> SafeResults
-    RecordLoop -->|Malformed EDF| Failed[Mark one recording failed]
+    RecordLoop -->|Malformed EEG| Failed[Mark one recording failed]
     Failed --> SafeResults
     SafeResults --> Cleanup[Delete full transient files and archive]
     Legacy[POST /api/sessions/upload] -. compatibility .-> Queue
 ```
+
+### Supported EEG inputs
+
+The encrypted EEG ZIP may contain EDF/EDF+ recordings, legacy single-file
+Nicolet `.e` recordings, or Nicolet recordings represented by a same-stem
+`.data` file and `.head` sidecar. The storage layer requires the `.data`/`.head`
+pair, extracts supported inputs into the private session boundary, and rejects
+unsupported or incomplete inputs before parsing. EDF remains on the existing
+`pyedflib` reader path. Legacy `.e` technical validation and signal decoding
+use the bounded in-repository adapter; `.data`/`.head` uses the pinned MNE
+reader. The delivered legacy `.e` layout is referential 500 Hz; its bounded
+adapter derives the reviewed bipolar montage and resamples to 256 Hz before
+converting to a scrubbed EDF. Both Nicolet paths convert to a scrubbed EDF
+with identifying metadata blanked before the shared preprocessing/model path.
+Embedded `.e` event timing is stored only as sanitized kind/onset/duration
+metadata and is marked for human review; raw annotation text, medication data,
+and `.doc` reports are not imported into public results. Original Nicolet
+files are transient encrypted inputs and are removed by the normal cleanup
+lifecycle. Each recording stores only the non-sensitive source format (`edf`,
+`nicolet`, or `nicolet-e`) for provenance.
+For private auditability, the recording also stores a SHA-256 checksum of the
+extracted source and JSON describing any reviewed format conversion; these
+fields are not returned by the public recording/session serializers.
 
 The projection method is intentionally shape-preserving so the same transformed
 windows feed both downstream branches:
@@ -309,12 +334,16 @@ Upload drafts:
 Recordings:
 
 - `GET /api/recordings/{record_id}`
+- `GET /api/recordings/{record_id}/annotations`
 - `GET /api/recordings/{record_id}/prediction`
 - `GET /api/recordings/{record_id}/explanation`
 - `GET /api/recordings/{record_id}/signal`
 
 Responses expose generated IDs, safe technical metadata, statuses, processing
 progress, recording-level model alert counts, predictions, and explanation JSON.
+The annotations endpoint exposes only sanitized embedded-event timing and kind
+metadata for owner-scoped human review; raw text and sensitive reports are not
+returned.
 Optional CHB-MIT sidecars are stored only as internal research metadata and are
 never returned by normal API responses. Stub results expose a peak window
 development score and score timeline, not model confidence or accuracy. A
@@ -337,20 +366,24 @@ is `app/services/video_detection_service.py`, `app/video_detection/runtime.py`,
 and `app/video_detection/contract.py`; the asset installation, exact VSViG
 contract, privacy lifecycle, and troubleshooting steps are in
 [`video-detection.md`](video-detection.md). The runtime is
-`encrypt → full-frame privacy blur → shared Lightweight OpenPose keypoints → { VSViG
-patches → scores; full-frame-blurred skeleton overlay } → evidence`
+`encrypt → timestamp validation/approved geometry adaptation → full-frame-blurred
+model input → shared Lightweight OpenPose keypoints → { VSViG patches → scores;
+full-frame-blurred skeleton overlay } → evidence`
 The visual model does not consume the privacy visualization or audio. The
-original and temporary full-frame-blurred model-input video are deleted after the job
-completes or fails. A separate encrypted, owner-scoped, audio-free visualization
-is retained for the job retention period; no source-video endpoint exists.
+original and temporary full-frame-blurred model-input video are deleted after job
+completion or failure. A separate encrypted, owner-scoped, audio-free
+visualization is retained for the job retention period; no source-video endpoint
+exists.
 
 ## Video privacy boundary
 
 Patient-video processing is a separate subsystem, not another EEG recording
-stage. Its flow is `video → face redaction → metadata removal + first audio
-stream → encrypted output` with no H5 inference, action analysis, or clinical
-model call. Audio remains sensitive and owner-only; it is encrypted at rest but
-not de-identified.
+stage. Its flow is `video → full-frame blur on every frame → metadata removal →
+audio-free encrypted output`; face-detection coverage supplies quality flags and
+a minimum-coverage gate, not a selective blur mask. It runs no H5 inference,
+action analysis, or clinical model call.
+The encrypted transient source may still contain audio while queued; it is
+deleted during cleanup. Audio is not retained in the protected output.
 
 ## Database tables
 

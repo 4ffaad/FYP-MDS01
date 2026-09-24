@@ -43,7 +43,7 @@ def inventory(root: Path) -> dict:
             "unreadable_count": invalid, "formats": dict(formats), "fps_counts": dict(rates),
             "resolution_counts": dict(resolutions), "total_duration_seconds": round(duration, 2),
             "possible_annotation_file_count": annotations,
-            "annotations_validated": False, "supported_upload_formats": [".mp4", ".mov", ".webm"]}
+            "annotations_validated": False, "supported_upload_formats": [".avi", ".mp4", ".mov", ".webm"]}
 
 
 if __name__ == "__main__":

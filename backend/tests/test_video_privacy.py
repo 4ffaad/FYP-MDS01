@@ -31,7 +31,12 @@ from backend.app.services.video_privacy_service import (
 )
 from backend.app.services.video_storage_service import VideoStorage
 from backend.app.services.storage_service import StorageError
-from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProcessingResult, VideoProcessorError
+from backend.app.video_privacy.processor import (
+    VideoPrivacyProcessor,
+    VideoProcessingResult,
+    VideoProcessorError,
+    model_frame_layout,
+)
 
 
 class FakeProcessor:
@@ -57,6 +62,30 @@ class FakeProcessor:
 
 
 class VideoPrivacyTests(unittest.TestCase):
+    def test_model_frame_layout_letterboxes_640x480_without_distortion(self) -> None:
+        self.assertEqual(model_frame_layout(640, 480), (1440, 1080, 240, 0))
+        self.assertEqual(model_frame_layout(1920, 1080), (1920, 1080, 0, 0))
+
+    def test_vsvig_normalization_rejects_unapproved_resolution_adaptation(self) -> None:
+        class Capture:
+            def isOpened(self):
+                return True
+
+            def release(self):
+                return None
+
+        fake_cv2 = type("FakeCV2", (), {"VideoCapture": lambda _path: Capture()})
+        with tempfile.TemporaryDirectory() as directory, patch.dict(sys.modules, {"cv2": fake_cv2}), patch.object(
+            VideoPrivacyProcessor,
+            "_stream_metadata",
+            return_value={"fps": 25.0, "width": 640, "height": 480, "frame_count": 10},
+        ):
+            with self.assertRaisesRegex(VideoProcessorError, "adaptation is not approved"):
+                VideoPrivacyProcessor.normalize_for_vsvig(
+                    Path(directory) / "source.avi",
+                    Path(directory) / "normalized.mp4",
+                )
+
     def test_preflight_rejects_fps_above_the_bounded_video_contract(self) -> None:
         self.preflight_patch.stop()
 
@@ -123,6 +152,10 @@ class VideoPrivacyTests(unittest.TestCase):
 
             serialized = repr(response)
             self.assertEqual(response["label"], "Video upload 01")
+            self.assertEqual(
+                response["profile_description"],
+                "The full frame is blurred on every frame. Face-detection coverage is a quality signal for review; it does not change the blur extent.",
+            )
             self.assertNotIn("patient-name.mov", serialized)
             self.assertNotIn("original_path", response)
             self.assertNotIn(str(Path(directory)), serialized)
@@ -146,9 +179,21 @@ class VideoPrivacyTests(unittest.TestCase):
                     data={"profile": "pose-only"},
                     files={"video": ("patient-name.mp4", b"not a video", "video/mp4")},
                 )
-        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.status_code, 401)
         self.assertNotIn("patient-name.mp4", response.text)
         self.assertNotIn("original_path", response.text)
+
+    def test_privacy_api_rejects_ownerless_requests_on_every_endpoint(self) -> None:
+        with patch.dict(os.environ, {"APP_ENV": "test", "AUTH_MODE": "local"}, clear=False):
+            with TestClient(app) as client:
+                responses = [
+                    client.get("/api/video-privacy/jobs"),
+                    client.get("/api/video-privacy/jobs/VID-UNKNOWN"),
+                    client.post("/api/video-privacy/jobs/VID-UNKNOWN/acknowledge"),
+                    client.get("/api/video-privacy/jobs/VID-UNKNOWN/preview"),
+                    client.get("/api/video-privacy/jobs/VID-UNKNOWN/download"),
+                ]
+        self.assertEqual([response.status_code for response in responses], [401] * len(responses))
 
     def test_face_redaction_is_the_only_new_profile(self) -> None:
         self.assertEqual(parse_profile("face-redacted"), VideoPrivacyProfile.FACE_REDACTED)

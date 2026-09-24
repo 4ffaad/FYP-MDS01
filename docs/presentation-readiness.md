@@ -8,22 +8,28 @@ of accuracy, anonymity or regulatory compliance.
 
 MDS01 has exactly two input modalities:
 
-1. One EEG ZIP archive containing EDF recordings.
+1. One EEG ZIP archive containing EDF/EDF+, legacy Nicolet `.e`, or supported Nicolet `.data` files with matching `.head` sidecars.
 2. One separate video file.
 
 A paired submission uses one shared analysis workspace, but the backend keeps
 EEG and video processing independent. Do not describe the EEG ZIP as containing
 video.
 
+Legacy Nicolet `.e` recordings are parsed through the bounded reader, converted
+to a scrubbed EDF, and sent through the same reviewed EEG contract. Embedded
+event timing is retained only as sanitized timing/kind metadata for human
+review; raw annotation text and `.doc` reports are not imported automatically.
+AVI is accepted as a video source and is decoded into the existing audio-free,
+privacy-safe video path.
+
 The video review story is:
 
 ```text
 video upload
   → encrypt source
-  → face redaction with fail-closed blur fallback
-  → Lightweight OpenPose keypoints
-  → VSViG patch extraction and scoring
-  → evidence timeline
+  → face detection plus full-frame blur on every frame
+  → shared protected input for Lightweight OpenPose keypoints and VSViG patches
+  → VSViG scoring and evidence timeline
 ```
 
 Audio is excluded from the visual model input. The uploaded source may contain
@@ -41,7 +47,8 @@ is not the seizure detector.
   ignored `.env` rather than embedded in docs or source.
 - Encrypted application storage after multipart intake; framework upload spool
   data remains private to the backend container and is cleaned with the job.
-- Face-redaction processing with full-frame blur when the Haar detector misses.
+- Every frame receives full-frame blur; Haar face-detection coverage informs
+  quality flags and the minimum-coverage gate.
 - A fail-closed rule when face coverage is too low.
 - The published VSViG base architecture and checkpoint.
 - The published `pose.pth` checkpoint with the pinned Lightweight OpenPose
@@ -57,6 +64,32 @@ is not the seizure detector.
   playback endpoint.
 - Synchronized protected playback, score timeline and event navigation.
 - Research-only labels throughout the UI.
+- A combined review report with sanitized EEG event times, separate EEG/video
+  model evidence, model provenance, and explicit non-clinical caveats.
+- A local-only demo offset control. A selected pair and its offset remain
+  visibly assumed, are not persisted, and are not represented as verified
+  synchronization.
+- Browser Print / Save as PDF for the visible report; no report is uploaded or
+  retained by the backend.
+
+## Current local demo constraints
+
+- The default Compose EEG runtime is `development-stub`; its scores demonstrate
+  UI/data flow only. It does not provide real EEG model predictions or SHAP
+  attribution for this dataset.
+- A read-only inventory found 552 640×480 AVI files and 806 1920×1080 MP4
+  files. Inventory metadata is not full decode or model-admission evidence.
+  Low-resolution letterboxing remains disabled by default.
+- An isolated full-frame-blur-to-VSViG smoke on four small native-resolution
+  MP4 candidates had three privacy-admission rejections; the one that passed
+  privacy was rejected by the ambiguous/missing-pose gate. No successful video
+  prediction has been verified. Do not present a privacy- or pose-rejected clip
+  as a model result.
+- No authoritative EEG/video match or clock offset is established. The report's
+  default 0-second offset is an explicitly labeled demo assumption, not a
+  measured synchronization value.
+- Source EEG event markers are shown without raw annotation text. They are not
+  model outputs, ground truth, or diagnoses, and they require human review.
 
 ## What is still missing for a credible presentation
 
@@ -108,11 +141,11 @@ is not the seizure detector.
 
 ### Required to claim privacy protection
 
-- [ ] Face-redaction coverage measured on representative clips, not just a
+- [ ] Face-detection coverage measured on representative clips, not just a
       successful application response.
 - [ ] False-negative review for frontal, profile, masked, low-light and
       partially occluded faces.
-- [ ] A human review of whether full-frame blur fallback preserves enough pose
+- [ ] A human review of whether always-on full-frame blur preserves enough pose
       signal for the intended use.
 - [ ] Verification that no source or temporary model-input video is returned by
       the detection API, while the approved visualization endpoint remains
@@ -131,8 +164,8 @@ is not the seizure detector.
    signal and human review; state the research-only boundary.
 2. **Two inputs, one workspace** — one EEG EDF ZIP plus one separate video; show
    that the modalities remain independent.
-3. **Privacy-first video path** — encryption, face redaction, fail-closed blur,
-   no audio model input, transient cleanup.
+3. **Privacy-first video path** — encryption, full-frame blur on every frame,
+   detector coverage/quality gate, no audio model input, transient cleanup.
 4. **Model stack** — Lightweight OpenPose supplies keypoints; official VSViG
    consumes 15 Gaussian 32×32 patches over 30 sampled frames; the dynamic
    partition tensor is an input asset, not a second classifier.
@@ -154,20 +187,23 @@ is not the seizure detector.
    account.
 3. Open **New analysis** and show that the EEG archive and video are separate
    upload lanes.
-4. Select the consented demo video and submit it without showing its filename
-   in a slide or screen recording.
-5. Show the job moving from encryption/privacy transform to pose/keypoint
-   extraction and VSViG scoring.
-6. Open the result and point to the face-redaction coverage, audio policy,
-   uncalibrated score timeline and flagged intervals.
-7. Expand model details and show the VSViG checkpoint, pose checkpoint, input
-   resolution and frame contract.
-8. Show model evidence as input-region sensitivity, not an anatomical or
-   clinical explanation.
-9. If the clip has no flagged window, say that this is a valid result and does
-   not rule out a seizure. Do not manufacture a positive example.
-10. End by showing the validation gaps rather than implying that a runnable
-    demo is a clinically validated detector.
+4. Submit the consented EEG and video, then open the combined review report.
+5. Select the intended completed EEG recording if the archive contains more
+   than one. Review the sanitized source event times separately from model
+   outputs.
+6. If demonstrating a pairing, state that it is assumed. The default offset is
+   0 seconds; change it only to a supplied demo value and point out that it is
+   local to the page and not verified or saved.
+7. Show EEG window scores and, only when present, its model-specific SHAP
+   sensitivity artifact. State that the current stub has no EEG attribution.
+8. Show video quality/provenance, uncalibrated scores and patch-occlusion
+   sensitivity only if the video job actually reached inference. If a clip is
+   rejected by timing, resolution or pose gates, show that fail-closed status;
+   do not imply a prediction exists.
+9. Use **Print / Save as PDF** to create a local report copy; confirm the PDF
+   retains the assumed-pairing and research-only labels.
+10. End with the validation gaps rather than implying that a runnable demo is a
+    clinically validated detector. Never manufacture a positive example.
 
 ## Acceptance gate before changing the wording
 
@@ -176,7 +212,7 @@ Use these labels until the corresponding evidence exists:
 - "research prototype"
 - "uncalibrated model score"
 - "flagged interval for human review"
-- "face-redacted model input"
+- "full-frame-blurred model input"
 - "privacy transform; anonymity not guaranteed"
 
 Reserve these labels for a later reviewed release:

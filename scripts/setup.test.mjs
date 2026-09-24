@@ -49,6 +49,30 @@ test("setup repairs a missing password without rotating existing keys", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("setup restores a missing VSViG contract hash from the tracked template", () => {
+  const root = mkdtempSync(join(tmpdir(), "mds01-setup-vsvig-hash-test-"));
+  try {
+    mkdirSync(join(root, "frontend"));
+    for (const template of [".env.example", "frontend/.env.example"]) {
+      copyFileSync(new URL(`../${template}`, import.meta.url), join(root, template));
+    }
+    setup(root);
+    const envPath = join(root, ".env");
+    const templateHash = readFileSync(join(root, ".env.example"), "utf8")
+      .match(/^VSVIG_CONTRACT_SHA256=(.+)$/m)?.[1];
+    const withoutHash = readFileSync(envPath, "utf8")
+      .replace(/^VSVIG_CONTRACT_SHA256=.*\n/m, "");
+    writeFileSync(envPath, withoutHash, { mode: 0o600 });
+
+    setup(root);
+
+    const repairedHash = readFileSync(envPath, "utf8")
+      .match(/^VSVIG_CONTRACT_SHA256=(.+)$/m)?.[1];
+    assert.ok(templateHash);
+    assert.equal(repairedHash, templateHash);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("setup repairs empty required secret values", () => {
   const root = mkdtempSync(join(tmpdir(), "mds01-setup-empty-test-"));
   try {

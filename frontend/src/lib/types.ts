@@ -60,6 +60,7 @@ export interface Recording {
   recordId: string;
   sequenceIndex: number;
   displayName: string;
+  sourceFormat?: "edf" | "nicolet" | "nicolet-e";
   status: RecordingStatus;
   durationSeconds: number | null;
   samplingRate: number | null;
@@ -172,6 +173,20 @@ export interface ResearchAttribution {
   note: string;
 }
 
+export type EegAnnotationKind = "seizure_event" | "manual_annotation" | "other";
+
+export type EegAnnotationSource =
+  | "embedded-nicolet"
+  | "reference"
+  | "demo-fixture"
+  | "unavailable";
+
+export interface EegAnnotationEvent {
+  onsetSeconds: number;
+  durationSeconds: number;
+  kind: EegAnnotationKind;
+}
+
 export interface AnalysisResult {
   recordId: string;
   sessionId: string;
@@ -196,6 +211,9 @@ export interface AnalysisResult {
   predictionWindows: PredictionWindow[];
   explanationSummary: string;
   researchAttributions: ResearchAttribution[];
+  annotationEvents: EegAnnotationEvent[];
+  annotationSource: EegAnnotationSource;
+  annotationReviewRequired: boolean;
   modelName: string;
   modelVersion: string;
   nonClinical: boolean;

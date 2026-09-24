@@ -7,6 +7,7 @@ import { getDetection, type DetectionJob } from "@/lib/video-detection";
 import type { Session } from "@/lib/types";
 import { Icon } from "./Icon";
 import { Button } from "@/components/ui/button";
+import { CombinedReviewReport } from "./CombinedReviewReport";
 
 const ACTIVE_VEEG = new Set([
   "queued",
@@ -102,13 +103,13 @@ export function CombinedAnalysisScreen({
     <div className="page-frame">
       <div className="animate-enter-up">
         <Link
-          className="inline-flex min-h-10 items-center gap-2 text-xs font-bold text-teal-dark underline decoration-teal/40 underline-offset-4 hover:decoration-teal"
+          className="no-print inline-flex min-h-10 items-center gap-2 text-xs font-bold text-teal-dark underline decoration-teal/40 underline-offset-4 hover:decoration-teal"
           href="/dashboard"
         >
           <Icon name="back" className="size-4" />
           Back to workspace
         </Link>
-        <header className="mt-5 max-w-3xl">
+        <header className="no-print mt-5 max-w-3xl">
           <p className="eyebrow">Combined review</p>
           <h1 className="mt-3 text-[clamp(2rem,5vw,2.8rem)] font-semibold leading-[1.05] tracking-[-0.05em]">
             Analysis report
@@ -128,7 +129,7 @@ export function CombinedAnalysisScreen({
             {error}
           </div>
         )}
-        <div className="mt-9 grid gap-5 lg:grid-cols-2">
+        <div className="no-print mt-9 grid gap-5 lg:grid-cols-2">
           {sessionId && (
             <AnalysisCard
               icon="activity"
@@ -174,8 +175,15 @@ export function CombinedAnalysisScreen({
           )}
         </div>
 
+        <CombinedReviewReport
+          session={session}
+          videoJob={videoJob}
+          hasEegLink={Boolean(sessionId)}
+          hasVideoLink={Boolean(videoJobId)}
+        />
+
         <section
-          className="glass-panel mt-6 rounded-2xl border border-rule p-5 sm:p-6"
+          className="no-print glass-panel mt-6 rounded-2xl border border-rule p-5 sm:p-6"
           aria-labelledby="report-note-heading"
         >
           <div className="flex items-start gap-3">
@@ -185,14 +193,15 @@ export function CombinedAnalysisScreen({
                 How to read this report
               </h2>
               <p className="mt-2 text-sm leading-6 text-ink-muted">
-                The cards are a shared status view, not a combined clinical
-                result. Open each modality to review its own windows, intervals,
-                model details, and privacy caveats.
+                EEG and video outputs remain separate model results. The review
+                below places their technical evidence and source EEG markers in
+                one view; it does not establish that the recordings are paired
+                or synchronized.
               </p>
             </div>
           </div>
         </section>
-        <p className="mt-6 text-xs leading-5 text-ink-muted">
+        <p className="no-print mt-6 text-xs leading-5 text-ink-muted">
           Research only · model output is not a diagnosis · no recording-level
           confidence is shown.
         </p>

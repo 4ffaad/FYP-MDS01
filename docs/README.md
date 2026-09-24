@@ -3,15 +3,16 @@
 Start with the document that matches the task. The README is the short project
 overview; this page is the maintained map for teammates.
 
-| If you need to… | Read | Skip unless needed |
-| --- | --- | --- |
-| Run the application or tests | [Setup](setup.md) | Research/runtime options |
-| Understand system boundaries and find code | [Architecture](architecture.md) | Implementation details |
-| Change browser screens or API calls | [Frontend guide](frontend.md) | Backend internals |
-| Change API, processing or persistence | [Backend guide](backend.md) | Browser implementation |
-| Set up or review VSViG detection | [Video detection](video-detection.md) | EEG calibration material |
-| Prepare the demo/presentation | [Presentation readiness](presentation-readiness.md) | Deployment runbooks |
-| Understand visual rules | [Design rules](../DESIGN.md) | Component implementation |
+| If you need to…                                     | Read                                                | Skip unless needed       |
+| --------------------------------------------------- | --------------------------------------------------- | ------------------------ |
+| Run the application or tests                        | [Setup](setup.md)                                   | Research/runtime options |
+| Understand system boundaries and find code          | [Architecture](architecture.md)                     | Implementation details   |
+| Follow backend requests and understand each service | [Backend services explained](backend-services.md)   | Research internals       |
+| Change browser screens or API calls                 | [Frontend guide](frontend.md)                       | Backend internals        |
+| Change API, processing or persistence               | [Backend internals](backend.md)                     | Browser implementation   |
+| Set up or review VSViG detection                    | [Video detection](video-detection.md)               | EEG calibration material |
+| Prepare the demo/presentation                       | [Presentation readiness](presentation-readiness.md) | Deployment runbooks      |
+| Understand visual rules                             | [Design rules](../DESIGN.md)                        | Component implementation |
 
 For the shortest handoff, read [Setup](setup.md) first, then use the
 architecture guide only when you need to change code. `npm run format` keeps

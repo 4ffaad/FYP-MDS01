@@ -6,6 +6,8 @@ import type {
   AuthUser,
   ApiErrorPayload,
   DisplayStatus,
+  EegAnnotationEvent,
+  EegAnnotationSource,
   Recording,
   RecordingStatus,
   Session,
@@ -356,7 +358,7 @@ function stubVideoJob(profile: VideoPrivacyProfile): VideoPrivacyJob {
     profileLabel: profile === "face-redacted" ? "Face redaction" : "Pose-only",
     profileDescription:
       profile === "face-redacted"
-        ? "Blur detected faces while keeping the surrounding scene visible."
+        ? "The full frame is blurred on every frame. Face-detection coverage is a quality signal for review; it does not change the blur extent."
         : "Replace the scene with pose landmarks on a non-identifying background.",
     status: "queued",
     currentStage: "preflight",
@@ -464,6 +466,7 @@ type BackendRecording = {
   sequence_index: number;
   status: RecordingStatus;
   source_filename: string;
+  source_format?: "edf" | "nicolet" | "nicolet-e" | null;
   duration_seconds: number | null;
   sampling_rate: number | null;
   channel_count: number | null;
@@ -524,6 +527,49 @@ type BackendPredictionResponse = {
 type BackendExplanationResponse = {
   explanations: Array<{ is_clinical: boolean; data: unknown }>;
 };
+
+type BackendAnnotationResponse = {
+  source: string | null;
+  human_review_required: boolean;
+  events: Array<{
+    onset_seconds: number;
+    duration_seconds: number;
+    kind: string;
+  }>;
+};
+
+function annotationSourceFromBackend(
+  source: string | null | undefined,
+): EegAnnotationSource {
+  if (source === "nicolet-embedded-events") return "embedded-nicolet";
+  return source ? "reference" : "unavailable";
+}
+
+function annotationEventsFromBackend(
+  events: BackendAnnotationResponse["events"] | undefined,
+): EegAnnotationEvent[] {
+  if (!events) return [];
+  return events.flatMap((event) => {
+    const kind = ["seizure_event", "manual_annotation", "other"].includes(
+      event.kind,
+    )
+      ? (event.kind as EegAnnotationEvent["kind"])
+      : null;
+    return kind &&
+      Number.isFinite(event.onset_seconds) &&
+      event.onset_seconds >= 0 &&
+      Number.isFinite(event.duration_seconds) &&
+      event.duration_seconds >= 0
+      ? [
+          {
+            onsetSeconds: event.onset_seconds,
+            durationSeconds: event.duration_seconds,
+            kind,
+          },
+        ]
+      : [];
+  });
+}
 
 function parseResearchAttribution(data: unknown): ResearchAttribution | null {
   if (!data || typeof data !== "object") return null;
@@ -619,6 +665,7 @@ function recordingFromBackend(
     recordId: recording.record_id,
     sequenceIndex: recording.sequence_index,
     displayName: recording.source_filename,
+    sourceFormat: recording.source_format ?? undefined,
     status: recording.status,
     durationSeconds: recording.duration_seconds,
     samplingRate: recording.sampling_rate,
@@ -872,6 +919,11 @@ function createStubResult(job: StubJob): AnalysisResult {
     explanationSummary:
       "Each point is the score for one four-second window. Amber windows crossed the displayed threshold; the timeline does not explain why the model produced a score.",
     researchAttributions: [],
+    annotationEvents: [
+      { onsetSeconds: 42, durationSeconds: 4, kind: "manual_annotation" },
+    ],
+    annotationSource: "demo-fixture",
+    annotationReviewRequired: true,
     modelName: "development-stub",
     modelVersion: "stub-0.1.0",
     nonClinical: true,
@@ -1286,16 +1338,24 @@ export async function getResult(
       record.errorMessage ?? "This recording failed during processing.",
       422,
     );
-  const [predictionPayload, explanationPayload] = await Promise.all([
-    getJson<BackendPredictionResponse>(
-      `/api/recordings/${encodeURIComponent(record.recordId)}/prediction`,
-      signal,
-    ),
-    getJson<BackendExplanationResponse>(
-      `/api/recordings/${encodeURIComponent(record.recordId)}/explanation`,
-      signal,
-    ),
-  ]);
+  const [predictionPayload, explanationPayload, annotationPayload] =
+    await Promise.all([
+      getJson<BackendPredictionResponse>(
+        `/api/recordings/${encodeURIComponent(record.recordId)}/prediction`,
+        signal,
+      ),
+      getJson<BackendExplanationResponse>(
+        `/api/recordings/${encodeURIComponent(record.recordId)}/explanation`,
+        signal,
+      ),
+      getJson<BackendAnnotationResponse>(
+        `/api/recordings/${encodeURIComponent(record.recordId)}/annotations`,
+        signal,
+      ).catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }),
+    ]);
   const predictions = predictionPayload.predictions;
   const predictionSummary = predictionPayload.summary ?? {
     window_count: predictions.length,
@@ -1391,6 +1451,9 @@ export async function getResult(
           : "Each point is the score for one four-second window. Highlighted windows crossed the displayed threshold; the timeline does not explain why the model produced a score."
         : "No explanation artifact was returned for this recording.",
     researchAttributions,
+    annotationEvents: annotationEventsFromBackend(annotationPayload?.events),
+    annotationSource: annotationSourceFromBackend(annotationPayload?.source),
+    annotationReviewRequired: annotationPayload?.human_review_required ?? true,
     modelName: predictionPayload.model?.name ?? "backend-model",
     modelVersion: predictionPayload.model?.version ?? "unknown",
     nonClinical: explanationPayload.explanations.every(

@@ -29,6 +29,18 @@ from backend.app.video_privacy.processor import VideoProcessorError
 router = APIRouter(prefix="/api/video-privacy", tags=["video-privacy"])
 
 
+def _require_authenticated_user(current_user: User | None) -> User:
+    """Reject the legacy ownerless development-auth mode for private video."""
+
+    if not isinstance(current_user, User) or current_user.id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return current_user
+
+
 @router.post("/jobs", status_code=status.HTTP_202_ACCEPTED)
 async def create_job(
     background_tasks: BackgroundTasks,
@@ -39,16 +51,20 @@ async def create_job(
 ) -> dict:
     """Encrypt and queue one supported video privacy transform."""
 
+    authenticated_user = _require_authenticated_user(current_user)
     try:
         selected_profile = parse_profile(profile)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     storage = VideoStorage()
     try:
-        create_kwargs = {}
-        if (current_owner_id := mutation_owner_id(current_user)) is not None:
-            create_kwargs["owner_user_id"] = current_owner_id
-        job = await create_video_job(db, storage, video, selected_profile, **create_kwargs)
+        job = await create_video_job(
+            db,
+            storage,
+            video,
+            selected_profile,
+            owner_user_id=authenticated_user.id,
+        )
     except VideoPrivacyCapacityError as exc:
         raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "60"}) from exc
     except StorageError as exc:
@@ -73,6 +89,7 @@ def list_jobs(
 ) -> dict:
     """List video privacy jobs without private media metadata."""
 
+    _require_authenticated_user(current_user)
     storage = VideoStorage()
     return {"jobs": [public_video_job(db, job, storage) for job in list_video_jobs(db, owner_id(current_user))]}
 
@@ -85,6 +102,7 @@ def get_job(
 ) -> dict:
     """Return safe status and output policy for one job."""
 
+    _require_authenticated_user(current_user)
     job = get_video_job(db, job_id, owner_id(current_user))
     if job is None:
         raise HTTPException(status_code=404, detail="Video privacy job was not found.")
@@ -99,6 +117,7 @@ def acknowledge_job(
 ) -> dict:
     """Acknowledge a usable quality caveat before enabling download."""
 
+    _require_authenticated_user(current_user)
     job = get_video_job(db, job_id, mutation_owner_id(current_user))
     if job is None:
         raise HTTPException(status_code=404, detail="Video privacy job was not found.")
@@ -118,6 +137,7 @@ def get_preview(
 ) -> CleanupFileResponse:
     """Stream only the transformed representative preview frame."""
 
+    _require_authenticated_user(current_user)
     storage = VideoStorage()
     try:
         job, encrypted_path = get_download_artifact(db, job_id, preview=True, storage=storage, owner_user_id=owner_id(current_user))
@@ -143,6 +163,7 @@ def download_output(
 ) -> CleanupFileResponse:
     """Stream transformed output only after backend policy checks pass."""
 
+    _require_authenticated_user(current_user)
     storage = VideoStorage()
     try:
         job, encrypted_path = get_download_artifact(db, job_id, storage=storage, owner_user_id=owner_id(current_user))

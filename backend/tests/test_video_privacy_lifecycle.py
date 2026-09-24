@@ -47,6 +47,37 @@ class VideoPrivacyLifecycleTests(unittest.TestCase):
         with Session(self.database) as db:
             self.assertIsNone(db.exec(select(VideoPrivacyJob)).first())
 
+    def test_admission_cleanup_failure_persists_terminal_retry_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = VideoStorage(root=Path(directory))
+            encrypted = Path(directory) / "VID-CLEANUP" / "original" / "video.input.enc"
+            encrypted.parent.mkdir(parents=True)
+            encrypted.write_bytes(b"ciphertext")
+            upload = UploadFile(filename="patient.mp4", file=io.BytesIO(b"private-source"))
+            with patch.object(service, "new_video_job_id", return_value="VID-CLEANUP"), patch.object(
+                storage, "save_upload", new=AsyncMock(return_value=encrypted)
+            ), patch.object(service, "_preflight_uploaded_video", side_effect=ValueError("bad video")), patch.object(
+                storage, "delete_job", side_effect=OSError("cleanup unavailable")
+            ):
+                with self.assertRaises(ValueError):
+                    asyncio.run(
+                        service.create_video_job(
+                            Session(self.database),
+                            storage,
+                            upload,
+                            VideoPrivacyProfile.FACE_REDACTED,
+                            owner_user_id=1,
+                        )
+                    )
+            with Session(self.database) as db:
+                saved = db.exec(
+                    select(VideoPrivacyJob).where(VideoPrivacyJob.job_id == "VID-CLEANUP")
+                ).one()
+                self.assertEqual(saved.status, VideoPrivacyStatus.FAILED)
+                self.assertEqual(saved.current_stage, "cleanup")
+                self.assertEqual(saved.original_path, str(encrypted))
+                self.assertFalse(saved.output_usable)
+
     def test_sweep_expires_ready_job_and_deletes_storage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             storage = VideoStorage(root=Path(directory))

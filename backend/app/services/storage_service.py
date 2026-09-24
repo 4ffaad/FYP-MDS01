@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import shutil
 import re
 import os
 import secrets
 import stat
 import time
+import unicodedata
 from datetime import datetime, timezone
 import zipfile
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO, Iterator
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import UploadFile
@@ -22,6 +25,7 @@ from backend.app.core.config import (
     SESSION_STORAGE_DIR,
     STORAGE_KEY_ENV,
 )
+from backend.app.eeg.io import read_legacy_eeg_events
 from backend.app.privacy.crypto import CryptoError, read_base64_key
 from backend.app.research.chb_mit import sidecar_annotations, summary_annotations
 
@@ -37,6 +41,7 @@ _MAX_ANNOTATION_MEMBER_BYTES = 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES = int(os.getenv("MDS01_MAX_ARCHIVE_TOTAL_BYTES", str(2 * 1024**3)))
 MAX_ZIP_COMPRESSION_RATIO = float(os.getenv("MDS01_MAX_ZIP_COMPRESSION_RATIO", "100"))
 MAX_ARCHIVE_MEMBER_COUNT = int(os.getenv("MDS01_MAX_ARCHIVE_MEMBER_COUNT", "4096"))
+_MAX_ARCHIVE_CENTRAL_DIRECTORY_BYTES = 64 * 1024**2
 if MAX_ARCHIVE_TOTAL_BYTES <= 0 or MAX_ZIP_COMPRESSION_RATIO <= 0 or MAX_ARCHIVE_MEMBER_COUNT <= 0:
     raise RuntimeError("Archive limits must be positive.")
 
@@ -473,6 +478,12 @@ class SessionStorage:
 
         return any(part == "__MACOSX" or part.startswith(".") for part in path.parts)
 
+    @staticmethod
+    def _archive_member_key(path: PurePosixPath) -> str:
+        """Return a canonical key for case- and Unicode-equivalent ZIP paths."""
+
+        return unicodedata.normalize("NFC", path.as_posix()).casefold()
+
     @classmethod
     def _validated_archive_members(cls, archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
         """Validate ZIP metadata before any member is read or extracted."""
@@ -503,13 +514,45 @@ class SessionStorage:
             raise StorageError("ZIP archive exceeds the compressed size limit.")
         return members
 
+    @staticmethod
+    def _preflight_zip_directory(stream: BinaryIO) -> None:
+        """Bound entry count and central-directory bytes before ZipFile loads them."""
+
+        try:
+            # zipfile exposes no public preflight API; reuse its own bounded
+            # EOCD/ZIP64 parser so trailer handling matches ZipFile itself.
+            end_record_reader = getattr(zipfile, "_EndRecData")
+            member_count_index = getattr(zipfile, "_ECD_ENTRIES_TOTAL")
+            directory_size_index = getattr(zipfile, "_ECD_SIZE")
+            end_record = end_record_reader(stream)
+            if end_record is None:
+                raise StorageError("Archive central directory is invalid.")
+            member_count = int(end_record[member_count_index])
+            directory_size = int(end_record[directory_size_index])
+        except (AttributeError, IndexError, OSError, TypeError, ValueError, zipfile.BadZipFile) as exc:
+            raise StorageError("Archive central directory is invalid.") from exc
+        if member_count < 0 or member_count > MAX_ARCHIVE_MEMBER_COUNT:
+            raise StorageError("ZIP archive contains too many members.")
+        if directory_size < 0 or directory_size > _MAX_ARCHIVE_CENTRAL_DIRECTORY_BYTES:
+            raise StorageError("ZIP archive central directory exceeds the safe size limit.")
+
+    @contextmanager
+    def _open_bounded_zip(self, archive_path: Path) -> Iterator[zipfile.ZipFile]:
+        """Preflight one archive before opening its directory entries."""
+
+        with archive_path.open("rb") as stream:
+            self._preflight_zip_directory(stream)
+            stream.seek(0)
+            with zipfile.ZipFile(stream) as archive:
+                yield archive
+
     def read_reference_annotations(self, archive_path: Path) -> dict[str, tuple[str, list[tuple[float, float]]]]:
         """Read optional CHB-MIT reference intervals without retaining source names."""
 
         annotations: dict[str, tuple[str, list[tuple[float, float]]]] = {}
         summaries: dict[str, list[tuple[float, float]]] = {}
         sidecars: dict[str, list[tuple[float, float]]] = {}
-        with zipfile.ZipFile(archive_path) as archive:
+        with self._open_bounded_zip(archive_path) as archive:
             for member in self._validated_archive_members(archive):
                 if member.is_dir():
                     continue
@@ -533,8 +576,38 @@ class SessionStorage:
             annotations[filename] = ("chb-mit-summary", intervals)
         return annotations
 
-    def extract_edfs(self, session_id: str, archive_path: Path) -> list[Path]:
-        """Extract validated EDF members into the session directory.
+    def read_embedded_eeg_events(self, extracted_paths: list[Path]) -> dict[str, list[dict[str, object]]]:
+        """Read sanitized event timing from extracted legacy Nicolet files.
+
+        Raw annotation text, patient fields, and source paths are deliberately
+        excluded. The returned values are suitable for private alignment and
+        review workflows, not automatic clinical labeling.
+        """
+
+        events_by_filename: dict[str, list[dict[str, object]]] = {}
+        for path in extracted_paths:
+            if path.suffix.lower() != ".e":
+                continue
+            try:
+                events = read_legacy_eeg_events(path)
+            except (OSError, ValueError):
+                # Annotation extraction is best-effort at the session level.
+                # The recording's normal validation pass will fail only this
+                # source if its embedded event section is structurally invalid.
+                continue
+            events_by_filename[path.name.lower()] = [
+                {
+                    "onset_seconds": event.onset_seconds,
+                    "duration_seconds": event.duration_seconds,
+                    "kind": event.kind,
+                    "text_present": event.text_present,
+                }
+                for event in events
+            ]
+        return events_by_filename
+
+    def extract_eeg_recordings(self, session_id: str, archive_path: Path) -> list[Path]:
+        """Extract validated EDF or Nicolet members into session storage.
 
         Parameters
         ----------
@@ -546,47 +619,94 @@ class SessionStorage:
         Returns
         -------
         list[pathlib.Path]
-            Extracted EDF paths in natural filename order.
+            Extracted EEG primary paths in natural filename order.
 
         Raises
         ------
         StorageError
-            Raised for missing EDF files, unsafe paths, duplicate basenames,
-            oversized members, or too many recordings.
+            Raised for missing EEG files, incomplete Nicolet pairs, unsafe
+            paths, duplicate basenames, oversized members, or too many
+            recordings.
         """
 
         extracted_dir = self.directory(session_id, "extracted")
-        with zipfile.ZipFile(archive_path) as archive:
-            members: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
+        with self._open_bounded_zip(archive_path) as archive:
+            all_members: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
+            normalized_names: set[str] = set()
             for member in self._validated_archive_members(archive):
                 if member.is_dir():
                     continue
                 relative = self._safe_member_path(member.filename)
-                if self._is_hidden_member(relative) or relative.suffix.lower() != ".edf":
+                if self._is_hidden_member(relative):
                     continue
-                members.append((member, relative))
+                normalized_name = self._archive_member_key(relative)
+                if normalized_name in normalized_names:
+                    raise StorageError("ZIP archive contains a duplicate archive member path.")
+                normalized_names.add(normalized_name)
+                all_members.append((member, relative))
+            member_by_name = {
+                self._archive_member_key(relative): (member, relative)
+                for member, relative in all_members
+            }
+            members: list[tuple[zipfile.ZipInfo, PurePosixPath, tuple[zipfile.ZipInfo, PurePosixPath] | None]] = []
+            for member, relative in all_members:
+                suffix = relative.suffix.lower()
+                if suffix == ".edf":
+                    members.append((member, relative, None))
+                elif suffix == ".data":
+                    header_key = self._archive_member_key(relative.with_suffix(".head"))
+                    header = member_by_name.get(header_key)
+                    if header is None or header[0].is_dir():
+                        raise StorageError("Nicolet .data recording is missing its matching .head file.")
+                    members.append((member, relative, header))
+                elif suffix == ".e":
+                    members.append((member, relative, None))
             if not members:
-                raise StorageError("ZIP archive does not contain EDF files.")
+                raise StorageError("ZIP archive does not contain EDF, legacy Nicolet .e, or supported Nicolet .data EEG files.")
             if len(members) > MAX_EDF_FILES_PER_ARCHIVE:
-                raise StorageError("ZIP archive contains too many EDF files.")
+                raise StorageError("ZIP archive contains too many EEG files.")
             outputs: list[Path] = []
-            used_names: set[str] = set()
             natural_key = lambda item: [
                 int(part) if part.isdigit() else part.lower()
                 for part in re.split(r"(\d+)", item[1].name)
             ]
-            for member, relative in sorted(members, key=natural_key):
+            ordered_members = sorted(members, key=natural_key)
+            used_names: set[str] = set()
+            for _, relative, header in ordered_members:
                 # Store only the basename to prevent user-controlled directory
                 # layouts from escaping the session boundary.
-                destination = extracted_dir / relative.name
-                if destination.name in used_names:
-                    raise StorageError("Archive contains duplicate EDF filenames.")
-                used_names.add(destination.name)
+                suffix = relative.suffix.lower()
+                destination_name = f"{relative.stem}{suffix}"
+                destination_key = self._archive_member_key(PurePosixPath(destination_name))
+                if destination_key in used_names:
+                    raise StorageError("Archive contains duplicate EEG filenames.")
+                used_names.add(destination_key)
+                if header is not None:
+                    header_name = f"{PurePosixPath(destination_name).stem}.head"
+                    header_key = self._archive_member_key(PurePosixPath(header_name))
+                    if header_key in used_names:
+                        raise StorageError("Archive contains duplicate Nicolet header filenames.")
+                    used_names.add(header_key)
+
+            for member, relative, header in ordered_members:
+                suffix = relative.suffix.lower()
+                destination_name = f"{relative.stem}{suffix}"
+                destination = extracted_dir / destination_name
                 with archive.open(member) as source, destination.open("wb") as output:
                     shutil.copyfileobj(source, output)
                 os.chmod(destination, 0o600)
+                if header is not None:
+                    header_destination = extracted_dir / f"{destination.stem}.head"
+                    with archive.open(header[0]) as source, header_destination.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+                    os.chmod(header_destination, 0o600)
                 outputs.append(destination)
             return outputs
+
+    def extract_edfs(self, session_id: str, archive_path: Path) -> list[Path]:
+        """Backward-compatible extraction entry point for EDF and Nicolet."""
+
+        return self.extract_eeg_recordings(session_id, archive_path)
 
     def cleanup_session(self, session_id: str, *, keep_retained: bool = False) -> None:
         """Delete transient session files after processing.

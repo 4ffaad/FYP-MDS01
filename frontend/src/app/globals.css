@@ -533,3 +533,51 @@ select {
     @apply font-sans;
   }
 }
+
+.print-only {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 14mm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #111318 !important;
+    font-size: 10pt;
+  }
+
+  .app-header,
+  .skip-link,
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .page-frame {
+    width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  .animate-enter-up {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .panel,
+  .glass-panel {
+    break-inside: avoid;
+    border-color: #d5d9e0 !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+  }
+}

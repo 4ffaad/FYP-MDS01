@@ -32,6 +32,10 @@ export function setup(root) {
       chmodSync(existingPath, 0o600);
       if (destination === ".env") {
         const existing = readFileSync(existingPath, "utf8");
+        const contractHash = content.match(/^VSVIG_CONTRACT_SHA256=(.+)$/m)?.[1]?.trim();
+        if (!contractHash) {
+          throw new Error(".env.example must define VSVIG_CONTRACT_SHA256");
+        }
         const additions = [];
         let repaired = existing;
         const generators = {
@@ -39,6 +43,7 @@ export function setup(root) {
           MDS01_STORAGE_KEY: () => randomBytes(32).toString("base64"),
           MDS01_TEMPLATE_KEY: () => randomBytes(32).toString("base64"),
           DEMO_ADMIN_PASSWORD: () => randomBytes(16).toString("hex"),
+          VSVIG_CONTRACT_SHA256: () => contractHash,
         };
         for (const [key, generate] of Object.entries(generators)) {
           const match = existing.match(new RegExp(`^${key}=(.*)$`, "m"));
@@ -58,5 +63,5 @@ export function setup(root) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const root = fileURLToPath(new URL("../", import.meta.url));
   for (const message of setup(root)) console.log(message);
-  console.log("Next: docker compose up --build, or node scripts/start-native.mjs after native Python setup. In another terminal: cd frontend && npm ci && npm run dev");
+  console.log("Next: run node scripts/demo.mjs for the Docker demo, or node scripts/start-native.mjs after native Python setup.");
 }

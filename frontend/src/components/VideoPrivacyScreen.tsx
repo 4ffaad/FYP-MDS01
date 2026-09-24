@@ -83,10 +83,14 @@ export function VideoPrivacyUploadScreen() {
               <h2 id="video-upload-heading" className="text-base font-bold">
                 Add a video
               </h2>
-              <p className="mt-1 text-sm leading-6 text-ink-muted">
-                Supported inputs: MP4, MOV, or WebM. Up to 512 MB; duration is
-                checked before processing. The original is encrypted before
-                processing.
+              <p
+                id="video-privacy-help"
+                className="mt-1 text-sm leading-6 text-ink-muted"
+              >
+                Supported inputs: AVI, MP4, MOV, or WebM. Up to 512 MB; duration
+                is checked before processing. The original is encrypted before
+                processing. A queued source may still contain audio temporarily;
+                audio is removed from the retained output.
               </p>
             </div>
             <div className="px-5 py-6 sm:px-7">
@@ -111,8 +115,9 @@ export function VideoPrivacyUploadScreen() {
                   className="sr-only"
                   id="video-file"
                   aria-label="Video"
+                  aria-describedby="video-privacy-help"
                   type="file"
-                  accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm"
+                  accept="video/x-msvideo,video/mp4,video/quicktime,video/webm,.avi,.mp4,.mov,.webm"
                   onChange={handleFile}
                   disabled={submitting}
                 />
@@ -155,8 +160,8 @@ export function VideoPrivacyUploadScreen() {
                 <span className="font-semibold text-ink">
                   Private handling.
                 </span>{" "}
-                Only encrypted transformed artifacts are retained after
-                processing.
+                Source media is encrypted while queued; after processing, only
+                the encrypted transformed artifact is retained.
               </p>
             </div>
           </section>
@@ -170,14 +175,19 @@ export function VideoPrivacyUploadScreen() {
                 Face redaction
               </h2>
               <p className="mt-1 text-sm leading-6 text-ink-muted">
-                Detected faces are blurred. If the detector loses a face, that
-                frame is blurred fully and the output needs review.
+                Every frame receives full-frame blur, whether or not a face is
+                detected. Face-detection coverage is a quality signal for
+                review; it does not change the blur extent.
               </p>
             </div>
             <div className="space-y-4 px-5 py-6 sm:px-7">
               <div className="rounded-md border border-amber/30 bg-amber-soft px-3.5 py-3 text-xs leading-5 text-ink-muted">
-                <span className="font-semibold text-ink">Audio excluded:</span>{" "}
-                the retained privacy output contains no audio stream.
+                <span className="font-semibold text-ink">
+                  Audio-free output:
+                </span>{" "}
+                the retained privacy output contains no audio stream. The
+                encrypted queued source is temporary and is deleted during
+                cleanup.
               </div>
               <div className="rounded-md border border-amber/30 bg-amber-soft px-3.5 py-3 text-xs leading-5 text-ink-muted">
                 <span className="font-semibold text-ink">Important:</span> this
@@ -312,6 +322,15 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
           </div>
           <StatusPill status={job.status} />
         </div>
+        {error && (
+          <div
+            className="mt-5 flex items-start gap-2.5 rounded-md border border-red/30 bg-red-soft px-3.5 py-3 text-sm text-red"
+            role="alert"
+          >
+            <Icon name="alert" className="mt-0.5 size-4 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
 
         <section
           className="panel mt-8 overflow-hidden"
@@ -375,6 +394,20 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
               </p>
             </div>
           </div>
+        ) : job.status === "expired" ? (
+          <div
+            className="mt-6 flex items-start gap-3 rounded-lg border border-amber/40 bg-amber-soft px-4 py-4 text-sm text-ink"
+            role="alert"
+          >
+            <Icon name="clock" className="mt-0.5 size-5 shrink-0 text-amber" />
+            <div>
+              <p className="font-bold">Protected output expired</p>
+              <p className="mt-1 leading-6">
+                The retention period ended. Source media, temporary files, and
+                the protected output have been removed.
+              </p>
+            </div>
+          </div>
         ) : (
           complete && (
             <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(280px,0.85fr)]">
@@ -425,7 +458,10 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
                     </p>
                   </div>
                   <div className="space-y-3 px-5 py-5 text-sm">
-                    <PolicyRow label="Audio" value="Retained when present" />
+                    <PolicyRow
+                      label="Audio"
+                      value="Removed from retained output"
+                    />
                     <PolicyRow label="Metadata" value="Scrubbed" />
                     <PolicyRow
                       label="Retention"
@@ -443,8 +479,9 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
                   {job.downloadAvailable && job.downloadUrl && (
                     <div className="border-t border-rule px-5 py-5">
                       <p className="mb-3 text-xs leading-5 text-ink-muted">
-                        Audio is encrypted at rest and available only in this
-                        protected download. It may contain identifying speech.
+                        Audio is removed before this protected output is
+                        retained. The queued source is temporary encrypted
+                        storage and is deleted during cleanup.
                       </p>
                       <Button asChild className="w-full" size="lg">
                         <a href={job.downloadUrl} download>

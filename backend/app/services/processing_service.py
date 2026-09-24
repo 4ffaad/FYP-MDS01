@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -40,12 +41,12 @@ from backend.app.core.config import (
     SIGNAL_RETENTION_CONTEXT_SECONDS,
     TEMPLATE_KEY_ENV,
 )
-from backend.app.eeg.model_input import preprocess_edf
+from backend.app.eeg.model_input import preprocess_edf, preprocess_eeg
 from backend.app.ml.interface import InferenceService, WindowPrediction
 from backend.app.ml.model_loader import get_inference_service
 from backend.app.ml.shap_explanation import ShapExplanationError, build_shap_explanations
 from backend.app.privacy.crypto import read_base64_key
-from backend.app.privacy.deidentify import deidentify_edf, generate_record_id
+from backend.app.privacy.deidentify import deidentify_edf, deidentify_eeg, generate_record_id
 from backend.app.privacy.methods import SIGNAL_OBFUSCATION, methods_from_profile
 from backend.app.privacy.retention import (
     detected_intervals,
@@ -56,7 +57,7 @@ from backend.app.privacy.retention import (
 from backend.app.privacy.signal_projection import obfuscate_signal
 from backend.app.services.explanation_service import build_score_summary
 from backend.app.services.storage_service import SessionStorage
-from backend.app.services.validation_service import ValidationError, validate_edf
+from backend.app.services.validation_service import ValidationError, validate_edf, validate_eeg
 
 
 LOGGER = logging.getLogger(__name__)
@@ -71,6 +72,30 @@ _ACTIVE_SESSION_STATUSES = {
 }
 _INTERRUPTED_ERROR = "EEG processing was interrupted before completion."
 _CLEANUP_ERROR = "Private EEG cleanup is pending and will be retried."
+
+
+def _sha256_file(path: Path) -> str:
+    """Hash a private source, including the Nicolet header that interprets it."""
+
+    if path.is_symlink() or not path.is_file():
+        raise ValidationError("EEG source file is not a regular private file.")
+    digest = hashlib.sha256()
+    if path.suffix.lower() == ".data":
+        sources = ((b"data", path), (b"head", path.with_suffix(".head")))
+        digest.update(b"MDS01-NICOLET-DATA-HEAD-v1\0")
+        for role, source in sources:
+            if source.is_symlink() or not source.is_file():
+                raise ValidationError("Nicolet source pair is incomplete or unsafe.")
+            digest.update(role + b"\0")
+            digest.update(source.stat().st_size.to_bytes(8, "big"))
+            with source.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+    else:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _now() -> datetime:
@@ -400,6 +425,8 @@ def process_session(session_id: str) -> None:
                 archive_path = storage.materialize_archive(session.session_id, Path(session.original_path))
                 reference_annotations = storage.read_reference_annotations(archive_path)
                 extracted_paths = storage.extract_edfs(session.session_id, archive_path)
+                candidate_events = storage.read_embedded_eeg_events(extracted_paths)
+                embedded_events = candidate_events if isinstance(candidate_events, dict) else {}
                 _finish_attempt(db, validation_attempt, ProcessingStatus.SUCCEEDED)
             except Exception as exc:
                 error = _safe_error(exc)
@@ -412,14 +439,18 @@ def process_session(session_id: str) -> None:
             records: list[EEGRecording] = []
             for sequence_index, extracted_path in enumerate(extracted_paths, start=1):
                 reference = reference_annotations.get(extracted_path.name.lower())
+                events = embedded_events.get(extracted_path.name.lower(), [])
                 record = EEGRecording(
                     record_id=generate_record_id(),
                     session_db_id=session.id,
                     sequence_index=sequence_index,
                     original_filename="",
                     extracted_path=str(extracted_path),
-                    reference_annotation_source=reference[0] if reference else None,
+                    reference_annotation_source=(
+                        reference[0] if reference else "nicolet-embedded-events" if events else None
+                    ),
                     reference_intervals_json=json.dumps(reference[1]) if reference else None,
+                    annotation_events_json=json.dumps(events) if events else None,
                     status=RecordingStatus.VALIDATING,
                 )
                 db.add(record)
@@ -499,7 +530,7 @@ def _process_record(
     storage: SessionStorage,
     inference: InferenceService,
 ) -> None:
-    """Process one extracted EDF through all remaining pipeline stages.
+    """Process one extracted EEG recording through all remaining pipeline stages.
 
     Parameters
     ----------
@@ -525,10 +556,22 @@ def _process_record(
         only this recording as failed and continues with the next one.
     """
 
-    technical = validate_edf(Path(record.extracted_path or ""))
+    extracted_path = Path(record.extracted_path or "")
+    technical = validate_edf(extracted_path) if extracted_path.suffix.lower() == ".edf" else validate_eeg(extracted_path)
     record.duration_seconds = technical["duration_seconds"]
     record.sampling_rate = technical["sampling_rate"]
     record.channel_count = technical["channel_count"]
+    record.source_format = technical.get(
+        "format",
+        "edf" if extracted_path.suffix.lower() == ".edf" else "nicolet",
+    )
+    record.source_checksum_sha256 = _sha256_file(extracted_path)
+    conversion_details = technical.get("conversion_details")
+    record.conversion_details_json = (
+        json.dumps(conversion_details, sort_keys=True, separators=(",", ":"))
+        if isinstance(conversion_details, dict)
+        else None
+    )
     db.add(record)
     db.commit()
 
@@ -536,7 +579,10 @@ def _process_record(
     deid_attempt = _begin_attempt(db, session, ProcessingStage.DEIDENTIFICATION, record)
     deid_path = storage.directory(session.session_id, "deidentified") / f"{record.record_id}.edf"
     try:
-        deidentify_edf(record.extracted_path or "", deid_path, record.record_id)
+        if extracted_path.suffix.lower() == ".edf":
+            deidentify_edf(record.extracted_path or "", deid_path, record.record_id)
+        else:
+            deidentify_eeg(record.extracted_path or "", deid_path, record.record_id)
         record.deidentified_path = str(deid_path)
         record.status = RecordingStatus.DEIDENTIFIED
         db.add(record)
@@ -549,7 +595,10 @@ def _process_record(
     _set_session_status(db, session, AnalysisStatus.PREPROCESSING, "preprocessing")
     prep_attempt = _begin_attempt(db, session, ProcessingStage.PREPROCESSING, record)
     try:
-        windows, starts, _details = preprocess_edf(str(deid_path))
+        if extracted_path.suffix.lower() == ".edf":
+            windows, starts, _details = preprocess_edf(str(deid_path))
+        else:
+            windows, starts, _details = preprocess_eeg(str(deid_path))
         record.preprocessed_path = None
         record.status = RecordingStatus.PROCESSED
         db.add(record)

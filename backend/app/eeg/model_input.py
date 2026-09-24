@@ -1,21 +1,16 @@
-"""Create model-ready seizure-inference windows from private EDF data."""
+"""Create model-ready seizure-inference windows from private EEG data."""
 
 from pathlib import Path
 
 import numpy as np
 
-from backend.app.eeg.edf_io import read_uniform_edf
+from backend.app.eeg.contracts import MODEL_CHANNELS, MODEL_SAMPLING_RATE
+from backend.app.eeg.io import read_uniform_eeg
 from backend.app.eeg.preprocessing import EEGPreprocessor
 
 
 # This order is part of the trained model contract. Do not sort, replace, or
 # infer channel positions: a correct shape with incorrect labels is invalid.
-MODEL_CHANNELS = (
-    "FP1-F7", "F7-T7", "T7-P7", "P7-O1", "FP1-F3", "F3-C3",
-    "C3-P3", "P3-O1", "FP2-F4", "F4-C4", "C4-P4", "P4-O2",
-    "FP2-F8", "F8-T8", "T8-P8", "P8-O2", "FZ-CZ", "CZ-PZ",
-)
-MODEL_SAMPLING_RATE = 256
 WINDOW_SECONDS = 4
 WINDOW_SAMPLES = MODEL_SAMPLING_RATE * WINDOW_SECONDS
 WINDOW_STEP_SECONDS = 2
@@ -57,20 +52,20 @@ def prepare_model_windows(
         )
 
     if processed_signals.ndim != 2 or processed_signals.shape[0] != len(channel_labels):
-        raise ValueError("EDF signal data does not match its channel labels.")
+        raise ValueError("EEG signal data does not match its channel labels.")
     if not np.isfinite(processed_signals).all():
         raise ValueError("EEG signal contains non-finite values.")
 
     normalized_labels = [label.strip() for label in channel_labels]
     if len(normalized_labels) != len(set(normalized_labels)):
-        raise ValueError("EDF contains duplicate channel labels.")
+        raise ValueError("EEG contains duplicate channel labels.")
     if len(normalized_labels) != len(MODEL_CHANNELS) or set(normalized_labels) != set(MODEL_CHANNELS):
-        raise ValueError("EDF must contain exactly the model's required channels.")
+        raise ValueError("EEG must contain exactly the model's required channels.")
     label_to_index = {label: index for index, label in enumerate(normalized_labels)}
     missing_channels = [label for label in MODEL_CHANNELS if label not in label_to_index]
     if missing_channels:
         raise ValueError(
-            "EDF does not contain the model's required channels: "
+            "EEG does not contain the model's required channels: "
             + ", ".join(missing_channels)
         )
 
@@ -79,7 +74,7 @@ def prepare_model_windows(
         raise ValueError("Model window stride must be positive and no larger than the window.")
 
     if selected.shape[1] < WINDOW_SAMPLES:
-        raise ValueError("EDF is shorter than one required 4-second model window.")
+        raise ValueError("EEG is shorter than one required 4-second model window.")
     window_count = 1 + (selected.shape[1] - WINDOW_SAMPLES) // WINDOW_STEP_SAMPLES
 
     starts = np.arange(window_count, dtype=np.int64) * WINDOW_STEP_SAMPLES
@@ -97,14 +92,14 @@ def prepare_model_windows(
     return windows, window_start_seconds, discarded_tail_samples
 
 
-def preprocess_edf(edf_path: str | Path) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Read an EDF once and return its model-ready tensor in memory.
+def preprocess_eeg(eeg_path: str | Path) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Read EDF or Nicolet input once and return model-ready tensors.
 
     The returned arrays are ``model_windows`` (N × 1024 × 18 float32) and
     ``window_start_seconds``. Keeping them in memory avoids writing a large
     transient NPZ only to reopen it in the next pipeline stage.
     """
-    signals, sampling_rate, channel_labels = read_uniform_edf(edf_path)
+    signals, sampling_rate, channel_labels = read_uniform_eeg(eeg_path)
     processed = EEGPreprocessor(sampling_rate=sampling_rate).preprocess(signals)
     model_windows, window_start_seconds, discarded_tail_samples = prepare_model_windows(
         processed, sampling_rate, channel_labels
@@ -112,6 +107,7 @@ def preprocess_edf(edf_path: str | Path) -> tuple[np.ndarray, np.ndarray, dict]:
 
     return model_windows, window_start_seconds, {
         "sampling_rate": sampling_rate,
+        "source_format": Path(eeg_path).suffix.lower().lstrip("."),
         "source_channel_count": len(channel_labels),
         "original_shape": list(signals.shape),
         "processed_shape": list(processed.shape),
@@ -129,3 +125,9 @@ def preprocess_edf(edf_path: str | Path) -> tuple[np.ndarray, np.ndarray, dict]:
             "artifact_clipping": "±5",
         },
     }
+
+
+def preprocess_edf(edf_path: str | Path) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Backward-compatible EDF preprocessing wrapper."""
+
+    return preprocess_eeg(edf_path)

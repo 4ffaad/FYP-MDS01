@@ -71,9 +71,13 @@ const result = {
   privacy: {
     method: "face-detection-and-full-frame-blur",
     model_input: "full-frame-blurred video",
+    model_input_adaptation: "letterbox",
+    source_resolution: [640, 480],
+    model_resolution: [1920, 1080],
+    source_timestamp_offset_seconds: 0.118,
     face_detection_coverage: 1,
-    quality_flags: [],
-    review_required: false,
+    quality_flags: ["intermittent_detection"],
+    review_required: true,
   },
   visualization: {
     available: true,
@@ -145,13 +149,26 @@ test("uploads and reviews window supports without confidence percentages", async
     page.getByRole("heading", { name: "Potential seizure activity detected" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("img", { name: "VSViG model scores over video time" }),
+    page.getByRole("heading", { name: "Privacy quality needs review" }),
   ).toBeVisible();
+  await expect(
+    page.getByText("Face detection was intermittent across the clip.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  const timeline = page.getByRole("group", {
+    name: "VSViG model scores over video time",
+  });
+  await expect(timeline).toBeVisible();
+  await expect(timeline.getByRole("button")).toHaveCount(2);
   await expect(
     page.getByText(/configured research threshold 0.50/),
   ).toBeVisible();
   await expect(
     page.getByText("Protected review workspace", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Protected artifact retention ends", { exact: false }),
   ).toBeVisible();
   await expect(page.locator("video")).toHaveCount(1);
   await expect(
@@ -164,6 +181,11 @@ test("uploads and reviews window supports without confidence percentages", async
   await expect(
     page.getByRole("table").getByText("0:01.0–0:03.0", { exact: true }),
   ).toBeVisible();
+  await page.getByText("Model and processing details", { exact: true }).click();
+  await expect(
+    page.getByText("Source timestamp offset", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("+0.118 s", { exact: true })).toBeVisible();
 });
 
 test("retries a transient protected visualization failure", async ({
@@ -226,6 +248,72 @@ test("retries a transient ready-result failure without a reload", async ({
     page.getByRole("heading", { name: "VSViG score over time" }),
   ).toBeVisible();
   await expect(page.locator("main").getByRole("alert")).toHaveCount(0);
+});
+
+test("backs off after consecutive retryable ready-result failures", async ({
+  page,
+}) => {
+  const requestTimes: number[] = [];
+  await page.route(
+    "**/api/video-detection/jobs/VID-synthetic/predictions",
+    async (route) => {
+      requestTimes.push(Date.now());
+      if (requestTimes.length <= 2) {
+        return route.fulfill({ status: 503, body: "temporary failure" });
+      }
+      return route.fulfill({
+        json: result,
+        headers: {
+          "Access-Control-Allow-Origin": "http://127.0.0.1:3001",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      });
+    },
+  );
+
+  await page.goto("/video-detection/VID-synthetic");
+  await expect
+    .poll(() => requestTimes.length, { timeout: 10_000 })
+    .toBeGreaterThanOrEqual(3);
+  await expect(
+    page.getByRole("heading", { name: "VSViG score over time" }),
+  ).toBeVisible();
+
+  const firstDelay = requestTimes[1] - requestTimes[0];
+  const secondDelay = requestTimes[2] - requestTimes[1];
+  expect(secondDelay).toBeGreaterThan(firstDelay + 600);
+});
+
+test("lets the user retry a non-retryable initial job-load failure", async ({
+  page,
+}) => {
+  let attempts = 0;
+  let retryAllowed = false;
+  await page.route(
+    "**/api/video-detection/jobs/VID-synthetic",
+    async (route) => {
+      attempts += 1;
+      if (!retryAllowed) {
+        return route.fulfill({
+          status: 404,
+          json: { detail: "This video job could not be found." },
+        });
+      }
+      return route.fulfill({ json: { job } });
+    },
+  );
+
+  await page.goto("/video-detection/VID-synthetic");
+  await expect(page.locator("main").getByRole("alert")).toContainText(
+    "This video job could not be found.",
+  );
+  const failedAttempts = attempts;
+  retryAllowed = true;
+  await page.getByRole("button", { name: "Retry job" }).click();
+  await expect(
+    page.getByRole("heading", { name: "VSViG score over time" }),
+  ).toBeVisible();
+  expect(attempts).toBeGreaterThan(failedAttempts);
 });
 
 test("shows the reported processing stage and checkpoint percentage", async ({

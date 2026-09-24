@@ -8,10 +8,10 @@
 
 Choose either Docker or native mode:
 
-| Mode | Install locally | Database | Best for |
-| --- | --- | --- | --- |
-| Docker | Docker Desktop plus Node.js | PostgreSQL container | Reproducible team setup and VSViG |
-| Native | Python 3.12, FFmpeg plus Node.js | SQLite file | Fast single-laptop prototype work |
+| Mode   | Install locally                  | Database             | Best for                          |
+| ------ | -------------------------------- | -------------------- | --------------------------------- |
+| Docker | Docker Desktop plus Node.js      | PostgreSQL container | Reproducible team setup and VSViG |
+| Native | Python 3.12, FFmpeg plus Node.js | SQLite file          | Fast single-laptop prototype work |
 
 Neither mode requires an AI editor or agent skills. Native mode does require a
 Python environment; Docker keeps those packages inside the image.
@@ -32,26 +32,37 @@ the model bundle.
 
 ## First run: Docker
 
-Start Docker, then:
+Start Docker, then run this one command from the repository root:
 
 ```sh
-node scripts/setup.mjs
-docker compose up --build
+node scripts/demo.mjs
 ```
 
-The setup command creates `.env` and `frontend/.env.local` from safe templates.
-It generates separate random storage/template keys and a database password. Existing files are never overwritten. Keep those files private; changing keys makes existing encrypted artifacts unreadable. Changing the database password does not update an already-initialized PostgreSQL volume.
+The launcher creates or safely repairs `.env` and `frontend/.env.local` without
+printing their values. It preserves nonempty settings, generates separate
+random storage/template keys and a database password when needed, and requests
+`0600` permissions where POSIX file modes apply. On Windows, protect the files
+with your normal user-profile permissions. Keep them private; changing keys
+makes existing encrypted artifacts unreadable. Changing the database
+password does not update an already-initialized PostgreSQL volume.
 
-In another terminal:
-
-```sh
-cd frontend
-npm ci
-npm run dev
-```
+It installs the locked frontend dependencies only when they are absent, then
+runs `docker compose up -d --build`. Compose starts PostgreSQL, sets private
+storage permissions, initializes and verifies the pinned VSViG asset volume,
+runs Alembic migrations, and starts FastAPI. The launcher waits for
+`GET /health` before starting Next.js on port 3000 and reports when the UI is
+ready. The first image/model-asset initialization requires internet access and
+may take longer than later starts. If the backend health check does not become
+ready, use `docker compose ps` and `docker compose logs backend` without
+copying local secrets into chat or logs.
 
 Open [the interface](http://127.0.0.1:3000), [Swagger](http://127.0.0.1:8000/docs) or [health](http://127.0.0.1:8000/health).
 These commands also work in PowerShell. On Linux, Docker may require your user to have access to its socket.
+
+Press Ctrl-C to stop the frontend process. The Docker services and persistent
+data remain running; `docker compose down` stops the containers while keeping
+database and encrypted-storage volumes. Do not use `docker compose down -v`
+unless you intentionally want to delete those volumes.
 
 Both frontend and API bind to loopback. Each teammate runs their own database, files and keys. Do not share your `.env` or connect classmates to an unauthenticated network-facing instance.
 
@@ -111,13 +122,13 @@ platform-specific wheels are not already verified on the host.
 
 ## Runtime choices
 
-| Mode | Configuration | What it tests |
-| --- | --- | --- |
-| Backend development stub (default) | Root `.env`: `MODEL_RUNTIME=stub`, `INSTALL_RESEARCH=false` | Real uploads, database, privacy pipeline and synthetic model scores |
-| H5 research runtime | Root `.env`: `MODEL_RUNTIME=h5`, `INSTALL_RESEARCH=true`, operator-populated `mds01-eeg-model-assets` volume | External H5 model under the reviewed contract |
-| Local accounts (default) | Root `.env`: `AUTH_MODE=local-accounts` | Backend-enforced login and owner-filtered data |
-| Unauthenticated backend test mode | Root `.env`: `AUTH_MODE=local` | API/service tests only; never expose this mode to a network |
-| Browser-only stub | Frontend test config: `NEXT_PUBLIC_USE_API_STUB=true`, `NEXT_PUBLIC_AUTH_MODE=stub` | UI flows with synthetic browser data; no actual EEG/video processing |
+| Mode                               | Configuration                                                                                                | What it tests                                                        |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Backend development stub (default) | Root `.env`: `MODEL_RUNTIME=stub`, `INSTALL_RESEARCH=false`                                                  | Real uploads, database, privacy pipeline and synthetic model scores  |
+| H5 research runtime                | Root `.env`: `MODEL_RUNTIME=h5`, `INSTALL_RESEARCH=true`, operator-populated `mds01-eeg-model-assets` volume | External H5 model under the reviewed contract                        |
+| Local accounts (default)           | Root `.env`: `AUTH_MODE=local-accounts`                                                                      | Backend-enforced login and owner-filtered data                       |
+| Unauthenticated backend test mode  | Root `.env`: `AUTH_MODE=local`                                                                               | API/service tests only; never expose this mode to a network          |
+| Browser-only stub                  | Frontend test config: `NEXT_PUBLIC_USE_API_STUB=true`, `NEXT_PUBLIC_AUTH_MODE=stub`                          | UI flows with synthetic browser data; no actual EEG/video processing |
 
 After changing backend settings, restart the selected backend. Docker settings
 require `docker compose up --build`; native settings require restarting
@@ -143,7 +154,7 @@ With the research image built, verify the artifact:
 docker compose run --rm --no-deps backend python backend/scripts/verify_h5_model.py /opt/eeg-model/best_seizure_model.h5
 ```
 
-The mounted contract currently emits **uncalibrated scores**. Fitting and reviewing both privacy-profile calibrators is a separate research task. See [backend research tools](backend.md#profile-specific-calibration). Never present the development stub or an uncalibrated score as confidence.
+When the H5 runtime is enabled, the mounted model contract emits **uncalibrated scores**. Fitting and reviewing both privacy-profile calibrators is a separate research task. See [backend research tools](backend.md#profile-specific-calibration). Never present the development stub or an uncalibrated score as confidence.
 
 ## Try a patient-free EEG demo
 
@@ -162,15 +173,15 @@ The generated archive contains synthetic signals and explicit test identifiers, 
 4. Open a recording to review its timeline, threshold, flagged windows and model version.
 5. Delete the completed session through the confirmation dialog when finished.
 
-For analysis, open **New analysis** and choose one EEG ZIP, one separate video, or both. EEG is encrypted and follows the selected EEG privacy path before H5 scoring. Video is encrypted, face-redacted, converted into one shared pose pass, and sent to the visual-only VSViG path; the same pose samples generate an encrypted audio-free, full-frame-blurred skeleton visualization for owner-only review. A paired upload opens one status page with links to the EEG session and video review. Detection excludes audio from model input and deletes source/protected work after processing, retaining only the encrypted results and privacy-safe visualization until expiry. The standalone **Video privacy** page also emits an audio-free protected transform. The browser stub does not validate the actual privacy transform. Docker builds smoke-test the installed video privacy dependencies as the unprivileged application user; the VSViG checkpoints are verified from the read-only named volume before startup. Face detection can miss frames; affected frames use full-frame blur and missing/failed transforms must not return source video.
+For analysis, open **New analysis** and choose one EEG ZIP, one separate video, or both. EEG is encrypted, follows the selected privacy path, then runs through the configured inference adapter (development stub by default; H5 is an opt-in research runtime). Video is encrypted; face-detection coverage is recorded for quality review while every frame receives full-frame blur before the same protected frames feed Lightweight OpenPose and VSViG. The shared pose samples generate an encrypted, audio-free, full-frame-blurred skeleton visualization for owner-only review. A paired upload opens one status page with links to the EEG session and video review. The encrypted source may still contain audio while queued; source and protected work are deleted after processing, retaining only encrypted results and the approved privacy-safe visualization until expiry. By default, VSViG requires 1920×1080 input; smaller geometry requires the explicit operator-reviewed `VSVIG_ALLOW_LETTERBOX_ADAPTATION=true` setting. The standalone **Video privacy** page also emits an audio-free protected transform. The browser stub does not validate the actual privacy transform. Docker builds smoke-test the installed video privacy dependencies as the unprivileged application user; the VSViG checkpoints are verified from the read-only named volume before startup. Missing or failed transforms must not return source video.
 
 ## Enable waveform review for a local prototype
 
 Both sides must opt in:
 
-| File | Setting |
-| --- | --- |
-| Root `.env` | `ENABLE_SIGNAL_PREVIEW=true` |
+| File                  | Setting                                  |
+| --------------------- | ---------------------------------------- |
+| Root `.env`           | `ENABLE_SIGNAL_PREVIEW=true`             |
 | `frontend/.env.local` | `NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW=true` |
 
 Restart both services and submit a new analysis. Only retained transformed data from model-positive recordings is available. Non-alert recordings have no waveform artifact.
@@ -248,17 +259,17 @@ The automatic video overlay also means `docker compose down -v` deletes the
 run `docker compose up --build` again; the completed initializer will rebuild
 the volume before the backend starts.
 
-| Problem | Check |
-| --- | --- |
-| Cannot connect to Docker | Start Docker Desktop; run `docker info`. |
-| UI cannot reach API | Use `NEXT_PUBLIC_USE_API_STUB=false`, API URL `http://127.0.0.1:8000`, and check `docker compose ps`. |
-| Backend exits | Run `docker compose logs backend`; check migrations, keys and selected runtime. Do not post secrets or patient data in logs. |
-| H5 build is too slow | Use the backend development stub for workflow demos; H5/TensorFlow is optional. |
-| Docker build hangs at image metadata | Check Docker Desktop's credential helper or Keychain prompt. This happens before application code is built; do not change application secrets to fix it. |
-| Database authentication fails after editing config | An existing volume keeps its original password. Restore the matching local configuration; do not delete data to bypass the error. |
-| Waveform returns 404 | Check both preview flags, positive windows, retention and whether the analysis was rerun after enabling preview. |
-| Test browser missing | Run `npx playwright install chromium` in `frontend/`. |
-| Port already allocated | Stop the conflicting local process, or update Compose port mapping, API URL and CORS together. |
+| Problem                                            | Check                                                                                                                                                    |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cannot connect to Docker                           | Start Docker Desktop; run `docker info`.                                                                                                                 |
+| UI cannot reach API                                | Use `NEXT_PUBLIC_USE_API_STUB=false`, API URL `http://127.0.0.1:8000`, and check `docker compose ps`.                                                    |
+| Backend exits                                      | Run `docker compose logs backend`; check migrations, keys and selected runtime. Do not post secrets or patient data in logs.                             |
+| H5 build is too slow                               | Use the backend development stub for workflow demos; H5/TensorFlow is optional.                                                                          |
+| Docker build hangs at image metadata               | Check Docker Desktop's credential helper or Keychain prompt. This happens before application code is built; do not change application secrets to fix it. |
+| Database authentication fails after editing config | An existing volume keeps its original password. Restore the matching local configuration; do not delete data to bypass the error.                        |
+| Waveform returns 404                               | Check both preview flags, positive windows, retention and whether the analysis was rerun after enabling preview.                                         |
+| Test browser missing                               | Run `npx playwright install chromium` in `frontend/`.                                                                                                    |
+| Port already allocated                             | Stop the conflicting local process, or update Compose port mapping, API URL and CORS together.                                                           |
 
 Migrations run before FastAPI startup. Check the applied revision with:
 
@@ -267,6 +278,7 @@ docker compose exec backend alembic -c backend/alembic.ini current
 ```
 
 Before network deployment, configure authenticated access, HTTPS and the remaining controls in [the security audit](security-audit.md). Local demonstration setup is not a deployment guide.
+
 ## Video seizure detection
 
 The normal one-command stack exposes the video review workspace. Real inference

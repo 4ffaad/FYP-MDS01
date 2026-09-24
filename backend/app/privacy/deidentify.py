@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 import secrets
 
+import numpy as np
 import pyedflib
 
 
@@ -258,3 +259,196 @@ def deidentify_edf(input_path: str | Path, output_path: str | Path, record_id: s
         destination.unlink(missing_ok=True)
         raise
     return destination
+
+
+def deidentify_nicolet(input_path: str | Path, output_path: str | Path, record_id: str) -> Path:
+    """Convert Nicolet samples to an identifier-free scrubbed EDF.
+
+    The Nicolet ``.head`` file is never copied. Signal data is read through
+    MNE, written to a new EDF with neutral metadata, and verified using the
+    same scrubbed-EDF checks as native EDF input. Annotation descriptions are
+    deliberately blanked while relative timing is retained.
+    """
+
+    del record_id
+    from backend.app.eeg.io import read_nicolet_bounded
+
+    source = Path(input_path)
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    raw = None
+    writer = None
+    try:
+        raw = read_nicolet_bounded(source)
+        signals = np.asarray(raw.get_data(), dtype=np.float64)
+        labels = [str(label).strip() for label in raw.ch_names]
+        sampling_rate = float(raw.info["sfreq"])
+        if (
+            signals.ndim != 2
+            or signals.shape[0] != len(labels)
+            or not labels
+            or len(labels) != len(set(labels))
+            or any(not label for label in labels)
+            or not np.isfinite(signals).all()
+            or sampling_rate <= 0
+            or sampling_rate != round(sampling_rate)
+        ):
+            raise ValueError("Nicolet signal data cannot be safely de-identified.")
+
+        signal_headers = []
+        for channel_index, label in enumerate(labels):
+            if len(label) > 16:
+                raise ValueError("Nicolet channel label exceeds the EDF label limit.")
+            channel = signals[channel_index]
+            peak = float(np.max(np.abs(channel)))
+            if not np.isfinite(peak):
+                raise ValueError("Nicolet signal contains non-finite values.")
+            peak = max(peak * 1.05, 1e-6)
+            physical_min, physical_max = _safe_physical_bounds(
+                {"physical_min": -peak, "physical_max": peak}
+            )
+            signal_headers.append(
+                {
+                    "label": label,
+                    "dimension": "V",
+                    "sample_frequency": int(round(sampling_rate)),
+                    "physical_min": physical_min,
+                    "physical_max": physical_max,
+                    "digital_min": -32768,
+                    "digital_max": 32767,
+                    "transducer": "",
+                    "prefilter": "",
+                }
+            )
+
+        writer = pyedflib.EdfWriter(
+            str(destination),
+            len(labels),
+            file_type=pyedflib.FILETYPE_EDFPLUS,
+        )
+        writer.setHeader(
+            {
+                "technician": "",
+                "recording_additional": "",
+                "patientname": "",
+                "patient_additional": "",
+                "patientcode": "",
+                "equipment": "",
+                "admincode": "",
+                "sex": "",
+                "startdate": datetime(1970, 1, 1),
+                "birthdate": "",
+            }
+        )  # type: ignore[arg-type]
+        writer.setSignalHeaders(signal_headers)
+        writer.writeSamples([channel for channel in signals], digital=False)
+        for onset, duration in zip(raw.annotations.onset.tolist(), raw.annotations.duration.tolist()):
+            writer.writeAnnotation(float(onset), float(duration), "")
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        if writer is not None:
+            writer.close()
+        if raw is not None:
+            raw.close()
+
+    try:
+        _verify_scrubbed_edf(destination)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    return destination
+
+
+def deidentify_legacy_nicolet(input_path: str | Path, output_path: str | Path, record_id: str) -> Path:
+    """Convert a legacy single-file Nicolet recording to a scrubbed EDF."""
+
+    del record_id
+    from backend.app.eeg.io import read_uniform_legacy_eeg
+
+    signals, sampling_rate, labels = read_uniform_legacy_eeg(input_path)
+    if (
+        signals.ndim != 2
+        or signals.shape[0] != len(labels)
+        or not labels
+        or len(labels) != len(set(labels))
+        or not np.isfinite(signals).all()
+        or sampling_rate <= 0
+    ):
+        raise ValueError("Legacy Nicolet signal data cannot be safely de-identified.")
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    writer = None
+    try:
+        signal_headers = []
+        for channel_index, label in enumerate(labels):
+            if len(label) > 16:
+                raise ValueError("Legacy Nicolet channel label exceeds the EDF label limit.")
+            channel = signals[channel_index]
+            peak = float(np.max(np.abs(channel)))
+            if not np.isfinite(peak):
+                raise ValueError("Legacy Nicolet signal contains non-finite values.")
+            peak = max(peak * 1.05, 1e-6)
+            physical_min, physical_max = _safe_physical_bounds(
+                {"physical_min": -peak, "physical_max": peak}
+            )
+            signal_headers.append(
+                {
+                    "label": label,
+                    "dimension": "V",
+                    "sample_frequency": int(sampling_rate),
+                    "physical_min": physical_min,
+                    "physical_max": physical_max,
+                    "digital_min": -32768,
+                    "digital_max": 32767,
+                    "transducer": "",
+                    "prefilter": "",
+                }
+            )
+        writer = pyedflib.EdfWriter(
+            str(destination), len(labels), file_type=pyedflib.FILETYPE_EDFPLUS
+        )
+        writer.setHeader(
+            {
+                "technician": "",
+                "recording_additional": "",
+                "patientname": "",
+                "patient_additional": "",
+                "patientcode": "",
+                "equipment": "",
+                "admincode": "",
+                "sex": "",
+                "startdate": datetime(1970, 1, 1),
+                "birthdate": "",
+            }
+        )
+        writer.setSignalHeaders(signal_headers)
+        writer.writeSamples([channel for channel in signals], digital=False)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        if writer is not None:
+            writer.close()
+
+    try:
+        _verify_scrubbed_edf(destination)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    return destination
+
+
+def deidentify_eeg(input_path: str | Path, output_path: str | Path, record_id: str) -> Path:
+    """De-identify either native EDF or Nicolet input."""
+
+    suffix = Path(input_path).suffix.lower()
+    if suffix == ".edf":
+        return deidentify_edf(input_path, output_path, record_id)
+    if suffix == ".data":
+        return deidentify_nicolet(input_path, output_path, record_id)
+    if suffix == ".e":
+        return deidentify_legacy_nicolet(input_path, output_path, record_id)
+    raise ValueError("Unsupported EEG format for de-identification.")

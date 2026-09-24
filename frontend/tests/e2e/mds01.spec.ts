@@ -50,6 +50,31 @@ test("upload leads with one clear action and creates a queued analysis", async (
   await expect(processingStatus.locator("svg")).toHaveClass(/animate-spin/);
 });
 
+test("upload accurately describes the default EEG inference runtime", async ({
+  page,
+}) => {
+  await page.goto("/upload");
+  const modelDisclosure = page.getByText("Both remain research-only");
+  await expect(modelDisclosure).toContainText(
+    "development stub is the local demo default",
+  );
+  await expect(modelDisclosure).toContainText("reviewed H5 runtime is opt-in");
+
+  await page.locator("#eeg-file").setInputFiles({
+    name: "runtime-copy.zip",
+    mimeType: "application/zip",
+    buffer: Buffer.from("synthetic"),
+  });
+  await expect(
+    page.getByText("Required baseline", { exact: true }),
+  ).toBeVisible({ timeout: 15000 });
+  const pipelineDetail = page
+    .locator("p")
+    .filter({ hasText: "Encrypt → metadata scrub" });
+  await expect(pipelineDetail).toContainText("development stub by default");
+  await expect(pipelineDetail).toContainText("reviewed H5 runtime opt-in");
+});
+
 test("privacy preview shows the fixed 18-channel contract and an accessible divider", async ({
   page,
 }) => {
@@ -203,9 +228,16 @@ test("completed analysis opens a result with a score timeline and explanation no
       { exact: true },
     ),
   ).toHaveCount(0);
-  await expect(
-    page.getByRole("img", { name: "Prediction score timeline" }),
-  ).toBeVisible();
+  const predictionTimeline = page.getByRole("group", {
+    name: "Prediction score timeline",
+  });
+  await expect(predictionTimeline).toBeVisible();
+  const accessibleAlertPoints = predictionTimeline.getByRole("button");
+  await expect(accessibleAlertPoints.first()).toBeVisible();
+  await expect(accessibleAlertPoints.first()).toHaveAttribute(
+    "aria-label",
+    /Window \d+/,
+  );
   await expect(
     page.getByText("Alert threshold · 0.50", { exact: true }),
   ).toBeVisible();
@@ -240,6 +272,10 @@ test("completed analysis opens a result with a score timeline and explanation no
     page.getByRole("navigation", { name: "Recordings in this session" }),
   ).toBeVisible();
   await expect(page.getByText("Development output only")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Source EEG event markers" }),
+  ).toBeVisible();
+  await expect(page.getByText("Synthetic demo marker")).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "How to read this output" }),
   ).toBeVisible();
@@ -404,6 +440,10 @@ test("one upload can start VEEG and video review together", async ({
   await expect(
     page.getByText("Required baseline", { exact: true }),
   ).toBeVisible({ timeout: 15000 });
+  await expect(page.locator("#video-file")).toHaveAttribute(
+    "aria-describedby",
+    "video-file-help",
+  );
   await page.locator("#video-file").setInputFiles({
     name: "paired.mp4",
     mimeType: "video/mp4",
@@ -429,6 +469,152 @@ test("one upload can start VEEG and video review together", async ({
     page.getByText("Face redaction", { exact: false }),
   ).toBeVisible();
   await expect(page.getByText("VSViG model", { exact: false })).toBeVisible();
+});
+
+test("demo report shows assumed EEG-video timing and prints a research-only summary", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.print = () => {
+      document.documentElement.dataset.printRequested = "true";
+    };
+  });
+  const videoJob = {
+    job_id: "VID-demo-report",
+    case_id: null,
+    label: "Demo video review",
+    status: "ready",
+    current_stage: "complete",
+    duration_seconds: 120,
+    fps: 25,
+    created_at: new Date().toISOString(),
+    retention_expires_at: new Date(Date.now() + 3600000).toISOString(),
+    video_available: false,
+    visualization_available: false,
+    visualization_url: null,
+    error: null,
+  };
+  await page.route("**/api/video-detection/jobs", async (route) => {
+    if (route.request().method() === "POST")
+      return route.fulfill({ json: { job: videoJob } });
+    return route.fulfill({ json: { jobs: [videoJob] } });
+  });
+  await page.route("**/api/video-detection/jobs/VID-demo-report", (route) =>
+    route.fulfill({ json: { job: videoJob } }),
+  );
+  await page.route(
+    "**/api/video-detection/jobs/VID-demo-report/predictions",
+    (route) =>
+      route.fulfill({
+        json: {
+          duration_seconds: 120,
+          model: {
+            model_name: "VSViG-base",
+            model_version: "demo-contract",
+            weights_hash: "",
+            preprocessing_version: "demo",
+            threshold: 0.5,
+            sample_fps: 6,
+            window_frames: 30,
+            stride_frames: 3,
+            calibrated: false,
+          },
+          predictions: [
+            {
+              start_time: 90,
+              end_time: 95,
+              raw_score: 0.73,
+              score: 0.73,
+              score_type: "uncalibrated_model_score",
+              seizure_detected: true,
+            },
+          ],
+          intervals: [{ start_time: 90, end_time: 95 }],
+          summary: {
+            peak_score: 0.73,
+            potential_event_detected: true,
+            event_count: 1,
+            threshold: 0.5,
+          },
+          recording_probability_available: false,
+        },
+      }),
+  );
+
+  await page.goto("/upload");
+  await page.locator("#eeg-file").setInputFiles({
+    name: "demo_report.zip",
+    mimeType: "application/zip",
+    buffer: Buffer.from("synthetic"),
+  });
+  await expect(
+    page.getByText("Required baseline", { exact: true }),
+  ).toBeVisible({ timeout: 15000 });
+  await page.locator("#video-file").setInputFiles({
+    name: "demo_report.mp4",
+    mimeType: "video/mp4",
+    buffer: Buffer.from("synthetic"),
+  });
+  await page.getByRole("button", { name: "Submit for analysis" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "EEG and video review" }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await expect(page.getByText("1 of 1 recordings complete")).toBeVisible({
+    timeout: 15000,
+  });
+  await expect(page.getByText("Assumed pairing — not verified")).toBeVisible();
+  await expect(
+    page.getByText("These analyses are shown together for demonstration only", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Synthetic demo marker")).toBeVisible();
+  await expect(page.getByText("Video 0:42", { exact: true })).toBeVisible();
+  await expect(page.getByText("VSViG-base", { exact: false })).toBeVisible();
+  await expect(
+    page.getByText("Uncalibrated · not a probability"),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Research and demonstration output only", { exact: false }),
+  ).toBeVisible();
+
+  const offset = page.getByLabel("Video starts after EEG (seconds)");
+  await offset.fill("12");
+  await expect(page.getByText("Video 0:30", { exact: true })).toBeVisible();
+  await page.screenshot({
+    path: test.info().outputPath("demo-analysis-report.png"),
+    fullPage: true,
+  });
+  await page.emulateMedia({ media: "print" });
+  await expect(
+    page.getByRole("button", { name: "Print / Save as PDF" }),
+  ).toBeHidden();
+  await expect(page.getByText(/Assumed clock offset: \+12s/)).toBeVisible();
+  if (test.info().project.name === "desktop") {
+    const pdf = await page.pdf({
+      path: test.info().outputPath("demo-analysis-report.pdf"),
+      format: "A4",
+      printBackground: true,
+    });
+    expect(pdf.subarray(0, 5).toString("ascii")).toBe("%PDF-");
+    expect(pdf.byteLength).toBeGreaterThan(1000);
+  }
+  await page.screenshot({
+    path: test.info().outputPath("demo-analysis-report-print.png"),
+    fullPage: true,
+  });
+  await page.emulateMedia({ media: "screen" });
+  await page.getByRole("button", { name: "Print / Save as PDF" }).click();
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-print-requested",
+    "true",
+  );
 });
 
 test("paired upload can retry video after EEG submission", async ({ page }) => {

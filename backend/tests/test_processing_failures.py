@@ -36,6 +36,80 @@ from backend.app.services.storage_service import SessionStorage, StorageError
 class ProcessingFailureTests(unittest.TestCase):
     """Ensure a late stage failure cannot leave a public model alert behind."""
 
+    def test_malformed_embedded_events_fail_only_their_recording(self) -> None:
+        database = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(database.dispose)
+        SQLModel.metadata.create_all(database)
+        with Session(database) as db:
+            db.add(
+                EEGSession(
+                    session_id="SES-MALFORMED-EVENTS",
+                    original_filename="",
+                    original_path="/private/archive.enc",
+                )
+            )
+            db.commit()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            malformed = root / "malformed.e"
+            valid = root / "valid.e"
+            malformed.write_bytes(b"synthetic malformed recording")
+            valid.write_bytes(b"synthetic valid recording")
+            storage = SessionStorage(root / "storage", b"s" * 32)
+            storage.materialize_archive = MagicMock(return_value=root / "archive.zip")
+            storage.read_reference_annotations = MagicMock(return_value={})
+            storage.extract_edfs = MagicMock(return_value=[malformed, valid])
+            storage.cleanup_session = MagicMock()
+            processed: list[str] = []
+
+            def read_events(path: Path):
+                if path == malformed:
+                    raise ValueError("synthetic malformed event packet")
+                return ()
+
+            def process_record(db, _session, record, _storage, _inference):
+                source_name = Path(record.extracted_path or "").name
+                processed.append(source_name)
+                if source_name == malformed.name:
+                    raise ValueError("synthetic malformed event packet")
+                record.status = RecordingStatus.INFERRED
+                db.add(record)
+                db.commit()
+
+            with (
+                patch("backend.app.services.processing_service.engine", database),
+                patch(
+                    "backend.app.services.processing_service.SessionStorage",
+                    return_value=storage,
+                ),
+                patch(
+                    "backend.app.services.processing_service.get_inference_service",
+                    return_value=object(),
+                ),
+                patch(
+                    "backend.app.services.processing_service._process_record",
+                    side_effect=process_record,
+                ),
+                patch(
+                    "backend.app.services.storage_service.read_legacy_eeg_events",
+                    side_effect=read_events,
+                ),
+            ):
+                process_session("SES-MALFORMED-EVENTS")
+
+        self.assertCountEqual(processed, [malformed.name, valid.name])
+        with Session(database) as db:
+            session = get_session_by_public_id(db, "SES-MALFORMED-EVENTS")
+            self.assertIsNotNone(session)
+            assert session is not None
+            records = list_recordings_for_session(db, session.id)
+        self.assertEqual(session.status, AnalysisStatus.COMPLETED_WITH_ERRORS)
+        self.assertEqual(
+            {record.sequence_index: record.status for record in records},
+            {1: RecordingStatus.FAILED, 2: RecordingStatus.INFERRED},
+        )
+
     def test_failed_recording_removes_predictions_and_explanations(self) -> None:
         database = create_engine("sqlite://", connect_args={"check_same_thread": False})
         self.addCleanup(database.dispose)
@@ -248,6 +322,7 @@ class ProcessingFailureTests(unittest.TestCase):
 
             with (
                 patch("backend.app.services.processing_service.validate_edf", return_value={"duration_seconds": 4.0, "sampling_rate": 256, "channel_count": 18}),
+                patch("backend.app.services.processing_service._sha256_file", return_value="a" * 64),
                 patch("backend.app.services.processing_service.deidentify_edf", side_effect=scrub_before_model),
                 patch("backend.app.services.processing_service.preprocess_edf", side_effect=preprocess_scrubbed),
                 patch("backend.app.services.processing_service._retain_positive_artifact", side_effect=retain_artifact),

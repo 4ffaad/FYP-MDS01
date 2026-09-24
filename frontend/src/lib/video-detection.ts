@@ -81,10 +81,20 @@ export interface DetectionResult {
   privacy?: {
     method: "face-detection-and-full-frame-blur";
     model_input: "full-frame-blurred video";
+    pose_model_input?: string;
+    model_input_adaptation?: "none" | "letterbox";
+    source_resolution?: [number, number];
+    model_resolution?: [number, number];
+    source_timestamp_offset_seconds?: number;
     face_detection_coverage: number;
     quality_flags: string[];
     review_required: boolean;
     audio_policy?: string;
+    visualization?: {
+      retained: string;
+      audio_included: false;
+      method: string;
+    };
   };
   visualization?: {
     available: boolean;
@@ -100,6 +110,11 @@ export interface DetectionResult {
       model_score: boolean;
       event_markers: boolean;
     };
+    frame_count?: number;
+    fps?: number;
+    width?: number;
+    height?: number;
+    duration_seconds?: number;
   };
 }
 

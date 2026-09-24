@@ -184,6 +184,23 @@ class VideoDetectionTests(unittest.TestCase):
         response = self.alice.post("/api/video-detection/jobs", files={"video": ("secret.txt", b"x", "text/plain")}, headers=self.headers)
         self.assertEqual(response.status_code, 422)
 
+    def test_legacy_avi_upload_is_accepted_by_preflight(self):
+        with patch.object(service, "load_contract", return_value=(Path(self.temp.name), {})), patch.object(
+            service.VideoPrivacyProcessor,
+            "preflight",
+            return_value={"fps": 25, "frame_count": 250},
+        ):
+            with Session(self.engine) as db:
+                video = UploadFile(
+                    filename="recording.avi",
+                    file=io.BytesIO(b"private-avi-source"),
+                    headers=Headers({"content-type": "video/x-msvideo"}),
+                )
+                job = asyncio.run(service.create_job(db, self.storage, video, self.owner))
+
+        self.assertEqual(job.fps, 25)
+        self.assertEqual(job.duration_seconds, 10)
+
     def test_cancelled_upload_rolls_back_queued_job_and_storage(self):
         owner = self.owner
         if owner is None:
@@ -199,6 +216,37 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertEqual(list(self.storage.root.glob("VID-*")), [])
         self.assertEqual(self.alice.post("/api/video-detection/jobs", files={"video": ("a.mp4", b"x", "video/mp4")}, headers={"Origin": "https://wrong.invalid"}).status_code, 403)
 
+    def test_admission_cleanup_failure_persists_terminal_retry_record(self):
+        owner = self.owner
+        if owner is None:
+            self.fail("test owner was not created")
+        video = UploadFile(
+            filename="patient.mp4",
+            file=io.BytesIO(b"private-source"),
+            headers=Headers({"content-type": "video/mp4"}),
+        )
+        encrypted = self.storage.root / "VID-CLEANUP" / "original" / "video.input.enc"
+        encrypted.parent.mkdir(parents=True)
+        encrypted.write_bytes(b"ciphertext")
+        with patch.object(service, "load_contract", return_value=(Path(self.temp.name), {})), patch.object(
+            service.secrets, "token_hex", return_value="CLEANUP"
+        ), patch.object(
+            self.storage, "save_upload", new=AsyncMock(return_value=encrypted)
+        ), patch.object(service, "_preflight_uploaded_video", side_effect=DetectionError("video_incompatible")), patch.object(
+            self.storage, "delete_job", side_effect=OSError("cleanup unavailable")
+        ):
+            with Session(self.engine) as db:
+                with self.assertRaises(DetectionError):
+                    asyncio.run(service.create_job(db, self.storage, video, owner))
+        with Session(self.engine) as db:
+            saved = db.exec(
+                select(VideoDetectionJob).where(VideoDetectionJob.job_id == "VID-CLEANUP")
+            ).one()
+            self.assertEqual(saved.status, "failed")
+            self.assertEqual(saved.current_stage, "cleanup")
+            self.assertEqual(saved.error_code, "processing_failed")
+            self.assertEqual(saved.original_path, str(encrypted))
+
     def test_processing_cancellation_marks_job_interrupted_and_cleans_storage(self):
         with patch.object(service, "load_contract", return_value=(Path(self.temp.name), {})), patch.object(
             service.VideoPrivacyProcessor, "preflight", return_value={"fps": 30, "frame_count": 300},
@@ -207,7 +255,11 @@ class VideoDetectionTests(unittest.TestCase):
                 video = UploadFile(filename="patient.mp4", file=io.BytesIO(b"private-source"), headers=Headers({"content-type": "video/mp4"}))
                 job = asyncio.run(service.create_job(db, self.storage, video, self.owner))
 
-        with patch.object(service.VideoPrivacyProcessor, "process", side_effect=asyncio.CancelledError):
+        with patch.object(
+            service.VideoPrivacyProcessor,
+            "normalize_for_vsvig",
+            return_value={"adaptation": "letterbox", "source_width": 640, "source_height": 480, "width": 1920, "height": 1080, "source_timestamp_offset_seconds": 0.118},
+        ), patch.object(service.VideoPrivacyProcessor, "process", side_effect=asyncio.CancelledError):
             with self.assertRaises(asyncio.CancelledError):
                 service.process_job(job.job_id)
         with Session(self.engine) as db:
@@ -281,6 +333,10 @@ class VideoDetectionTests(unittest.TestCase):
             detected_frames=270, quality_flags=["intermittent_detection"], usable=True, needs_review=True,
         )
         with patch.object(service, "execute", side_effect=fake_execute), patch.object(
+            service.VideoPrivacyProcessor,
+            "normalize_for_vsvig",
+            return_value={"adaptation": "letterbox", "source_width": 640, "source_height": 480, "width": 1920, "height": 1080, "source_timestamp_offset_seconds": 0.118},
+        ), patch.object(
             service.VideoPrivacyProcessor, "process", return_value=protected,
         ), patch.object(service, "validate_visualization_artifact"):
             service.process_job(job.job_id)
@@ -300,9 +356,16 @@ class VideoDetectionTests(unittest.TestCase):
             self.assertTrue(visualization_path.endswith(".enc"))
         runtime = next(command for command in commands if "backend.app.video_detection.runtime" in command)
         self.assertTrue(runtime[3].endswith("model-input.mp4"))
+        self.assertEqual(len(runtime), 6)
+        self.assertNotIn("pose-input.mp4", " ".join(runtime))
         result = self.alice.get(f"/api/video-detection/jobs/{job.job_id}/predictions").json()
         self.assertEqual(result["privacy"]["method"], "face-detection-and-full-frame-blur")
+        self.assertEqual(
+            result["privacy"]["pose_model_input"],
+            "same full-frame-blurred model-input video",
+        )
         self.assertTrue(result["privacy"]["review_required"])
+        self.assertEqual(result["privacy"]["quality_flags"], ["intermittent_detection"])
         self.assertEqual(result["timeline"][0]["score"], 0.8)
         self.assertEqual(result["events"][0]["peak_score"], 0.8)
         self.assertTrue(self.alice.get(f"/api/video-detection/jobs/{job.job_id}/visualization").content == b"review-video")
@@ -355,6 +418,10 @@ class VideoDetectionTests(unittest.TestCase):
             detected_frames=300, quality_flags=[], usable=True, needs_review=False,
         )
         with patch.object(service, "execute", side_effect=fake_execute), patch.object(
+            service.VideoPrivacyProcessor,
+            "normalize_for_vsvig",
+            return_value={"adaptation": "letterbox", "source_width": 640, "source_height": 480, "width": 1920, "height": 1080, "source_timestamp_offset_seconds": 0.118},
+        ), patch.object(
             service.VideoPrivacyProcessor, "process", return_value=protected,
         ), patch.object(service, "validate_visualization_artifact"):
             service.process_job(job.job_id)

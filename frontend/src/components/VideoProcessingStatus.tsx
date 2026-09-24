@@ -283,6 +283,8 @@ export function VideoProcessingStatus({ job }: { job: DetectionJob }) {
             <motion.div
               key={`${job.status}-${activeStage.id}`}
               className="mt-5 flex items-start gap-3 rounded-xl border border-teal/20 bg-teal-soft/45 px-4 py-3"
+              role="status"
+              aria-live="polite"
               initial={{ opacity: 0, x: 8 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -8 }}

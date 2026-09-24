@@ -62,7 +62,10 @@ async def upload_session(
     """
 
     if not archive.filename or not archive.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Upload one ZIP archive containing EDF files.")
+        raise HTTPException(
+            status_code=400,
+            detail="Upload one ZIP archive containing EDF/EDF+ files or Nicolet .data files with matching .head sidecars.",
+        )
     case_id = case_id if isinstance(case_id, str) and case_id else None
     try:
         selected_methods = normalize_privacy_methods(

@@ -885,6 +885,49 @@ Seizure End Time: 3036 seconds
         self.assertNotIn("reference_annotation", payload)
         self.assertNotIn("Jane", str(payload))
 
+    def test_annotation_endpoint_returns_timing_without_raw_annotation_text(self) -> None:
+        from backend.app.api.recordings import get_annotations
+
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as db:
+            session = EEGSession(session_id="SES-ANNOTATIONS", status=AnalysisStatus.COMPLETED)
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+            record = EEGRecording(
+                record_id="REC-ANNOTATIONS",
+                original_filename="private.e",
+                sequence_index=1,
+                session_db_id=session.id or 0,
+                reference_annotation_source="nicolet-embedded-events",
+                annotation_events_json=json.dumps(
+                    [
+                        {
+                            "onset_seconds": 12.5,
+                            "duration_seconds": 3.0,
+                            "kind": "manual_annotation",
+                            "text_present": True,
+                            "raw_text": "medication-secret",
+                        }
+                    ]
+                ),
+            )
+            db.add(record)
+            db.commit()
+
+            payload = get_annotations(record.record_id, db)
+
+        self.assertEqual(payload["events"], [{
+            "onset_seconds": 12.5,
+            "duration_seconds": 3.0,
+            "kind": "manual_annotation",
+            "text_present": True,
+        }])
+        self.assertTrue(payload["human_review_required"])
+        self.assertNotIn("medication-secret", str(payload))
+
     def test_direct_recording_response_includes_safe_session_context(self) -> None:
         from backend.app.api.recordings import get_recording
 

@@ -28,6 +28,26 @@ class VideoProcessorError(RuntimeError):
     """Raised when a video cannot be transformed safely."""
 
 
+VSVIG_INPUT_WIDTH = 1920
+VSVIG_INPUT_HEIGHT = 1080
+
+
+def model_frame_layout(width: int, height: int) -> tuple[int, int, int, int]:
+    """Return aspect-preserving dimensions and left/top letterbox padding."""
+
+    if width <= 0 or height <= 0:
+        raise VideoProcessorError("Video dimensions are invalid.")
+    scale = min(VSVIG_INPUT_WIDTH / width, VSVIG_INPUT_HEIGHT / height)
+    resized_width = max(1, min(VSVIG_INPUT_WIDTH, round(width * scale)))
+    resized_height = max(1, min(VSVIG_INPUT_HEIGHT, round(height * scale)))
+    return (
+        resized_width,
+        resized_height,
+        (VSVIG_INPUT_WIDTH - resized_width) // 2,
+        (VSVIG_INPUT_HEIGHT - resized_height) // 2,
+    )
+
+
 @dataclass(frozen=True)
 class VideoProcessingResult:
     """Private processing measurements used to build a safe job response."""
@@ -44,7 +64,7 @@ class VideoProcessingResult:
 
 
 class VideoPrivacyProcessor:
-    """Transform video by redacting faces and blurring detector misses."""
+    """Blur every frame in full and track face-detection coverage for review."""
 
     @staticmethod
     def _stream_metadata(capture) -> dict[str, float | int]:
@@ -106,6 +126,134 @@ class VideoPrivacyProcessor:
             raise VideoProcessorError("Video contains no readable frames.")
         return metadata
 
+    @staticmethod
+    def normalize_for_vsvig(
+        source_path: Path,
+        output_path: Path,
+        *,
+        deadline: float | None = None,
+        allow_letterbox_adaptation: bool = False,
+    ) -> dict[str, float | int | str]:
+        """Create a bounded, audio-free model source under explicit adaptation policy."""
+
+        try:
+            cv2: Any = import_module("cv2")
+        except ImportError as exc:
+            raise VideoProcessorError("Video privacy runtime is unavailable.") from exc
+        if source_path.absolute() == output_path.absolute() or output_path.is_symlink():
+            raise VideoProcessorError("Video normalization output path is invalid.")
+        VideoPrivacyProcessor._check_deadline(deadline)
+        capture = cv2.VideoCapture(str(source_path))
+        if not capture.isOpened():
+            capture.release()
+            raise VideoProcessorError("Video stream could not be opened.")
+        writer = None
+        try:
+            metadata = VideoPrivacyProcessor._stream_metadata(capture)
+        except VideoProcessorError:
+            capture.release()
+            raise
+        source_width = int(metadata["width"])
+        source_height = int(metadata["height"])
+        fps = float(metadata["fps"])
+        expected_frames = int(metadata["frame_count"])
+        if expected_frames <= 0:
+            capture.release()
+            raise VideoProcessorError("Video contains no bounded frame count.")
+        resized_width, resized_height, pad_x, pad_y = model_frame_layout(source_width, source_height)
+        if (
+            (source_width, source_height) != (VSVIG_INPUT_WIDTH, VSVIG_INPUT_HEIGHT)
+            and not allow_letterbox_adaptation
+        ):
+            capture.release()
+            raise VideoProcessorError("Video resolution adaptation is not approved for this VSViG contract.")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        failed = False
+        try:
+            writer = cv2.VideoWriter(
+                str(output_path),
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                fps,
+                (VSVIG_INPUT_WIDTH, VSVIG_INPUT_HEIGHT),
+            )
+            if not writer.isOpened():
+                raise VideoProcessorError("Normalized video could not be encoded.")
+            frame_count = 0
+            started_at = time.monotonic()
+            timestamp_origin: float | None = None
+            while True:
+                VideoPrivacyProcessor._check_deadline(deadline)
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                if (
+                    time.monotonic() - started_at > VIDEO_PRIVACY_TIMEOUT_SECONDS
+                    or frame_count >= VIDEO_MAX_FRAMES
+                ):
+                    raise VideoProcessorError("Video normalization exceeded its limit.")
+                timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                if not math.isfinite(timestamp):
+                    raise VideoProcessorError("Video timing is not constant.")
+                if timestamp_origin is None:
+                    if abs(timestamp) > VIDEO_MAX_DURATION_SECONDS:
+                        raise VideoProcessorError("Video timestamp origin is outside the safe range.")
+                    timestamp_origin = timestamp
+                origin = timestamp_origin
+                if origin is None:
+                    raise VideoProcessorError("Video timestamp origin is unavailable.")
+                expected_timestamp = origin + frame_count / fps
+                if abs(timestamp - expected_timestamp) > max(0.05, 1 / fps):
+                    raise VideoProcessorError("Video timing is not constant.")
+                resized = cv2.resize(
+                    frame,
+                    (resized_width, resized_height),
+                    interpolation=cv2.INTER_LINEAR if resized_width >= source_width else cv2.INTER_AREA,
+                )
+                canvas = np.zeros((VSVIG_INPUT_HEIGHT, VSVIG_INPUT_WIDTH, 3), dtype=np.uint8)
+                canvas[pad_y : pad_y + resized_height, pad_x : pad_x + resized_width] = resized
+                writer.write(canvas)
+                frame_count += 1
+                if output_path.stat().st_size > VIDEO_MAX_OUTPUT_BYTES:
+                    raise VideoProcessorError("Normalized video exceeds the output limit.")
+            if frame_count != expected_frames:
+                raise VideoProcessorError("Video could not be decoded completely.")
+        except VideoProcessorError:
+            failed = True
+            raise
+        except Exception as exc:
+            failed = True
+            raise VideoProcessorError("Video normalization failed safely.") from exc
+        finally:
+            capture.release()
+            if writer is not None:
+                writer.release()
+            if failed:
+                output_path.unlink(missing_ok=True)
+        try:
+            output_metadata = VideoPrivacyProcessor.preflight(output_path, deadline=deadline)
+            if (
+                int(output_metadata["width"]) != VSVIG_INPUT_WIDTH
+                or int(output_metadata["height"]) != VSVIG_INPUT_HEIGHT
+                or int(output_metadata["frame_count"]) != expected_frames
+                or not math.isclose(float(output_metadata["fps"]), fps, rel_tol=0.01, abs_tol=0.01)
+            ):
+                raise VideoProcessorError("Normalized video failed output validation.")
+        except Exception:
+            output_path.unlink(missing_ok=True)
+            raise
+        return {
+            "fps": fps,
+            "width": VSVIG_INPUT_WIDTH,
+            "height": VSVIG_INPUT_HEIGHT,
+            "frame_count": expected_frames,
+            "source_width": source_width,
+            "source_height": source_height,
+            "adaptation": "letterbox" if (source_width, source_height) != (VSVIG_INPUT_WIDTH, VSVIG_INPUT_HEIGHT) else "none",
+            "source_timestamp_offset_seconds": float(timestamp_origin or 0.0),
+            "pad_x": pad_x,
+            "pad_y": pad_y,
+        }
+
     def process(
         self,
         source_path: Path,
@@ -161,6 +309,7 @@ class VideoPrivacyProcessor:
         detected_frames = 0
         preview_frame: np.ndarray | None = None
         started_at = time.monotonic()
+        timestamp_origin: float | None = None
         try:
             while True:
                 ok, frame = capture.read()
@@ -172,8 +321,17 @@ class VideoPrivacyProcessor:
                 ):
                     raise VideoProcessorError("Video privacy processing exceeded its limit.")
                 timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-                expected_timestamp = frame_count / fps
-                if not math.isfinite(timestamp) or abs(timestamp - expected_timestamp) > max(0.05, 1 / fps):
+                if not math.isfinite(timestamp):
+                    raise VideoProcessorError("Video timing is not constant.")
+                if timestamp_origin is None:
+                    if abs(timestamp) > VIDEO_MAX_DURATION_SECONDS:
+                        raise VideoProcessorError("Video timestamp origin is outside the safe range.")
+                    timestamp_origin = timestamp
+                origin = timestamp_origin
+                if origin is None:
+                    raise VideoProcessorError("Video timestamp origin is unavailable.")
+                expected_timestamp = origin + frame_count / fps
+                if abs(timestamp - expected_timestamp) > max(0.05, 1 / fps):
                     raise VideoProcessorError("Video timing is not constant.")
                 frame_count += 1
                 transformed, detected = self._transform_frame(
@@ -253,8 +411,8 @@ class VideoPrivacyProcessor:
             raise VideoProcessorError("Face redaction is the only available privacy transform.")
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(24, 24))
-        # A missing or ambiguous face detection is not safe to pass through as
-        # a partially redacted frame.
+        # Detection changes the coverage signal, not the blur extent: every
+        # frame receives full-frame Gaussian blur.
         if len(faces) != 1:
             return cv2.GaussianBlur(frame, (0, 0), sigmaX=19, sigmaY=19), False
         transformed = cv2.GaussianBlur(frame, (0, 0), sigmaX=19, sigmaY=19)

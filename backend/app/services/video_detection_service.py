@@ -21,6 +21,7 @@ from backend.app.core.config import (
     VIDEO_MAX_DURATION_SECONDS,
     VIDEO_PREFLIGHT_TIMEOUT_SECONDS,
     VIDEO_RETENTION_SECONDS,
+    VSVIG_ALLOW_LETTERBOX_ADAPTATION,
 )
 from backend.app.database.db import engine
 from backend.app.database.models.video import VideoPrivacyProfile, utc_now
@@ -38,9 +39,9 @@ ERRORS = {
     "contract_invalid": "The VSViG model contract is incomplete or incompatible.",
     "asset_mismatch": "A pinned VSViG, pose, source, or partition asset failed its integrity check.",
     "runtime_incompatible": "The VSViG runtime could not load both published checkpoints. Run the documented runtime verification command.",
-    "video_incompatible": "Use a readable constant-frame-rate video at 1920x1080 with at least 5 seconds of visual content.",
+    "video_incompatible": "Use a readable AVI, MP4, MOV, or WebM clip of at least 5 seconds with stable frame timing. The pinned VSViG path requires 1920x1080 input unless an operator-approved letterbox adaptation is enabled.",
     "ambiguous_or_missing_pose": "A single patient could not be identified throughout this clip. Review the framing and try a shorter clip.",
-    "incomplete_pose": "Too many patient landmarks were missing or obscured for this model.",
+    "incomplete_pose": "Too many patient landmarks were missing or obscured for this model. Try a shorter clip with one fully visible patient, steady framing, and clearer lighting. No detection result was published.",
     "invalid_patch": "The clip could not produce valid model input patches.",
     "invalid_model_output": "The model returned invalid scores. No detection result was published.",
     "visualization_failed": "The privacy-safe review video could not be generated. No detection result was published.",
@@ -76,6 +77,28 @@ def _preflight_uploaded_video(storage: VideoStorage, job_id: str, encrypted: Pat
         return VideoPrivacyProcessor.preflight(source, deadline=deadline)
     finally:
         storage.delete_work_file(source)
+
+
+def _rollback_admission_job(db: Session, job: VideoDetectionJob, storage: VideoStorage) -> bool:
+    """Remove an admission job, or persist a terminal retryable failure."""
+
+    job_id = job.job_id
+    original_path = job.original_path
+    try:
+        storage.delete_job(job_id)
+    except Exception:
+        LOGGER.warning("Video admission cleanup failed; retaining a terminal retry record.")
+        db.rollback()
+        job.status = "failed"
+        job.current_stage = "cleanup"
+        job.error_code = "processing_failed"
+        job.original_path = original_path
+        db.add(job)
+        db.commit()
+        return False
+    db.delete(job)
+    db.commit()
+    return True
 
 
 def expire_job(db, job, storage, *, force: bool = False):
@@ -118,9 +141,15 @@ async def create_job(
     owner: int,
     case_id: str | None = None,
 ):
-    if Path(upload.filename or "").suffix.lower() not in {".mp4", ".mov", ".webm"}:
+    if Path(upload.filename or "").suffix.lower() not in {".avi", ".mp4", ".mov", ".webm"}:
         raise DetectionError("video_incompatible")
-    if upload.content_type not in {"video/mp4", "video/quicktime", "video/webm", "application/octet-stream"}:
+    if upload.content_type not in {
+        "video/mp4",
+        "video/quicktime",
+        "video/webm",
+        "video/x-msvideo",
+        "application/octet-stream",
+    }:
         raise DetectionError("video_incompatible")
     ensure_case_reference(db, case_id, owner)
     # Verify the expensive assets off the event loop, before accepting patient bytes.
@@ -143,14 +172,10 @@ async def create_job(
         db.refresh(job)
         return job
     except asyncio.CancelledError:
-        storage.delete_job(job.job_id)
-        db.delete(job)
-        db.commit()
+        _rollback_admission_job(db, job, storage)
         raise
     except Exception:
-        storage.delete_job(job.job_id)
-        db.delete(job)
-        db.commit()
+        _rollback_admission_job(db, job, storage)
         raise
     finally:
         await upload.close()
@@ -175,11 +200,17 @@ def process_job(job_id: str):
             db.add(job)
             db.commit()
             source = storage.materialize_original(job_id, Path(job.original_path))
+            normalized_input = storage.work_path(job_id, "normalized-input.mp4")
             protected_input = storage.work_path(job_id, "model-input.mp4")
             preview = storage.work_path(job_id, "model-input-preview.jpg")
             try:
+                normalization = VideoPrivacyProcessor.normalize_for_vsvig(
+                    source,
+                    normalized_input,
+                    allow_letterbox_adaptation=VSVIG_ALLOW_LETTERBOX_ADAPTATION,
+                )
                 privacy = VideoPrivacyProcessor().process(
-                    source, protected_input, preview, VideoPrivacyProfile.FACE_REDACTED
+                    normalized_input, protected_input, preview, VideoPrivacyProfile.FACE_REDACTED
                 )
             except VideoProcessorError as exc:
                 raise DetectionError("privacy_transform_failed") from exc
@@ -273,6 +304,11 @@ def process_job(job_id: str):
             result["privacy"] = {
                 "method": "face-detection-and-full-frame-blur",
                 "model_input": "full-frame-blurred video",
+                "pose_model_input": "same full-frame-blurred model-input video",
+                "model_input_adaptation": normalization["adaptation"],
+                "source_resolution": [normalization["source_width"], normalization["source_height"]],
+                "model_resolution": [normalization["width"], normalization["height"]],
+                "source_timestamp_offset_seconds": normalization["source_timestamp_offset_seconds"],
                 "face_detection_coverage": privacy.detected_frames / max(privacy.frame_count, 1),
                 "quality_flags": privacy.quality_flags,
                 "review_required": privacy.needs_review,

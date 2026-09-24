@@ -51,6 +51,8 @@ async def auth_session_retention_loop() -> None:
 async def lifespan(_: FastAPI):
     """Validate authentication and the selected model runtime before serving."""
 
+    if MODEL_RUNTIME not in {"stub", "h5"}:
+        raise RuntimeError("MODEL_RUNTIME must be either 'stub' or 'h5'.")
     mode, _domain, _audience = auth_configuration()
     if mode == "local-accounts":
         with Session(engine) as db:

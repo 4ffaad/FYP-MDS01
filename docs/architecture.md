@@ -15,10 +15,11 @@ flowchart LR
 
 Native mode is the smallest useful architecture for one laptop: two local
 processes, SQLite, encrypted files, and FastAPI BackgroundTasks. Docker is a
-packaging choice, not a domain boundary; it exists to make scientific/media
-dependencies and the VSViG runtime reproducible. Do not split this prototype
-into microservices or add Redis/a durable queue until processing volume or
-multi-host deployment requires it.
+packaging choice, not a domain boundary; it supplies the supported scientific/
+media runtime and platform-specific wheels. Python and OS dependencies are not
+yet fully locked, so container builds are not guaranteed to be bit-for-bit
+reproducible. Do not split this prototype into microservices or add Redis/a
+durable queue until processing volume or multi-host deployment requires it.
 
 ## Authentication boundary
 
@@ -49,9 +50,9 @@ subject is mapped to the same ownership table.
 flowchart TB
     UploadEntry[Unified upload entry] --> Choose{EEG, video, or both}
     subgraph EEG[EEG analysis]
-        ZIP[EDF ZIP] --> Draft[Encrypted upload draft]
+        ZIP[EDF / Nicolet ZIP] --> Draft[Encrypted upload draft]
         Draft --> Session[Finalize privacy selection and create session]
-        Session --> Validate[Validate archive and each EDF]
+        Session --> Validate[Validate archive and each recording]
         Validate --> Scrub[Scrub identifying metadata]
         Scrub --> Preprocess[Filter and normalize into model windows]
         Preprocess --> Privacy[Optional signal obfuscation]
@@ -61,9 +62,10 @@ flowchart TB
     end
     Choose --> ZIP
     subgraph Detection[Video seizure review]
-        DetectionUpload[Video upload] --> DetectionPrivacy[Face redaction]
-        DetectionPrivacy --> DetectionPose[One shared Lightweight OpenPose pass]
+        DetectionUpload[Video upload] --> DetectionPrivacy[Normalize, then full-frame blur model input]
+        DetectionPrivacy --> DetectionPose[Lightweight OpenPose on protected input]
         DetectionPose --> DetectionPatches[15-keypoint Gaussian patches]
+        DetectionPrivacy --> DetectionPatches
         DetectionPatches --> DetectionModel[VSViG scoring]
         DetectionModel --> DetectionReview[Scores and evidence timeline]
         DetectionPose --> DetectionMask[Full-frame privacy blur]
@@ -72,9 +74,9 @@ flowchart TB
     end
     Choose --> DetectionUpload
     subgraph Video[Standalone video privacy]
-        Upload[MP4, MOV or WebM] --> Job[Encrypted upload and video job]
-        Job --> Transform[Face redaction with full-frame fallback]
-        Transform --> Audio[Keep first audio stream; remove metadata]
+        Upload[AVI, MP4, MOV or WebM] --> Job[Encrypted upload and video job]
+        Job --> Transform[Full-frame blur on every frame; face coverage for quality review]
+        Transform --> Audio[Remove audio and metadata]
         Audio --> Check[Validate transformed output]
         Check --> Output[Encrypted video and preview frame]
         Output --> Download[Review caveats and download]
@@ -85,35 +87,37 @@ flowchart TB
     Check --> VideoPrivacyCleanup[Delete standalone privacy work files]
 ```
 
-One EEG ZIP creates one session containing multiple recordings. A malformed recording can fail while its siblings complete. New video privacy jobs use face redaction only; original audio is retained in the encrypted, owner-only output and is not de-identified. Video privacy does not run H5, seizure detection or action classification.
+One EEG ZIP creates one session containing multiple recordings. A malformed recording can fail while its siblings complete. New video privacy jobs blur every frame in full; face-detection coverage adds quality flags and a minimum-coverage gate but does not control the blur extent. The encrypted transient original may contain source audio while queued or processing; retained outputs are audio-free. Video privacy does not run H5, seizure detection or action classification.
 The unified `/upload` screen selects the existing EEG and video-detection paths.
 A paired upload does not create a combined backend entity: `/analysis` polls the
 owner-scoped jobs and links to their full reviews. Video detection is visual-only
-and does not use the retained-audio video-privacy output. It extracts 18 pose
-keypoints once, fans them out to the 15 VSViG patches and a full-frame-blurred,
-skeleton-overlaid, audio-free review visualization, and publishes only encrypted
-owner-scoped results and that approved visualization; it never publishes source
-or model-input playback.
+and does not use the standalone video-privacy output. It first creates a
+private, timestamp-normalized, aspect-preserving model geometry for explicitly
+approved smaller sources, applies full-frame blur to every frame, extracts 18
+pose keypoints once from the protected model-input video, and fans them out to the 15 VSViG
+patches and a full-frame-blurred, skeleton-overlaid, audio-free review visualization,
+and publishes only encrypted owner-scoped results and that approved
+visualization; it never publishes source or model-input playback.
 
 ## Where to change code
 
-| Change | Start here |
-| --- | --- |
-| Navigation and layout | `frontend/src/components/AppShell.tsx` |
-| Session list / processing status | `DashboardScreen.tsx`, `SessionDetailScreen.tsx` |
-| EEG result explanation | `ResultScreen.tsx`, `PredictionTimeline.tsx`, `SignalViewer.tsx` |
-| Video upload / output review | `VideoPrivacyScreen.tsx` |
-| Video detection review | `VideoDetectionScreen.tsx`, `backend/app/video_detection/` |
-| Browser/backend mapping | `frontend/src/lib/api.ts`, `types.ts` |
-| HTTP endpoints | `backend/app/api/` |
-| EEG processing sequence | `backend/app/services/processing_service.py` |
-| Video detection job sequence | `backend/app/services/video_detection_service.py` |
-| Video privacy job sequence | `backend/app/services/video_privacy_service.py` |
-| Video transformation | `backend/app/video_privacy/processor.py` |
-| Input shape and preprocessing | `backend/app/eeg/model_input.py`, `preprocessing.py` |
-| Runtime selection | `backend/app/ml/model_loader.py` |
-| H5 artifact and score semantics | operator-mounted `/opt/eeg-model/model-contract.json`, `backend/app/ml/h5_inference.py` |
-| Database operations / schema changes | `backend/app/database/`, a new Alembic migration |
+| Change                               | Start here                                                                              |
+| ------------------------------------ | --------------------------------------------------------------------------------------- |
+| Navigation and layout                | `frontend/src/components/AppShell.tsx`                                                  |
+| Session list / processing status     | `DashboardScreen.tsx`, `SessionDetailScreen.tsx`                                        |
+| EEG result explanation               | `ResultScreen.tsx`, `PredictionTimeline.tsx`, `SignalViewer.tsx`                        |
+| Video upload / output review         | `VideoPrivacyScreen.tsx`                                                                |
+| Video detection review               | `VideoDetectionScreen.tsx`, `backend/app/video_detection/`                              |
+| Browser/backend mapping              | `frontend/src/lib/api.ts`, `types.ts`                                                   |
+| HTTP endpoints                       | `backend/app/api/`                                                                      |
+| EEG processing sequence              | `backend/app/services/processing_service.py`                                            |
+| Video detection job sequence         | `backend/app/services/video_detection_service.py`                                       |
+| Video privacy job sequence           | `backend/app/services/video_privacy_service.py`                                         |
+| Video transformation                 | `backend/app/video_privacy/processor.py`                                                |
+| Input shape and preprocessing        | `backend/app/eeg/model_input.py`, `preprocessing.py`                                    |
+| Runtime selection                    | `backend/app/ml/model_loader.py`                                                        |
+| H5 artifact and score semantics      | operator-mounted `/opt/eeg-model/model-contract.json`, `backend/app/ml/h5_inference.py` |
+| Database operations / schema changes | `backend/app/database/`, a new Alembic migration                                        |
 
 Keep route handlers small. Extend the service that already owns a workflow before adding another coordinator. Keep API calls in the existing browser adapter and use existing shadcn primitives and Hugeicons.
 
@@ -163,7 +167,7 @@ returned to a signed-in user.
 Video jobs are independent rows; media artifacts live in the filesystem. PostgreSQL stores status, safe result metadata and private internal artifact references. File bytes stay in private storage.
 
 - EEG originals and intermediate files are deleted after processing. Default retention keeps encrypted transformed model-positive clips with configured context. Full transformed preview is an explicit local-only exception.
-- Video detection retains only encrypted prediction results until expiry. Source and protected model-input video are deleted after success, failure, expiry, and startup recovery; no detection-video download is published.
+- Video detection retains encrypted predictions and the approved privacy-safe visualization until expiry. Source and protected model-input video are deleted after success, failure, expiry, and startup recovery; no source-video download is published.
 - The separate video-privacy workflow keeps an encrypted transformed output and preview until expiry. Intermittent redaction requires acknowledgement before download; no usable transform means no output.
 - Public responses never return original files, client filenames, patient references, private paths or original metadata.
 - Privacy keys are installation-specific. Changing or losing a key can make retained artifacts unreadable. Setup never overwrites existing keys.

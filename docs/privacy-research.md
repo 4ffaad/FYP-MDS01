@@ -6,13 +6,13 @@ provide a clinical diagnosis.
 
 ## What each protection does
 
-| Layer | What it protects | What it does not promise |
-| --- | --- | --- |
-| AES-256-GCM storage encryption | Files at rest and tamper detection while the backend owns them | It does not remove biometric information from decrypted EEG. |
-| Metadata scrub | EDF patient, operator, equipment, date, and free-text metadata | It preserves waveform values, so EEG-derived identity risk remains. |
-| Signal obfuscation | A keyed, lossy, shape-preserving representation used by both detector and privacy evaluation | It is experimental risk reduction, not formal anonymity or differential privacy. |
-| Minimization | Deletes the original archive, full temporary files, and non-flagged recording artifacts | It does not make the retained positive context risk-free. |
-| Research reference labels | Optional CHB-MIT sidecars and summary intervals stored for offline evaluation | They remain internal and never decide the dashboard model alert. |
+| Layer                          | What it protects                                                                             | What it does not promise                                                         |
+| ------------------------------ | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| AES-256-GCM storage encryption | Files at rest and tamper detection while the backend owns them                               | It does not remove biometric information from decrypted EEG.                     |
+| Metadata scrub                 | EDF patient, operator, equipment, date, and free-text metadata                               | It preserves waveform values, so EEG-derived identity risk remains.              |
+| Signal obfuscation             | A keyed, lossy, shape-preserving representation used by both detector and privacy evaluation | It is experimental risk reduction, not formal anonymity or differential privacy. |
+| Minimization                   | Deletes the original archive, full temporary files, and non-flagged recording artifacts      | It does not make the retained positive context risk-free.                        |
+| Research reference labels      | Optional CHB-MIT sidecars and summary intervals stored for offline evaluation                | They remain internal and never decide the dashboard model alert.                 |
 
 The public EEG API exposes generated IDs, safe technical metadata, predictions,
 score timelines, and non-clinical explanation JSON. It never exposes reference
@@ -40,14 +40,25 @@ window score, flagged-window count, threshold, and score timeline.
 ## Visual detection privacy boundary
 
 The visual detector is a separate video workflow, not a second EEG input. Its
-source enters through multipart parsing and is then written to owner-scoped
-encrypted private storage before background processing. Face redaction runs
-before one shared pose/keypoint pass, and that pass fans out to the VSViG
-representation and a privacy-safe visualization. The visualization masks the
-pose region, draws the same keypoints, contains no audio, and is retained only
-as an encrypted owner-scoped artifact until job expiry. The visual model
-receives the face-redacted frames and pose-derived patches; it does not consume
-the blurred visualization. Audio is excluded from model input.
+source is written to owner-scoped encrypted storage before background processing.
+Every frame receives full-frame blur regardless of face detection; detector
+coverage supplies quality flags and the minimum-coverage gate, not a selective
+blur mask. OpenPose extracts one shared pose/keypoint representation from those
+protected frames for VSViG and the privacy-safe visualization. The visualization
+is full-frame blurred, overlays the keypoints, contains no audio, and is retained
+only as an encrypted owner-scoped artifact until job expiry. The visual model
+receives the same full-frame-blurred frames and pose-derived patches; it does not
+consume the visualization. Audio is excluded from model input.
+
+The encrypted source may remain in private storage while the job is queued or
+processing. Successful completion removes the source and transient plaintext
+work files before publishing the terminal result. Failed/interrupted jobs run
+cleanup; if deletion fails, an internal retry record remains until a later
+cleanup sweep succeeds. Normal retention is modality-specific: video detection
+keeps encrypted predictions/provenance and the approved privacy-safe
+visualization until expiry, while the separate video-privacy utility keeps its
+encrypted audio-free transformed output and preview until expiry. Neither
+workflow intentionally retains the original video until expiry.
 
 The keypoint model is Lightweight OpenPose with the `pose.pth` checkpoint
 published alongside VSViG. VSViG then consumes fifteen Gaussian `32×32` patches
@@ -55,11 +66,11 @@ over thirty sampled frames. Patch-occlusion evidence reports input-region
 sensitivity only. It does not identify a seizure cause, establish anatomy as a
 mechanism, or prove that redaction preserved clinical performance.
 
-Face redaction is a privacy transform, not formal anonymity. Haar detector
-misses trigger full-frame blur and coverage flags; low coverage fails the
-detection job. Privacy effectiveness still requires representative face-box
-review, false-negative analysis and a patient-disjoint raw-versus-redacted
-evaluation.
+Full-frame blur is a privacy transform, not formal anonymity. Haar detection
+can miss faces; low coverage fails the detection job and intermittent coverage
+is flagged for review, but blur still covers the entire frame. Privacy
+effectiveness still requires representative face-box review, false-negative
+analysis and a patient-disjoint raw-versus-redacted evaluation.
 
 ## Real-model evaluation gate
 

@@ -26,6 +26,25 @@ function formatTime(seconds: number) {
   return `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(1).padStart(4, "0")}`;
 }
 
+function formatPrivacyQualityFlag(flag: string) {
+  return flag === "intermittent_detection"
+    ? "Face detection was intermittent across the clip."
+    : flag === "no_detection"
+      ? "No usable face detection was recorded for part of the clip."
+      : flag.replaceAll("_", " ");
+}
+
+function formatTimestampOffset(seconds: number) {
+  return `${seconds >= 0 ? "+" : ""}${seconds.toFixed(3)} s`;
+}
+
+function formatRetentionExpiry(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
 export function VideoDetectionUploadScreen() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
@@ -95,18 +114,21 @@ export function VideoDetectionUploadScreen() {
               id="video-help"
               className="mt-2 text-sm leading-6 text-ink-muted"
             >
-              MP4, MOV or WebM. Use a constant-frame-rate 1920×1080 clip showing
-              one patient for at least five seconds. Face redaction runs before
-              Lightweight OpenPose keypoint extraction and VSViG scoring. Audio
-              is excluded from the visual model input. Your account owns this
-              upload.
+              AVI, MP4, MOV or WebM showing one patient. The pinned contract
+              requires 1920×1080 input by default; smaller clips such as 640×480
+              are letterboxed only when the operator has explicitly approved
+              adaptation. Use a readable constant-frame-rate clip of at least
+              five seconds where possible; low-quality or incomplete pose can
+              still fail closed. Lightweight OpenPose and VSViG use the same
+              full-frame-blurred protected model-input frames. Audio is excluded
+              from the visual model input. Your account owns this upload.
             </p>
             <input
               id="detection-video"
               aria-describedby="video-help"
               className="mt-4 block w-full text-sm file:mr-4 file:rounded-md file:border file:border-rule file:bg-surface-soft file:px-4 file:py-2"
               type="file"
-              accept=".mp4,.mov,.webm"
+              accept=".avi,.mp4,.mov,.webm"
               disabled={busy}
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
             />
@@ -114,16 +136,21 @@ export function VideoDetectionUploadScreen() {
 
           <p className="text-sm leading-6 text-ink-muted">
             The API stores the multipart upload in encrypted private storage
-            before background processing begins. One shared pose pass feeds the
-            VSViG model and the privacy-safe visualization; audio is excluded
-            from both visual outputs. The original and temporary model-input
-            files are deleted after processing; only the encrypted protected
-            review artifact is retained for the job’s retention period.
+            before background processing begins. A queued source may still
+            contain audio temporarily; it is excluded from the visual model and
+            retained outputs, then deleted during cleanup. One shared pose pass
+            feeds the VSViG model and the privacy-safe visualization. The
+            original and temporary model-input files are deleted after
+            processing; only the encrypted protected review artifact is retained
+            until the job’s displayed expiry.
           </p>
           {error && (
-            <p role="alert" className="text-sm text-red">
+            <div
+              role="alert"
+              className="rounded-md border border-red/30 bg-red-soft px-4 py-3 text-sm text-red"
+            >
               {error}
-            </p>
+            </div>
           )}
           {busy && <VideoUploadStatus progress={progress} />}
 
@@ -183,6 +210,7 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
   const [visualizationAttempt, setVisualizationAttempt] = useState(0);
   const [visualizationAttemptForJobId, setVisualizationAttemptForJobId] =
     useState<number | null>(null);
+  const [resultRetryKey, setResultRetryKey] = useState(0);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -195,13 +223,13 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
         if (abort.signal.aborted) return;
 
         setJob(nextJob);
-        retryAttempt = 0;
         if (nextJob.status === "ready") {
           try {
             const nextResult = await getDetectionResults(jobId, abort.signal);
             if (abort.signal.aborted) return;
             setResult(nextResult);
             setError(null);
+            retryAttempt = 0;
           } catch (resultError) {
             if (abort.signal.aborted) return;
             setError(
@@ -209,11 +237,14 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
                 ? resultError.message
                 : "The job result could not be loaded.",
             );
-            retryAttempt += 1;
-            timer = setTimeout(poll, pollRetryDelay(retryAttempt, 1_500));
+            if (shouldRetryRequest(resultError)) {
+              retryAttempt += 1;
+              timer = setTimeout(poll, pollRetryDelay(retryAttempt, 1_500));
+            }
             return;
           }
         } else {
+          retryAttempt = 0;
           setResult(null);
         }
         setError(null);
@@ -240,7 +271,7 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
       abort.abort();
       clearTimeout(timer);
     };
-  }, [jobId]);
+  }, [jobId, resultRetryKey]);
 
   const visualizationPath =
     job?.status === "ready" && job.visualization_available
@@ -307,10 +338,33 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
         <h1 className="mt-5 text-3xl font-semibold tracking-tight">
           {job?.label ?? "Video review"}
         </h1>
-        {error && (
-          <p role="alert" className="mt-4 text-sm text-red">
-            {error}
+        {job?.retention_expires_at && (
+          <p className="mt-2 text-xs leading-5 text-ink-muted">
+            Protected artifact retention ends{" "}
+            {formatRetentionExpiry(job.retention_expires_at)}. Source and
+            temporary model-input files are removed earlier during cleanup.
           </p>
+        )}
+        {error && (
+          <div
+            role="alert"
+            className="mt-4 flex flex-wrap items-center gap-3 rounded-md border border-red/30 bg-red-soft px-4 py-3 text-sm text-red"
+          >
+            <span className="min-w-0 flex-1">{error}</span>
+            {(!job || (job.status === "ready" && !result)) && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setError(null);
+                  setResultRetryKey((key) => key + 1);
+                }}
+              >
+                {job ? "Retry result" : "Retry job"}
+              </Button>
+            )}
+          </div>
         )}
 
         {!job ? (
@@ -335,6 +389,33 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
 
             {result && (
               <>
+                {result.privacy?.review_required && (
+                  <section
+                    className="mt-6 rounded-lg border border-amber/40 bg-amber-soft px-5 py-4"
+                    role="status"
+                    aria-live="polite"
+                    aria-labelledby="privacy-quality-heading"
+                  >
+                    <h2
+                      id="privacy-quality-heading"
+                      className="text-sm font-bold text-ink"
+                    >
+                      Privacy quality needs review
+                    </h2>
+                    <p className="mt-2 text-sm leading-6 text-ink-muted">
+                      Face detection or frame quality was intermittent. Review
+                      the protected visualization before relying on the model
+                      evidence.
+                    </p>
+                    {result.privacy.quality_flags.length > 0 && (
+                      <ul className="mt-2 list-disc pl-5 text-xs leading-5 text-ink-muted">
+                        {result.privacy.quality_flags.map((flag) => (
+                          <li key={flag}>{formatPrivacyQualityFlag(flag)}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                )}
                 <VideoReviewPanel
                   result={result}
                   duration={duration}
@@ -351,7 +432,7 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
                   )}
                 />
                 <WindowScores predictions={result.predictions} />
-                <ModelDetails model={result.model} />
+                <ModelDetails model={result.model} privacy={result.privacy} />
               </>
             )}
           </>
@@ -402,7 +483,15 @@ function WindowScores({
   );
 }
 
-function ModelDetails({ model }: { model: DetectionResult["model"] }) {
+function ModelDetails({
+  model,
+  privacy,
+}: {
+  model: DetectionResult["model"];
+  privacy?: DetectionResult["privacy"];
+}) {
+  const sourceResolution = privacy?.source_resolution;
+  const modelResolution = privacy?.model_resolution;
   const details = {
     Model: model.model_name,
     Version: model.model_version,
@@ -414,6 +503,13 @@ function ModelDetails({ model }: { model: DetectionResult["model"] }) {
     Input: model.input_resolution
       ? `${model.input_resolution.width}×${model.input_resolution.height} · ${model.window_frames} frames @ ${model.sample_fps} fps`
       : `${model.window_frames} frames @ ${model.sample_fps} fps`,
+    "Source geometry": sourceResolution
+      ? `${sourceResolution[0]}×${sourceResolution[1]} → ${privacy?.model_input_adaptation ?? "adaptation not reported"} → ${modelResolution ? `${modelResolution[0]}×${modelResolution[1]}` : "model geometry not reported"}`
+      : "Not reported",
+    "Source timestamp offset":
+      privacy?.source_timestamp_offset_seconds !== undefined
+        ? formatTimestampOffset(privacy.source_timestamp_offset_seconds)
+        : "Not reported",
     Threshold: model.threshold,
     Postprocessing: model.postprocessing,
   };

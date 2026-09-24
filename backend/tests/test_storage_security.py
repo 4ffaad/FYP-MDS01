@@ -64,6 +64,128 @@ class StorageSecurityTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(extracted[0].stat().st_mode), 0o600)
 
+    def test_nicolet_data_and_head_pair_extracts_together(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "nicolet.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("nested/recording.data", b"private samples")
+                output.writestr("nested/recording.head", b"private header")
+
+            extracted = SessionStorage(root / "sessions").extract_eeg_recordings("SES-TEST", archive)
+
+            self.assertEqual([path.name for path in extracted], ["recording.data"])
+            self.assertEqual((root / "sessions" / "SES-TEST" / "extracted" / "recording.head").read_bytes(), b"private header")
+
+    def test_nicolet_data_without_head_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "incomplete-nicolet.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("recording.data", b"private samples")
+
+            with self.assertRaisesRegex(StorageError, "matching .head"):
+                SessionStorage(root / "sessions").extract_eeg_recordings("SES-TEST", archive)
+
+    def test_duplicate_casefolded_nicolet_headers_are_rejected_before_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "ambiguous-nicolet.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("nested/recording.data", b"private samples")
+                output.writestr("nested/recording.head", b"first private header")
+                output.writestr("NESTED/RECORDING.HEAD", b"second private header")
+
+            storage = SessionStorage(root / "sessions")
+            with self.assertRaisesRegex(StorageError, "duplicate archive member"):
+                storage.extract_eeg_recordings("SES-TEST", archive)
+
+            self.assertFalse(
+                (root / "sessions" / "SES-TEST" / "extracted" / "recording.data").exists()
+            )
+
+    def test_unicode_equivalent_edf_basenames_are_rejected_before_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "unicode-collisions.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("one/é.edf", b"first synthetic EDF")
+                output.writestr("two/e\u0301.edf", b"second synthetic EDF")
+
+            storage = SessionStorage(root / "sessions")
+            with self.assertRaisesRegex(StorageError, "duplicate EEG filenames"):
+                storage.extract_eeg_recordings("SES-TEST", archive)
+
+            extracted_dir = root / "sessions" / "SES-TEST" / "extracted"
+            self.assertEqual(list(extracted_dir.iterdir()), [])
+
+    def test_unicode_equivalent_nicolet_outputs_are_rejected_before_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "unicode-nicolet-collisions.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("one/é.data", b"first synthetic signal")
+                output.writestr("one/é.head", b"first synthetic header")
+                output.writestr("two/e\u0301.data", b"second synthetic signal")
+                output.writestr("two/e\u0301.head", b"second synthetic header")
+
+            storage = SessionStorage(root / "sessions")
+            with self.assertRaisesRegex(StorageError, "duplicate EEG filenames"):
+                storage.extract_eeg_recordings("SES-TEST", archive)
+
+            extracted_dir = root / "sessions" / "SES-TEST" / "extracted"
+            self.assertEqual(list(extracted_dir.iterdir()), [])
+
+    def test_legacy_nicolet_e_extracts_without_a_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "legacy-nicolet.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("patient/recording.e", b"private legacy EEG")
+
+            extracted = SessionStorage(root / "sessions").extract_eeg_recordings("SES-TEST", archive)
+
+            self.assertEqual([path.name for path in extracted], ["recording.e"])
+            self.assertEqual(extracted[0].read_bytes(), b"private legacy EEG")
+
+    def test_malformed_embedded_events_do_not_abort_sibling_event_reads(self) -> None:
+        from backend.app.eeg.legacy_nicolet import NicoletEvent
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            malformed = root / "malformed.e"
+            valid = root / "valid.e"
+            malformed.write_bytes(b"synthetic malformed event source")
+            valid.write_bytes(b"synthetic valid event source")
+            event = NicoletEvent(1.0, 2.0, "manual_annotation", True)
+
+            def read_events(path: Path):
+                if path == malformed:
+                    raise ValueError("malformed synthetic event packet")
+                return (event,)
+
+            with patch(
+                "backend.app.services.storage_service.read_legacy_eeg_events",
+                side_effect=read_events,
+            ):
+                extracted = SessionStorage(root / "sessions").read_embedded_eeg_events(
+                    [malformed, valid]
+                )
+
+        self.assertEqual(
+            extracted,
+            {
+                "valid.e": [
+                    {
+                        "onset_seconds": 1.0,
+                        "duration_seconds": 2.0,
+                        "kind": "manual_annotation",
+                        "text_present": True,
+                    }
+                ]
+            },
+        )
+
     def test_session_directory_identifiers_cannot_escape_storage_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             storage = SessionStorage(Path(directory) / "sessions")
@@ -106,8 +228,58 @@ class StorageSecurityTests(unittest.TestCase):
                 output.writestr("notes.txt", b"2")
 
             with patch("backend.app.services.storage_service.MAX_ARCHIVE_MEMBER_COUNT", 1):
-                with self.assertRaisesRegex(StorageError, "too many members"):
-                    SessionStorage(root / "sessions").extract_edfs("SES-TEST", archive)
+                with patch(
+                    "backend.app.services.storage_service.zipfile.ZipFile",
+                    side_effect=AssertionError("ZIP constructor ran before the member cap"),
+                ) as zip_constructor:
+                    storage = SessionStorage(root / "sessions")
+                    with self.assertRaisesRegex(StorageError, "too many members"):
+                        storage.extract_edfs("SES-TEST", archive)
+                    with self.assertRaisesRegex(StorageError, "too many members"):
+                        storage.read_reference_annotations(archive)
+                    zip_constructor.assert_not_called()
+
+    def test_zip64_archive_member_count_is_bounded_before_loading(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "many-zip64-members.zip"
+            with patch("zipfile.ZIP_FILECOUNT_LIMIT", 1):
+                with zipfile.ZipFile(archive, "w") as output:
+                    output.writestr("recording.edf", b"1")
+                    output.writestr("notes.txt", b"2")
+            self.assertIn(b"PK\x06\x06", archive.read_bytes())
+
+            with patch("backend.app.services.storage_service.MAX_ARCHIVE_MEMBER_COUNT", 1):
+                with patch(
+                    "backend.app.services.storage_service.zipfile.ZipFile",
+                    side_effect=AssertionError("ZIP64 constructor ran before the member cap"),
+                ) as zip_constructor:
+                    with self.assertRaisesRegex(StorageError, "too many members"):
+                        SessionStorage(root / "sessions").extract_edfs("SES-TEST", archive)
+                    zip_constructor.assert_not_called()
+
+    def test_archive_central_directory_size_is_bounded_before_loading(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "large-central-directory.zip"
+            with patch("zipfile.ZIP_FILECOUNT_LIMIT", 1):
+                with zipfile.ZipFile(archive, "w") as output:
+                    output.writestr("recording.edf", b"1")
+                    output.writestr("notes.txt", b"2")
+            self.assertIn(b"PK\x06\x06", archive.read_bytes())
+
+            with patch(
+                "backend.app.services.storage_service._MAX_ARCHIVE_CENTRAL_DIRECTORY_BYTES",
+                1,
+                create=True,
+            ):
+                with patch(
+                    "backend.app.services.storage_service.zipfile.ZipFile",
+                    side_effect=AssertionError("ZIP constructor ran before the directory-size cap"),
+                ) as zip_constructor:
+                    with self.assertRaisesRegex(StorageError, "central directory exceeds"):
+                        SessionStorage(root / "sessions").extract_edfs("SES-TEST", archive)
+                    zip_constructor.assert_not_called()
 
     def test_archive_with_extreme_compression_ratio_is_rejected(self) -> None:
         """Highly compressed EDF members are rejected before extraction."""

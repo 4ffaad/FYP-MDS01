@@ -2,9 +2,9 @@
 
 A research prototype with one shared analysis entry point and one separate privacy utility:
 
-- **Unified analysis:** open **New analysis** and upload one EEG archive, one separate video, or both. EEG follows `privacy → H5 model → report`; video follows `full-frame privacy blur → pose keypoints → VSViG model → visual evidence review`. A paired upload has one status page with links to both modality reviews.
-- **Video privacy:** upload a video, apply face redaction, then review/download an encrypted protected output. Original audio is retained for owner-only review and may contain identifying speech. Video never enters the EEG model.
-- **Video detection:** authenticated full-frame-blurred Lightweight OpenPose + VSViG review with a shared pose pass, privacy-safe protected playback, window scores, flagged intervals, and bounded model-input sensitivity. The default Docker command initializes and verifies the named model volume; the service fails closed if its reviewed contract is unavailable.
+- **Unified analysis:** open **New analysis** and upload one EEG archive, one separate video, or both. EEG follows `privacy → configured inference adapter → report`; the demo defaults to a development stub, while H5 inference is opt-in. Video sends the same full-frame-blurred protected frames to Lightweight OpenPose and VSViG before presenting a privacy-safe evidence review. A paired upload has one status page with links to both modality reviews.
+- **Video privacy:** upload a video and apply full-frame blur to every frame before reviewing/downloading the encrypted protected output. Face-detection coverage is a quality signal, not a selective blur mask. The retained output is audio-free; the encrypted source may contain audio while queued and is deleted during cleanup. Video never enters the EEG model.
+- **Video detection:** authenticated VSViG review with full-frame-blurred pose/model input, privacy-safe protected playback, window scores, flagged intervals, and bounded model-input sensitivity. The pinned contract requires 1920×1080 input by default; smaller inputs need explicit operator-approved letterbox adaptation. The default Docker command initializes and verifies the named model volume; the service fails closed if its reviewed contract is unavailable.
 
 Model output is **not a diagnosis**. Privacy transforms do not guarantee anonymity.
 
@@ -14,30 +14,38 @@ Choose one backend profile. Docker is the reproducible team path; native mode is
 
 ### Docker
 
-Only **Docker Desktop** (Linux containers) and **Node.js 22 or newer** (with npm) are required. Start Docker and run from the repository root:
+Only **Docker Desktop** (Linux containers), **Node.js 22 or newer** (with npm),
+and internet access for the first image/model-asset setup are required. Start
+Docker and run this one command from the repository root:
 
 ```sh
-node scripts/setup.mjs
-docker compose up --build
+node scripts/demo.mjs
 ```
 
-In a second terminal:
+The launcher prepares local secrets without printing them, installs frontend
+dependencies if they are missing, builds/starts Docker services, waits for the
+backend health check, and starts the browser UI. Open
+[MDS01](http://127.0.0.1:3000) or [API documentation](http://127.0.0.1:8000/docs).
+Press Ctrl-C to stop the frontend; Docker services and data remain running.
+Use `docker compose down` to stop the services without deleting their volumes.
+The first Docker run can take longer while the pinned model bundle is installed
+and verified.
 
-```sh
-cd frontend
-npm ci
-npm run dev
-```
-
-Open [MDS01](http://127.0.0.1:3000) or [API documentation](http://127.0.0.1:8000/docs).
-The setup command generates local secrets and leaves existing configuration untouched. Python and backend package installation are handled inside Docker.
-New installations use the deterministic **development stub**; existing `.env` runtime choices are preserved.
-New installations also use `AUTH_MODE=local-accounts`: register the first
+You still need to sign in or create a local account and select data you are
+permitted to use. The launcher does not upload data, guess EEG/video matches,
+or claim synchronization. It does not bypass the strict input/pose gates.
+The default EEG runtime is a development stub, so its scores are not real model
+predictions. See [presentation readiness](docs/presentation-readiness.md) for
+current demo limitations.
+Existing `.env` runtime choices are preserved across repeat setup. New local
+installations use `AUTH_MODE=local-accounts`: register the first
 teammate in the browser, then sign in. Ordinary accounts see only their own EEG
 sessions, upload drafts and video jobs; the development-only demo administrator
 has read-only cross-owner review access. Use `AUTH_MODE=local` only for explicit
 unauthenticated backend tests.
 For H5 scores, waveform preview, sample data, Windows instructions and troubleshooting, see [setup](docs/setup.md).
+For a request-by-request explanation of backend modules and services, see
+[backend services explained](docs/backend-services.md).
 For the official VSViG/pose bundle, video input contract, privacy lifecycle and
 presentation checklist, see [video detection](docs/video-detection.md).
 
@@ -78,8 +86,8 @@ flowchart LR
     API --> Workspace[Unified analysis workspace]
     Workspace --> EEG[EEG processing]
     API --> Video[Video privacy processing]
-    API --> Detection[Video review: encryption + face redaction]
-    Detection --> Pose[Lightweight OpenPose keypoints]
+    API --> Detection[Video review: encrypt + normalize + face redact]
+    Detection --> Pose[OpenPose on protected model input]
     Pose --> VSViG[VSViG score + evidence timeline]
     VSViG --> Files
     EEG --> Model[H5 adapter or development stub]
@@ -89,19 +97,19 @@ flowchart LR
     API --> Owner[Owner-filtered EEG and video queries]
 ```
 
-| Location | Responsibility |
-| --- | --- |
-| `frontend/src/app/` | Routes and shared layout |
-| `frontend/src/components/` | Screens, waveform/timeline views, UI primitives |
-| `frontend/src/lib/` | API adapter, view-model types, formatting |
-| `backend/app/api/` | HTTP validation and responses |
-| `backend/app/services/` | Upload, processing, storage and cleanup |
-| `backend/app/eeg/`, `privacy/`, `ml/` | Model inputs, privacy transforms, inference |
-| `backend/app/video_privacy/` | Standalone video transforms |
-| `backend/app/video_detection/` | Validated VSViG/pose assets, preprocessing and inference |
-| `backend/app/database/`, `backend/migrations/` | Persistence and schema history |
-| `backend/app/research/`, `backend/scripts/` | Offline evaluation and calibration |
-| `scripts/` | Local setup and its safety test |
+| Location                                       | Responsibility                                           |
+| ---------------------------------------------- | -------------------------------------------------------- |
+| `frontend/src/app/`                            | Routes and shared layout                                 |
+| `frontend/src/components/`                     | Screens, waveform/timeline views, UI primitives          |
+| `frontend/src/lib/`                            | API adapter, view-model types, formatting                |
+| `backend/app/api/`                             | HTTP validation and responses                            |
+| `backend/app/services/`                        | Upload, processing, storage and cleanup                  |
+| `backend/app/eeg/`, `privacy/`, `ml/`          | Model inputs, privacy transforms, inference              |
+| `backend/app/video_privacy/`                   | Standalone video transforms                              |
+| `backend/app/video_detection/`                 | Validated VSViG/pose assets, preprocessing and inference |
+| `backend/app/database/`, `backend/migrations/` | Persistence and schema history                           |
+| `backend/app/research/`, `backend/scripts/`    | Offline evaluation and calibration                       |
+| `scripts/`                                     | Local setup and its safety test                          |
 
 ## Documentation
 

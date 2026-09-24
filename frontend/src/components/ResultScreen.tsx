@@ -14,6 +14,7 @@ import { Icon } from "./Icon";
 import { RecordingNavigator } from "./RecordingNavigator";
 import { PredictionTimeline } from "./PredictionTimeline";
 import { SignalViewer } from "./SignalViewer";
+import { EegAnnotationList } from "./EegAnnotationList";
 
 /** Render one recording result within its session-scoped navigation context. */
 export function ResultScreen({ recordId }: { recordId: string }) {
@@ -225,6 +226,12 @@ function ResultContent({ recordId }: { recordId: string }) {
               />
             </div>
           </section>
+
+          <EegAnnotationList
+            events={result.annotationEvents}
+            source={result.annotationSource}
+            reviewRequired={result.annotationReviewRequired}
+          />
 
           {hasAlerts && (
             <SignalViewer

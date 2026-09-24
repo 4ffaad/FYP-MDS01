@@ -49,7 +49,7 @@ from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProc
 PROFILE_DETAILS: dict[VideoPrivacyProfile, dict[str, str]] = {
     VideoPrivacyProfile.FACE_REDACTED: {
         "label": "Face redaction",
-        "description": "Blur detected faces while keeping the surrounding scene visible.",
+        "description": "The full frame is blurred on every frame. Face-detection coverage is a quality signal for review; it does not change the blur extent.",
     },
     VideoPrivacyProfile.POSE_ONLY: {
         "label": "Pose-only",
@@ -175,9 +175,10 @@ def _safe_content_type(upload: UploadFile) -> str:
     """Return a stable output type without retaining client metadata."""
 
     suffix = Path(upload.filename or "").suffix.lower()
-    if suffix not in {".mp4", ".mov", ".webm"}:
-        raise ValueError("Upload an MP4, MOV, or WebM video.")
+    if suffix not in {".avi", ".mp4", ".mov", ".webm"}:
+        raise ValueError("Upload an AVI, MP4, MOV, or WebM video.")
     if upload.content_type and upload.content_type not in {
+        "video/x-msvideo",
         "video/mp4",
         "video/quicktime",
         "video/webm",
@@ -196,6 +197,29 @@ def _preflight_uploaded_video(storage: VideoStorage, job_id: str, encrypted: Pat
         return VideoPrivacyProcessor.preflight(source, deadline=deadline)
     finally:
         storage.delete_work_file(source)
+
+
+def _rollback_admission_job(db: Session, job: VideoPrivacyJob, storage: VideoStorage) -> bool:
+    """Remove an admission job, or persist a retryable cleanup failure."""
+
+    job_id = job.job_id
+    original_path = job.original_path
+    try:
+        storage.delete_job(job_id)
+    except Exception:
+        LOGGER.warning("Privacy admission cleanup failed; retaining a terminal retry record.")
+        db.rollback()
+        job.status = VideoPrivacyStatus.FAILED
+        job.current_stage = "cleanup"
+        job.error_message = "The upload could not be secured and cleanup is pending."
+        job.output_usable = False
+        job.original_path = original_path
+        db.add(job)
+        db.commit()
+        return False
+    db.delete(job)
+    db.commit()
+    return True
 
 
 async def create_video_job(
@@ -244,17 +268,10 @@ async def create_video_job(
         db.refresh(job)
         return job
     except asyncio.CancelledError:
-        try:
-            storage.delete_job(job.job_id)
-        except Exception:
-            logging.getLogger(__name__).exception("Cancelled privacy upload cleanup failed")
-        db.delete(job)
-        db.commit()
+        _rollback_admission_job(db, job, storage)
         raise
     except Exception:
-        storage.delete_job(job.job_id)
-        db.delete(job)
-        db.commit()
+        _rollback_admission_job(db, job, storage)
         raise
     finally:
         await upload.close()

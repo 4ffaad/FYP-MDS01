@@ -382,6 +382,7 @@ def public_record(
         # Client filenames may contain patient identifiers. Expose only a
         # generated display name, never the submitted filename.
         "source_filename": f"recording_{record.sequence_index:02d}.edf",
+        "source_format": record.source_format,
         "duration_seconds": record.duration_seconds,
         "sampling_rate": record.sampling_rate,
         "channel_count": record.channel_count,

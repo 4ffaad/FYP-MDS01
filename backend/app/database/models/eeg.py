@@ -111,7 +111,7 @@ class UploadDraft(SQLModel, table=True):
 
 
 class EEGRecording(SQLModel, table=True):
-    """Database metadata for one EDF file extracted from a session archive."""
+    """Database metadata for one EEG recording extracted from a session archive."""
 
     __tablename__ = "recordings"
     __table_args__ = (UniqueConstraint("record_id"),)
@@ -128,8 +128,18 @@ class EEGRecording(SQLModel, table=True):
     duration_seconds: float | None = None
     sampling_rate: int | None = None
     channel_count: int | None = None
+    source_format: str | None = Field(default=None, max_length=32)
+    source_checksum_sha256: str | None = Field(default=None, max_length=64)
+    conversion_details_json: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
     reference_annotation_source: str | None = None
     reference_intervals_json: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+    annotation_events_json: str | None = Field(
         default=None,
         sa_column=Column(Text, nullable=True),
     )
