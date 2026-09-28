@@ -101,23 +101,23 @@ visualization; it never publishes source or model-input playback.
 
 ## Where to change code
 
-| Change                               | Start here                                                                              |
-| ------------------------------------ | --------------------------------------------------------------------------------------- |
-| Navigation and layout                | `frontend/src/components/AppShell.tsx`                                                  |
-| Session list / processing status     | `DashboardScreen.tsx`, `SessionDetailScreen.tsx`                                        |
-| EEG result explanation               | `ResultScreen.tsx`, `PredictionTimeline.tsx`, `SignalViewer.tsx`                        |
-| Video upload / output review         | `VideoPrivacyScreen.tsx`                                                                |
-| Video detection review               | `VideoDetectionScreen.tsx`, `backend/app/video_detection/`                              |
-| Browser/backend mapping              | `frontend/src/lib/api.ts`, `types.ts`                                                   |
-| HTTP endpoints                       | `backend/app/api/`                                                                      |
-| EEG processing sequence              | `backend/app/services/processing_service.py`                                            |
-| Video detection job sequence         | `backend/app/services/video_detection_service.py`                                       |
-| Video privacy job sequence           | `backend/app/services/video_privacy_service.py`                                         |
-| Video transformation                 | `backend/app/video_privacy/processor.py`                                                |
-| Input shape and preprocessing        | `backend/app/eeg/model_input.py`, `preprocessing.py`                                    |
-| Runtime selection                    | `backend/app/ml/model_loader.py`                                                        |
-| H5 artifact and score semantics      | operator-mounted `/opt/eeg-model/model-contract.json`, `backend/app/ml/h5_inference.py` |
-| Database operations / schema changes | `backend/app/database/`, a new Alembic migration                                        |
+| Change                               | Start here                                                                                                             |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| Navigation and layout                | `frontend/src/components/AppShell.tsx`                                                                                 |
+| Session list / processing status     | `DashboardScreen.tsx`, `SessionDetailScreen.tsx`                                                                       |
+| EEG result explanation               | `ResultScreen.tsx`, `PredictionTimeline.tsx`, `SignalViewer.tsx`                                                       |
+| Video upload / output review         | `VideoPrivacyScreen.tsx`                                                                                               |
+| Video detection review               | `VideoDetectionScreen.tsx`, `backend/app/video_detection/`                                                             |
+| Browser/backend mapping              | `frontend/src/lib/api.ts`, `types.ts`                                                                                  |
+| HTTP endpoints                       | `backend/app/api/`                                                                                                     |
+| EEG processing sequence              | `backend/app/services/processing_service.py`                                                                           |
+| Video detection job sequence         | `backend/app/services/video_detection_service.py`                                                                      |
+| Video privacy job sequence           | `backend/app/services/video_privacy_service.py`                                                                        |
+| Video transformation                 | `backend/app/video_privacy/processor.py`                                                                               |
+| Input shape and preprocessing        | `backend/app/eeg/model_input.py`, `preprocessing.py`                                                                   |
+| Runtime selection                    | `backend/app/ml/model_loader.py`                                                                                       |
+| H5 artifact and score semantics      | Explicit local research Compose profile, pinned `/opt/eeg-model/model-contract.json`, `backend/app/ml/h5_inference.py` |
+| Database operations / schema changes | `backend/app/database/`, a new Alembic migration                                                                       |
 
 Keep route handlers small. Extend the service that already owns a workflow before adding another coordinator. Keep API calls in the existing browser adapter and use existing shadcn primitives and Hugeicons.
 
@@ -167,7 +167,7 @@ returned to a signed-in user.
 Video jobs are independent rows; media artifacts live in the filesystem. PostgreSQL stores status, safe result metadata and private internal artifact references. File bytes stay in private storage.
 
 - EEG originals and intermediate files are deleted after processing. Default retention keeps encrypted transformed model-positive clips with configured context. Full transformed preview is an explicit local-only exception.
-- Video detection retains encrypted predictions and the approved privacy-safe visualization until expiry. Source and protected model-input video are deleted after success, failure, expiry, and startup recovery; no source-video download is published.
+- Video detection retains encrypted predictions/provenance only; its privacy-safe visualization is transient and deleted after validation. Source and protected model-input video are deleted after success, failure, expiry, and startup recovery; no video artifact download is published.
 - The separate video-privacy workflow keeps an encrypted transformed output and preview until expiry. Intermittent redaction requires acknowledgement before download; no usable transform means no output.
 - Public responses never return original files, client filenames, patient references, private paths or original metadata.
 - Privacy keys are installation-specific. Changing or losing a key can make retained artifacts unreadable. Setup never overwrites existing keys.

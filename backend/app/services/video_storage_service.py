@@ -2,15 +2,33 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+import fcntl
 import logging
+import math
+import os
 from pathlib import Path
+import stat
+import time
 
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
 
 from backend.app.core.config import MAX_VIDEO_UPLOAD_BYTES, SESSION_STORAGE_DIR
 from backend.app.services.storage_service import SessionStorage, StorageError
+
+PREFLIGHT_ORPHAN_MAX_AGE_SECONDS = 24 * 60 * 60
+PREFLIGHT_PREFIX = "VID-PREFLIGHT-"
+
+
+def _is_preflight_job_id(job_id: str) -> bool:
+    suffix = job_id.removeprefix(PREFLIGHT_PREFIX)
+    return (
+        job_id.startswith(PREFLIGHT_PREFIX)
+        and len(suffix) == 24
+        and all(character in "0123456789ABCDEF" for character in suffix)
+    )
 
 
 class CleanupFileResponse(FileResponse):
@@ -85,9 +103,26 @@ class VideoStorage:
         return self._artifact_path(job_id, "video.preview.jpg.enc")
 
     def visualization_path(self, job_id: str) -> Path:
-        """Return the encrypted privacy-safe review-video path."""
+        """Return the legacy encrypted detection-visualization path."""
 
         return self._artifact_path(job_id, "video.visualization.mp4.enc")
+
+    def delete_legacy_visualization(self, job_id: str, encrypted_path: Path) -> None:
+        """Remove only the canonical legacy detection visualization artifact."""
+
+        expected = self.visualization_path(job_id)
+        self._require_canonical_path(encrypted_path, expected)
+        job_dir = self.root / self._validate_job_id(job_id)
+        retained_dir = job_dir / "retained"
+        if self.root.is_symlink() or job_dir.is_symlink() or retained_dir.is_symlink():
+            raise StorageError("Stored artifact path is not canonical.")
+        if not retained_dir.exists():
+            return
+        if not retained_dir.is_dir():
+            raise StorageError("Stored artifact path is not canonical.")
+        if expected.is_symlink() or (expected.exists() and not expected.is_file()):
+            raise StorageError("Stored artifact path is not canonical.")
+        expected.unlink(missing_ok=True)
 
     def work_path(self, job_id: str, name: str) -> Path:
         """Return a safe private plaintext work path."""
@@ -143,3 +178,117 @@ class VideoStorage:
         """Remove all private media for a job."""
 
         self._storage.delete_session(self._validate_job_id(job_id))
+
+    @contextmanager
+    def preflight_upload_lease(self, job_id: str) -> Iterator[None]:
+        """Hold an OS-level lease so cleanup workers cannot remove active uploads."""
+
+        if not _is_preflight_job_id(job_id):
+            raise StorageError("Video preflight identifier is invalid.")
+        job_root = self._storage.session_dir(job_id)
+        lock_path = job_root / ".preflight.lock"
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        try:
+            descriptor = os.open(lock_path, flags, 0o600)
+        except OSError as exc:
+            raise StorageError("Video preflight lease is unavailable.") from exc
+
+        locked = False
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise StorageError("Video preflight lease is invalid.")
+            os.fchmod(descriptor, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            except OSError as exc:
+                raise StorageError("Video preflight lease is unavailable.") from exc
+            locked = True
+            yield
+        finally:
+            if locked:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                except OSError:
+                    logging.getLogger(__name__).warning("Video preflight lease release was delayed.")
+            os.close(descriptor)
+
+    def cleanup_stale_preflight_uploads(
+        self,
+        *,
+        max_age_seconds: float = PREFLIGHT_ORPHAN_MAX_AGE_SECONDS,
+        now: float | None = None,
+    ) -> int:
+        """Remove only old, opaque standalone-preflight upload directories."""
+
+        max_age = float(max_age_seconds)
+        current_time = time.time() if now is None else float(now)
+        if not math.isfinite(max_age) or max_age <= 0 or not math.isfinite(current_time):
+            raise ValueError("Preflight orphan age must be finite and positive.")
+        root = self.root
+        if root.is_symlink() or not root.is_dir():
+            return 0
+        cutoff = current_time - max_age
+        try:
+            candidates = list(root.iterdir())
+        except OSError:
+            logging.getLogger(__name__).warning("Stale video preflight scan unavailable.")
+            return 0
+
+        removed = 0
+        for candidate in candidates:
+            if not _is_preflight_job_id(candidate.name):
+                continue
+            descriptor: int | None = None
+            locked = False
+            try:
+                info = candidate.lstat()
+                if candidate.is_symlink() or not stat.S_ISDIR(info.st_mode):
+                    continue
+
+                lock_path = candidate / ".preflight.lock"
+                flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                try:
+                    descriptor = os.open(lock_path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+                    created_lock = True
+                except FileExistsError:
+                    descriptor = os.open(lock_path, flags)
+                    created_lock = False
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    continue
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                locked = True
+
+                current_info = candidate.lstat()
+                if (
+                    candidate.is_symlink()
+                    or not stat.S_ISDIR(current_info.st_mode)
+                    or (current_info.st_dev, current_info.st_ino) != (info.st_dev, info.st_ino)
+                ):
+                    continue
+                last_activity = info.st_mtime
+                for descendant in candidate.rglob("*"):
+                    if created_lock and descendant == lock_path:
+                        continue
+                    last_activity = max(last_activity, descendant.lstat().st_mtime)
+                if last_activity >= cutoff:
+                    continue
+                self.delete_job(candidate.name)
+                removed += 1
+            except (OSError, StorageError):
+                logging.getLogger(__name__).warning(
+                    "Stale video preflight cleanup unavailable; retrying next sweep."
+                )
+            finally:
+                if descriptor is not None:
+                    if locked:
+                        try:
+                            fcntl.flock(descriptor, fcntl.LOCK_UN)
+                        except OSError:
+                            logging.getLogger(__name__).warning(
+                                "Stale video preflight lease release was delayed."
+                            )
+                    os.close(descriptor)
+        return removed

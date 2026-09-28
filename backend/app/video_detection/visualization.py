@@ -187,7 +187,13 @@ def _draw_pose(cv2: Any, frame: np.ndarray, keypoints: np.ndarray | None) -> Non
         )
 
 
-def _overlay(cv2: Any, frame: np.ndarray, timestamp: float) -> None:
+def _overlay(
+    cv2: Any,
+    frame: np.ndarray,
+    timestamp: float,
+    *,
+    pose_detected: bool,
+) -> None:
     """Add non-identifying review context to the protected frame."""
 
     overlay = frame.copy()
@@ -205,7 +211,9 @@ def _overlay(cv2: Any, frame: np.ndarray, timestamp: float) -> None:
     )
     cv2.putText(
         frame,
-        "Skeleton overlay · no audio · research only",
+        "Body joints overlaid · research only"
+        if pose_detected
+        else "No body pose detected · research only",
         (38, 78),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.58,
@@ -229,6 +237,8 @@ def render_visualization(
     source_path: Path,
     output_path: Path,
     pose_samples: list[tuple[float, np.ndarray]],
+    *,
+    preview_path: Path | None = None,
 ) -> dict[str, Any]:
     """Create a video-only, masked, skeleton-overlaid review artifact."""
 
@@ -236,9 +246,6 @@ def render_visualization(
         cv2: Any = import_module("cv2")
     except ImportError as exc:
         raise DetectionError("visualization_failed") from exc
-    if not pose_samples:
-        raise DetectionError("visualization_failed")
-
     capture = cv2.VideoCapture(str(source_path))
     if not capture.isOpened():
         capture.release()
@@ -258,11 +265,16 @@ def render_visualization(
     ):
         capture.release()
         raise DetectionError("visualization_failed")
-    if output_path.is_symlink():
+    if (
+        output_path.is_symlink()
+        or (preview_path is not None and preview_path.is_symlink())
+    ):
         capture.release()
         raise DetectionError("visualization_failed")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if preview_path is not None:
+        preview_path.parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(
         str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
     )
@@ -286,17 +298,28 @@ def render_visualization(
                 raise DetectionError("visualization_failed")
             timestamp = frame_index / fps
             frame_index += 1
-            sample_index = min(
-                max(0, bisect_right(sample_times, timestamp) - 1),
-                len(pose_samples) - 1,
-            )
-            sample_time, keypoints = pose_samples[sample_index]
-            # Do not draw stale pose data across a large decode gap.
-            pose = keypoints if abs(timestamp - sample_time) <= 1.0 else None
+            pose = None
+            if sample_times:
+                sample_index = min(
+                    max(0, bisect_right(sample_times, timestamp) - 1),
+                    len(pose_samples) - 1,
+                )
+                sample_time, keypoints = pose_samples[sample_index]
+                # Do not draw stale pose data across a large decode gap.
+                pose = keypoints if abs(timestamp - sample_time) <= 1.0 else None
             protected = _mask_frame(cv2, frame, pose)
             _draw_pose(cv2, protected, pose)
-            _overlay(cv2, protected, timestamp)
+            _overlay(cv2, protected, timestamp, pose_detected=pose is not None)
             writer.write(protected)
+            if frame_index == 1 and preview_path is not None:
+                if not cv2.imwrite(str(preview_path), protected):
+                    raise DetectionError("visualization_failed")
+                if (
+                    not preview_path.is_file()
+                    or preview_path.stat().st_size <= 0
+                    or preview_path.stat().st_size > 2 * 1024 * 1024
+                ):
+                    raise DetectionError("visualization_failed")
             if output_path.stat().st_size > VIDEO_MAX_OUTPUT_BYTES:
                 raise DetectionError("visualization_failed")
     finally:
@@ -320,8 +343,10 @@ def render_visualization(
         "width": width,
         "height": height,
         "duration_seconds": frame_index / fps,
+        "pose_overlay_available": bool(pose_samples),
+        "pose_sample_count": len(pose_samples),
         "overlay": {
-            "skeleton": True,
+            "skeleton": bool(pose_samples),
             "model_score": False,
             "event_markers": False,
         },

@@ -5,9 +5,10 @@ browser responsibilities and the EEG/video-privacy screens. For the VSViG
 workflow and its evidence UI, use [video-detection.md](video-detection.md).
 
 The frontend is a small Next.js App Router application. It owns screens and
-browser state; the FastAPI backend owns sessions, processing, and results. The
-The dashboard is the workspace home; `/upload` is the shared entry point for one
-EEG archive, one separate video, or both.
+browser state; the FastAPI backend owns sessions, processing, and results.
+The dashboard is the workspace home; `/upload` is the shared patient-folder
+entry point. One case can contain multiple EEG recordings, selected video
+clips, and reviewed details from one local report.
 
 MDS01 — EEG Research Review is a research workspace for clinicians and clinical
 researchers. Its job is to make upload state, privacy handling, and model

@@ -29,7 +29,7 @@ clinical accuracy, anonymity or production security.
 | Local exposure | FastAPI and PostgreSQL bind to `127.0.0.1` in Docker Compose. Local authentication is intended only for this loopback development mode. |
 | Identifiers | New `SES-`, `REC-`, and `UPL-` identifiers contain 128 random bits. Historical IDs remain readable. |
 | Upload abuse | ZIP traversal, per-member size, member count, cumulative uncompressed size, and compression-ratio limits are enforced. |
-| Request resource limits | Upload routes reject oversized request bodies before multipart parsing; each owner is limited to bounded active/pending EEG drafts. |
+| Request resource limits | Upload routes reject oversized request bodies before route handling; large EEG/video bytes are streamed directly into encrypted storage without multipart disk spooling. Each owner is limited to bounded active/pending EEG drafts. |
 | Processing load | A bounded in-process semaphore rejects new analyses with `503` when the configured prototype capacity is full. |
 | Video transform bounds | Video privacy processing enforces FPS, dimensions, decoded-frame, output-byte and wall-clock limits; output validation requires exact frame count/dimensions/FPS/duration and rejects audio streams. |
 | Draft lifecycle | Expired drafts are swept at startup and by a background retention task; orphaned encrypted draft directories are eligible for safe cleanup. |
@@ -39,8 +39,8 @@ clinical accuracy, anonymity or production security.
 | Browser boundary | Explicit credentialed CORS origins support local and Cloudflare cookies. Local state changes also require a configured `Origin`. FastAPI and Next.js return framing, MIME-sniffing, referrer, and browser-permission headers. |
 | Signal access | Signal preview remains disabled by default and returns `404`; enabling it is a deliberate local-development choice. |
 | Video model supply chain | The official VSViG and Lightweight OpenPose files are pinned by revision and SHA-256, initialized into a named volume outside Git, mounted read-only by the backend, and loaded by a startup verification pass before Uvicorn starts. The generated contract must also match the code-pinned reviewed contract digest; a mounted bundle cannot approve its own changed metadata. |
-| Video media minimization | Detection deletes source and temporary model-input work, retains only encrypted prediction results plus the explicitly approved encrypted owner-scoped privacy-safe visualization, and exposes no source-video endpoint. The visualization is audio-free, face-redacted and full-frame-blurred with a skeleton overlay; the separate video-privacy utility has a separate policy. |
-| Upload staging | Multipart parsing precedes application-level AES-GCM storage; the framework's private spool is treated as short-lived sensitive work data and is cleaned with the job. |
+| Video media minimization | Detection deletes source and temporary model-input work and retains only encrypted owner-scoped prediction results/provenance; it exposes no video playback artifact. A blurred skeleton visualization is generated transiently for validation and deleted. The separate video-privacy utility has a separate policy. |
+| Upload staging | Media request bodies stream directly into application-level AES-GCM storage with bounded chunks; API media routes do not invoke multipart parsing or create upload spools. |
 | Video privacy runtime | New jobs support face redaction only. The legacy pose-only enum remains readable for stored records but fails closed and is not shipped as an executable privacy transform. |
 
 ## Verification evidence
@@ -87,11 +87,13 @@ cd frontend && npm run lint && npm run build && npm run test:e2e
 npm run test:e2e:real
 ```
 
-`test:e2e:real` creates and destroys only the Compose project named
-`mds01-security` by default; set `MDS01_SECURITY_COMPOSE_PROJECT` for an
-explicit disposable project name. It requires Docker and npm; its synthetic
-EEG fixture is generated inside the backend container. The setup/teardown use
-`down -v`, so run only against a disposable project.
+`test:e2e:real` allocates a fresh 128-bit per-run Compose project and rejects
+fixed or caller-selected project names. It passes `/dev/null` as the Compose
+environment file, generates disposable credentials, creates synthetic EEG and
+report fixtures inside the test backend, and stages them in a mode-`0700`
+temporary directory. Teardown uses `down -v` only with that validated project
+name and removes the matching temporary fixture directory. It requires Docker
+and npm; never point it at a production or shared research database.
 
 ## Remaining deployment work
 

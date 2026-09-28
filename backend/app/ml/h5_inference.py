@@ -46,18 +46,33 @@ class H5InferenceService:
             raise H5ModelError("The H5 model contract has not been manually reviewed.")
         if contract.get("input_shape") != [1024, 18]:
             raise H5ModelError("The reviewed H5 model contract is not compatible with (N, 1024, 18).")
-        if contract.get("input_dtype", "float32") != "float32":
+        if contract.get("input_dtype") != "float32":
             raise H5ModelError("The reviewed H5 model must accept float32 inputs.")
-        if contract.get("channel_order") not in (None, list(MODEL_CHANNELS)):
+        if contract.get("channel_order") != list(MODEL_CHANNELS):
             raise H5ModelError("The reviewed H5 model channel order differs from the EDF contract.")
-        if contract.get("sampling_rate", MODEL_SAMPLING_RATE) != MODEL_SAMPLING_RATE:
+        sampling_rate = contract.get("sampling_rate")
+        if type(sampling_rate) is not int or sampling_rate != MODEL_SAMPLING_RATE:
             raise H5ModelError("The reviewed H5 model sampling rate differs from the EDF contract.")
-        if contract.get("window_seconds", WINDOW_SECONDS) != WINDOW_SECONDS:
+        window_seconds = contract.get("window_seconds")
+        if type(window_seconds) is not int or window_seconds != WINDOW_SECONDS:
             raise H5ModelError("The reviewed H5 model window length differs from the EDF contract.")
-        if float(contract.get("window_stride_seconds", WINDOW_STEP_SECONDS)) != WINDOW_STEP_SECONDS:
+        window_stride_seconds = contract.get("window_stride_seconds")
+        if (
+            isinstance(window_stride_seconds, bool)
+            or not isinstance(window_stride_seconds, (int, float))
+            or window_stride_seconds != WINDOW_STEP_SECONDS
+        ):
             raise H5ModelError("The reviewed H5 model window stride differs from the training contract.")
         if contract.get("output_semantics") != "seizure-probability":
             raise H5ModelError("The reviewed H5 model output must be seizure-probability.")
+        if contract.get("output_shape") != [1]:
+            raise H5ModelError("The reviewed H5 output shape must be one score per input window.")
+        expected_output_dtype = contract.get("output_dtype")
+        if expected_output_dtype not in {"float32", "float64"}:
+            raise H5ModelError("The reviewed H5 output dtype is missing or unsupported.")
+        expected_activation = contract.get("last_layer_activation")
+        if not isinstance(expected_activation, str) or not expected_activation.strip():
+            raise H5ModelError("The reviewed H5 output activation is missing.")
         expected_sha256 = contract.get("artifact_sha256")
         if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
             raise H5ModelError("The reviewed H5 model contract must include its artifact SHA-256.")
@@ -67,7 +82,7 @@ class H5InferenceService:
             raise H5ModelError("The reviewed H5 model must document its training-time preprocessing.")
         threshold = contract.get("threshold")
         if not isinstance(threshold, (int, float)) or not 0 <= threshold <= 1:
-            raise H5ModelError("The reviewed H5 model requires a probability threshold in [0, 1].")
+            raise H5ModelError("The reviewed H5 model requires a score threshold in [0, 1].")
         self.model = tf.keras.models.load_model(
             model_path,
             compile=False,
@@ -78,13 +93,20 @@ class H5InferenceService:
         input_dtype = str(getattr(self.model.inputs[0], "dtype", "unknown"))
         output_dtype = str(getattr(self.model.outputs[0], "dtype", "unknown"))
         if (
-            input_shape[1:] != (1024, 18)
-            or output_shape[1:] != (1,)
+            input_shape != (None, 1024, 18)
+            or output_shape != (None, 1)
             or input_dtype != "float32"
         ):
             raise H5ModelError("The H5 model shape differs from its reviewed contract.")
         if output_dtype not in {"float32", "float64"}:
             raise H5ModelError("The H5 model output dtype is not supported.")
+        if output_shape[1:] != tuple(contract["output_shape"]) or output_dtype != expected_output_dtype:
+            raise H5ModelError("The loaded H5 output differs from the reviewed shape or dtype.")
+        output_layer_activation = getattr(
+            getattr(self.model.layers[-1], "activation", None), "__name__", None
+        )
+        if output_layer_activation != expected_activation:
+            raise H5ModelError("The loaded H5 output activation differs from the reviewed contract.")
         self.model_name = str(contract.get("model_name", model_path.stem))
         self.model_version = str(contract.get("model_version", "reviewed-h5"))
         self.threshold = float(threshold)
@@ -106,19 +128,19 @@ class H5InferenceService:
         record_id: str,
         privacy_method: str = CANONICAL_BASELINE,
     ) -> list[WindowPrediction]:
-        """Return thresholded seizure probabilities for private model windows."""
+        """Return thresholded model scores for private model windows."""
 
         validate_model_windows(windows, window_starts)
-        probabilities = np.asarray(self.model.predict(windows, verbose=0)).reshape(-1)
+        scores = np.asarray(self.model.predict(windows, verbose=0)).reshape(-1)
         if (
-            len(probabilities) != len(window_starts)
-            or not np.isfinite(probabilities).all()
-            or np.any((probabilities < 0) | (probabilities > 1))
+            len(scores) != len(window_starts)
+            or not np.isfinite(scores).all()
+            or np.any((scores < 0) | (scores > 1))
         ):
-            raise H5ModelError("The H5 model did not return one probability per input window.")
+            raise H5ModelError("The H5 model did not return one score in its reviewed output range per window.")
         profile = self._calibration_profile(privacy_method)
         predictions: list[WindowPrediction] = []
-        for index, (start, raw_score) in enumerate(zip(window_starts, probabilities)):
+        for index, (start, raw_score) in enumerate(zip(window_starts, scores)):
             calibrated_probability = None
             score = float(raw_score)
             calibration_method = None

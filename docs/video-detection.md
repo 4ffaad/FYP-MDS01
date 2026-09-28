@@ -21,7 +21,7 @@ The video path is:
 video upload
   → encrypt source
   → transient bounded timestamp-validated source
-  → optional operator-approved aspect-preserving letterbox adaptation
+  → local-prototype aspect-preserving resize/letterbox adaptation
   → face detection and full-frame blur on every model-input frame
        → shared protected model-input video
        ├── pose-derived patches → VSViG scores → evidence timeline
@@ -32,9 +32,16 @@ Audio is excluded from every retained visual output and from the visual model
 input. The uploaded source can still contain audio while it is encrypted and
 waiting for processing; the model and visualization runtime read visual frames
 only. The original, normalized source, and temporary full-frame-blurred model-input
-video files are deleted after the job. Only an encrypted, owner-scoped privacy-safe
-visualization and prediction result are retained until job expiry. The separate
+video files are deleted after the job. A privacy-safe visualization is generated
+transiently for runtime validation and deleted; only the encrypted, owner-scoped
+prediction result is retained until job expiry. The separate
 `/video-privacy` utility is audio-free but is not the seizure detector.
+
+Prediction and event times are relative to the video clip. The decoder's
+source-timestamp origin is transient processing metadata: it is not persisted
+in the prediction artifact or returned by the API, and it is not an EEG clock
+mapping. Any cross-modal pairing or offset remains assumed for demo—not
+verified—unless established separately from an authoritative clock mapping.
 
 ## What the GitHub repository provides
 
@@ -130,10 +137,14 @@ From the repository root:
 node scripts/setup.mjs
 ```
 
-This creates `.env` and `frontend/.env.local` only when they do not exist. It
-generates the local database/storage keys and the development demo-admin
-password into the ignored `.env`. Read that credential only on the local
-machine; it is intentionally absent from this guide, slides and API responses.
+`setup.mjs` creates `.env` and `frontend/.env.local` when they are absent. On
+existing regular files it reapplies POSIX `0600` permissions; for the root
+`.env`, it also fills missing setup-managed values and a missing Compose
+selection while preserving nonempty secrets and explicit Compose choices. It
+never prints configuration values. It generates the local database/storage keys
+and development demo-admin password in the ignored `.env`. Read that credential
+only on the local machine; it is intentionally absent from this guide, slides
+and API responses.
 
 ### 2. Start the secure one-command stack
 
@@ -161,12 +172,17 @@ background path; an invalid clip becomes a terminal failed job rather than
 being decoded a second time synchronously. This is intentional for the
 asynchronous API and is surfaced through the job error state.
 
-The default bounded transform accepts 6–60 FPS, no more than 1920×1080 source
-pixels, and requires the source to already match the pinned 1920×1080 model
-geometry. Smaller sources such as 640×480 are rejected unless the operator
-explicitly sets `VSVIG_ALLOW_LETTERBOX_ADAPTATION=true` after reviewing that
-adaptation against the mounted contract; when enabled, they are letterboxed to
-the pinned geometry without stretching. It accepts one bounded
+The bounded transform accepts 6–60 FPS and no more than 1920×1080 source
+pixels. The local H5 profile enables adaptation for smaller source frames. It
+resizes them uniformly to fit a 1920×1080 canvas and adds black padding only
+when the source aspect ratio differs. The encrypted prediction artifact records
+the source geometry, padding and `letterbox` adaptation. This adds no captured
+detail and is experimental: the resulting scores have not been validated as
+equivalent to native-resolution inputs. Keep these results separate when
+evaluating the model. Other profiles keep adaptation disabled unless
+`VSVIG_ALLOW_LETTERBOX_ADAPTATION=true` is set.
+Native frames are re-encoded at their original geometry before full-frame blur
+and model processing. The transform accepts one bounded
 constant timestamp origin per stream, but rejects timestamp jitter, missing
 timestamps, and decode truncation. It also accepts no more than 1920×1080 pixels,
 216,000 decoded frames, 1 GiB of retained preview output and 900 seconds of
@@ -190,7 +206,7 @@ unreviewed and blocks startup until the normal approved initializer is run
 again:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
+docker compose \
   run --rm --no-deps --entrypoint python vsvig-assets-init \
   backend/scripts/install_vsvig_assets.py --asset-dir /opt/vsvig
 ```
@@ -244,7 +260,7 @@ read-only for the individual diagnostic command when needed:
 
 ```sh
 VIDEO_DATA_DIR=/absolute/path/to/approved-video-data
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
+docker compose \
   run --rm --no-deps -v "$VIDEO_DATA_DIR:/private-video-data:ro" backend \
   python -m backend.scripts.video_inventory /private-video-data
 ```
@@ -295,7 +311,7 @@ upstream release provides a complete inference recipe:
 | Field            | MDS01 contract value                           | Reason                                                                                                          |
 | ---------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | Container        | AVI, MP4, MOV or WebM readable by OpenCV       | Current upload allow-list                                                                                       |
-| Geometry         | `1920×1080`                                    | Official patch geometry/context; the adapter fails closed instead of silently distorting it                     |
+| Geometry         | `1920×1080`; optional experimental letterbox   | The adapter preserves aspect ratio; the opt-in adaptation is not validated as equivalent to native model inputs |
 | Frame timing     | Constant frame timing; source FPS at least `6` | The runtime samples the source at 6 FPS                                                                         |
 | Minimum duration | Five seconds of readable visual frames         | One complete 30-frame window at 6 FPS                                                                           |
 | Sampled window   | `30` frames                                    | 5-second VSViG window                                                                                           |
@@ -352,13 +368,12 @@ implicit feature of this endpoint.
 5. The result records face coverage, quality flags and whether human review is
    required. It does not record raw keypoint coordinates.
 6. The runtime fans the same in-memory pose samples into two outputs: VSViG
-   patches/scores and a visualization that keeps every frame full-frame
-   blurred and draws the skeleton. It does not run a second pose model. The
-   original and temporary model-input files are deleted after success or
-   failure. Only encrypted
-   `predictions.json` and `video.visualization.mp4` are retained for the job;
-   expiry and startup recovery sweep both artifacts and abandon interrupted
-   work.
+   patches/scores and a transient visualization that keeps every frame
+   full-frame blurred and draws the skeleton. It does not run a second pose
+   model. The visualization is validated and deleted. The original and
+   temporary model-input files are deleted after success or failure. Only
+   encrypted `predictions.json` is retained for the job; expiry and startup
+   recovery sweep that artifact and abandon interrupted work.
 
 Full-frame blur reduces visual exposure but does not guarantee anonymity. Every
 frame is blurred regardless of Haar face detection. The detector can miss
@@ -366,12 +381,13 @@ profile, low-light, masked or occluded faces; coverage below the job policy fail
 the detection, while intermittent coverage is surfaced as a review flag. The
 privacy result is evidence about the transform, not a proof that no identifying
 feature remains. Both pinned model components receive the same
-full-frame-blurred frames, and all retained visual artifacts are blurred and
-audio-free. The original and normalized transient files remain a private-work
-boundary until cleanup.
+full-frame-blurred frames. The audio-free validation visualization is transient
+and deleted before readiness; no detection video or visualization preview is
+retained or served. The original and normalized transient files remain a
+private-work boundary until cleanup.
 
 EEG draft uploads are bounded separately from video jobs: the HTTP body is
-rejected before multipart parsing when it exceeds the configured upload limit,
+rejected before route handling when it exceeds the configured upload limit,
 each account has a pending-draft count/byte cap, and a background retention
 sweep removes expired rows and old orphaned encrypted draft directories. These
 limits protect temporary storage but are not a substitute for a host-level
@@ -384,6 +400,25 @@ encrypted audio-free protected output and preview for owner-only review. It is a
 privacy transform utility, not the input or evidence artifact for visual
 seizure detection.
 
+Two profiles are available:
+
+- `face-redacted`: full-frame Gaussian blur on every frame; face-detection
+  coverage is a review signal and never determines how much of the frame is
+  blurred.
+- `face-redacted-pose-preview`: the same full-frame blur runs first, then the
+  pinned Lightweight OpenPose model reads only those blurred frames. OpenCV is
+  used for video decoding, blur, and skeleton rendering; it is not the pose
+  detector. The owner-only case/report view can show the protected preview and
+  sampled-frame counts. This path produces no VSViG prediction.
+
+The pose preview uses the video-privacy bounds and does not relax the strict
+1920×1080 VSViG admission contract. It stores no raw keypoint arrays in its
+public response; only a protected visualization and bounded coverage counts
+are retained. The detector returns body-joint locations, not facial Action
+Units. Action Units require a separately reviewed facial-analysis model and
+input contract, neither of which is configured. Do not rename body-joint
+evidence as Action Units or feed it to a model with a different contract.
+
 ## API surface
 
 The detection API is intentionally small:
@@ -393,7 +428,6 @@ POST /api/video-detection/jobs
 GET  /api/video-detection/jobs
 GET  /api/video-detection/jobs/{job_id}
 GET  /api/video-detection/jobs/{job_id}/predictions
-GET  /api/video-detection/jobs/{job_id}/visualization
 ```
 
 The separate audio-free privacy utility uses:
@@ -401,16 +435,16 @@ The separate audio-free privacy utility uses:
 ```text
 POST /api/video-privacy/jobs
 GET  /api/video-privacy/jobs
+GET  /api/video-privacy/jobs?case_id={case_id}
 GET  /api/video-privacy/jobs/{job_id}
 POST /api/video-privacy/jobs/{job_id}/acknowledge
 GET  /api/video-privacy/jobs/{job_id}/preview
 GET  /api/video-privacy/jobs/{job_id}/download
 ```
 
-There is no detection source-video endpoint. The `/visualization` endpoint
-returns only the encrypted, owner-filtered, audio-free privacy-safe artifact
-after authentication; it never returns the original or the internal model-input
-video. Result responses contain generated job IDs, status, privacy provenance,
+There is no detection source-video or visualization endpoint. The transient
+visualization is deleted before a job becomes ready. Result responses contain
+generated job IDs, status, privacy provenance,
 model provenance, window scores, a time-indexed timeline, merged events,
 summary metadata and optional patch-sensitivity evidence. They do not contain
 patient references, original filenames, storage paths, raw video, audio or pose
@@ -478,22 +512,58 @@ The old message, “Mount the official model assets before starting detection,�
 the safe response when the service cannot see a valid named-volume bundle. The
 current messages map to these causes:
 
-| Error code/message family                       | Meaning                                                                                 | Fix                                                                             |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `assets_missing`                                | The named volume is empty or `/opt/vsvig`/`contract.json` is absent                     | Run `vsvig-assets-init` with the two-file Compose command                       |
-| `contract_unreviewed`                           | The manifest hash is absent/wrong or the contract was generated without review approval | Set the ignored `.env` hash to the initializer output and rerun the initializer |
-| `asset_mismatch`                                | A pinned checkpoint/source/license/partition hash, repository or revision differs       | Reinstall the pinned bundle; do not substitute a checkpoint                     |
-| `contract_invalid`                              | A required preprocessing field or shape is malformed                                    | Regenerate the contract; do not hand-edit values to bypass validation           |
-| `runtime_incompatible`                          | PyTorch, timm, OpenCV, the OpenPose import tree or either checkpoint failed to load     | Run `verify_vsvig_runtime`; rebuild the overlay image                           |
-| `video_incompatible`                            | The clip is not readable, constant-timed, `1920×1080`, at least 6 FPS, or long enough   | Convert a consented demo clip to the input contract                             |
-| `privacy_transform_failed`                      | Face-redaction output could not be validated or coverage was too low                    | Inspect detector coverage; use a clearer one-person clip                        |
-| `visualization_failed`                          | The protected audio-free review artifact could not be encoded or validated              | Check the video runtime/codec and retry the consented clip                      |
-| `ambiguous_or_missing_pose` / `incomplete_pose` | No single complete pose was available                                                   | Use one visible person with adequate framing and lighting                       |
-| `no_usable_windows`                             | No complete 30-sampled-frame window was produced                                        | Use at least five seconds of readable video                                     |
+| Error code/message family                       | Meaning                                                                                 | Fix                                                                              |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `assets_missing`                                | The named volume is empty or `/opt/vsvig`/`contract.json` is absent                     | Run `vsvig-assets-init` with the two-file Compose command                        |
+| `contract_unreviewed`                           | The manifest hash is absent/wrong or the contract was generated without review approval | Set the ignored `.env` hash to the initializer output and rerun the initializer  |
+| `asset_mismatch`                                | A pinned checkpoint/source/license/partition hash, repository or revision differs       | Reinstall the pinned bundle; do not substitute a checkpoint                      |
+| `contract_invalid`                              | A required preprocessing field or shape is malformed                                    | Regenerate the contract; do not hand-edit values to bypass validation            |
+| `runtime_incompatible`                          | PyTorch, timm, OpenCV, the OpenPose import tree or either checkpoint failed to load     | Run `verify_vsvig_runtime`; rebuild the backend image                            |
+| `video_incompatible`                            | The clip is unreadable, has unstable timing, is under 6 FPS, or is too short/long       | Use a readable, constant-timed clip within the configured duration limits        |
+| `video_resolution_mismatch`                     | Source geometry is not `1920×1080` and adaptation is disabled                           | Select native `1920×1080`, or enable the experimental option for research review |
+| `privacy_transform_failed`                      | Face-redaction output could not be validated or coverage was too low                    | Inspect detector coverage; use a clearer one-person clip                         |
+| `visualization_failed`                          | The protected audio-free review artifact could not be encoded or validated              | Check the video runtime/codec and retry the consented clip                       |
+| `ambiguous_or_missing_pose` / `incomplete_pose` | No single complete pose was available                                                   | Use one visible person with adequate framing and lighting                        |
+| `no_usable_windows`                             | No complete 30-sampled-frame window was produced                                        | Use at least five seconds of readable video                                      |
 
 Do not put exception traces, local paths, filenames or patient media into a bug
 report. The worker deliberately converts upstream exceptions into fixed public
 error codes.
+
+## Compose startup-log notes
+
+- `storage-init` and `vsvig-assets-init` are one-shot setup containers; an
+  `exited with code 0` state means they finished successfully. The asset output
+  should still be checked for its manifest and reviewed contract before model
+  use.
+- `INFO tensorflow ... cpu_feature_guard` is an informational CPU capability
+  message, not a failed inference or warning.
+- `torch.jit.interface` and `timm.models.registry` warnings came from the old
+  video image. The video dependency pin is now `timm==1.0.30`; the runtime
+  applies only the exact `register_model` import-path update in memory, after
+  verifying the untouched upstream source hash. The checkpoint and source
+  bundle are not edited.
+- NNPACK is disabled by default with PyTorch's supported backend flag to avoid
+  unsupported-hardware initialization noise on the local Docker CPU runtime.
+  `MDS01_NNPACK_ENABLED=true` is an explicit opt-in for a host where its CPU
+  support has been verified; this optional kernel is an acceleration, not a
+  model feature. The application also directs Fontconfig caches to its writable
+  temporary cache directory.
+- PostgreSQL messages about an interrupted shutdown and WAL recovery are
+  separate from the backend model warnings. In the supplied log PostgreSQL
+  completed recovery and became ready; a clean `docker compose stop` avoids
+  generating that recovery path on normal shutdown. If recovery does not reach
+  ready state, preserve the database volume and inspect it before attempting
+  repair.
+
+After changing the video image, rebuild only the backend image and verify the
+pinned runtime with warnings treated as errors:
+
+```sh
+docker compose build backend
+docker compose up -d --no-deps backend
+docker compose exec -T backend python -W error::FutureWarning -m backend.scripts.verify_vsvig_runtime
+```
 
 ## Inspection and evaluation
 
@@ -501,7 +571,7 @@ The inventory helper reports aggregate media counts, durations, frame rates and
 resolutions without printing filenames or file contents:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
+docker compose \
   run --rm --no-deps -v "$VIDEO_DATA_DIR:/private-video-data:ro" backend \
   python -m backend.scripts.video_inventory /private-video-data
 ```
@@ -512,7 +582,7 @@ appearance and is not an evidence artifact:
 
 ```sh
 mkdir -p /tmp/mds01-vision-check
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
+docker compose \
   run --rm --no-deps -v "$VIDEO_DATA_DIR:/private-video-data:ro" \
   -v /tmp/mds01-vision-check:/out backend \
   python -m backend.scripts.inspect_video_vision \
@@ -530,11 +600,9 @@ the complete scientific, privacy and deployment checklist.
 Run the checks that apply to the change. The practical commands are:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
-  run --rm --no-deps vsvig-assets-init
+docker compose run --rm --no-deps vsvig-assets-init
 
-docker compose -f docker-compose.yml -f docker-compose.video-detection.yml \
-  run --rm --no-deps backend python -m backend.scripts.verify_vsvig_runtime
+docker compose run --rm --no-deps backend python -m backend.scripts.verify_vsvig_runtime
 
 .venv/bin/python -m unittest discover -s backend/tests
 cd frontend

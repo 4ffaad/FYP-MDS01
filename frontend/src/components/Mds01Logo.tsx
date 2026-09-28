@@ -1,5 +1,5 @@
 type Mds01LogoProps = {
-  context?: "workspace" | "eeg" | "video" | "detection";
+  context?: "workspace" | "review" | "eeg" | "video" | "detection";
 };
 
 /** Render the MDS01 monogram and research workspace wordmark. */
@@ -31,9 +31,11 @@ export function Mds01Logo({ context = "eeg" }: Mds01LogoProps) {
             ? "Video Detection"
             : context === "video"
               ? "Video Privacy"
-              : context === "workspace"
-                ? "Analysis Workspace"
-                : "VEEG Research"}
+              : context === "review"
+                ? "Patient Review"
+                : context === "workspace"
+                  ? "Analysis Workspace"
+                  : "VEEG Research"}
         </span>
       </span>
     </span>

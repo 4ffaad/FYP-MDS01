@@ -63,6 +63,30 @@ class VideoVisualizationTests(unittest.TestCase):
             self.assertFalse(np.array_equal(rendered[12:55, 28:70], np.full((43, 42, 3), 24, dtype=np.uint8)))
             validate_visualization_artifact(output)
 
+    def test_render_blurred_preview_without_pose_detections(self):
+        if not all(hasattr(cv2, name) for name in ("VideoWriter", "VideoCapture", "VideoWriter_fourcc")):
+            self.skipTest("local cv2 environment has no video codec support")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "synthetic-source.mp4"
+            output = root / "protected.mp4"
+            preview = root / "protected-preview.jpg"
+            writer = cv2.VideoWriter(
+                str(source), cv2.VideoWriter_fourcc(*"mp4v"), 6.0, (96, 64)
+            )
+            self.assertTrue(writer.isOpened())
+            writer.write(np.full((64, 96, 3), 120, dtype=np.uint8))
+            writer.release()
+
+            metadata = render_visualization(source, output, [], preview_path=preview)
+
+            self.assertTrue(metadata["available"])
+            self.assertFalse(metadata["pose_overlay_available"])
+            self.assertEqual(metadata["pose_sample_count"], 0)
+            self.assertTrue(preview.is_file())
+            self.assertGreater(preview.stat().st_size, 0)
+            validate_visualization_artifact(output)
+
     def test_validator_rejects_audio_stream(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory) / "protected.mp4"

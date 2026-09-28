@@ -268,8 +268,8 @@ class LocalAuthenticationTests(unittest.TestCase):
             alice = register_user(db, "alice@example.test", "correct horse battery")
             bob = register_user(db, "bob@example.test", "correct horse battery")
             db.add_all([
-                EEGSession(session_id="SES-ALICE", owner_user_id=alice.id, status=AnalysisStatus.COMPLETED),
-                EEGSession(session_id="SES-BOB", owner_user_id=bob.id, status=AnalysisStatus.COMPLETED),
+                EEGSession(session_id="SES-ALICE", owner_user_id=alice.id, case_id="CASE-ABCDEF1234567890", status=AnalysisStatus.COMPLETED),
+                EEGSession(session_id="SES-BOB", owner_user_id=bob.id, case_id="CASE-0123456789ABCDEF", status=AnalysisStatus.COMPLETED),
                 EEGSession(session_id="SES-LEGACY", status=AnalysisStatus.COMPLETED),
                 UploadDraft(
                     draft_id="DRAFT-ALICE",
@@ -283,8 +283,8 @@ class LocalAuthenticationTests(unittest.TestCase):
                     encrypted_path="",
                     expires_at=utc_now() + timedelta(hours=1),
                 ),
-                VideoPrivacyJob(job_id="VID-ALICE", owner_user_id=alice.id, profile=VideoPrivacyProfile.FACE_REDACTED, display_label="Video upload 01"),
-                VideoPrivacyJob(job_id="VID-BOB", owner_user_id=bob.id, profile=VideoPrivacyProfile.FACE_REDACTED, display_label="Video upload 01"),
+                VideoPrivacyJob(job_id="VID-ALICE", owner_user_id=alice.id, case_id="CASE-ABCDEF1234567890", profile=VideoPrivacyProfile.FACE_REDACTED_POSE_PREVIEW, display_label="Video upload 01"),
+                VideoPrivacyJob(job_id="VID-BOB", owner_user_id=bob.id, case_id="CASE-0123456789ABCDEF", profile=VideoPrivacyProfile.FACE_REDACTED, display_label="Video upload 01"),
             ])
             db.flush()
             sessions = {
@@ -317,6 +317,19 @@ class LocalAuthenticationTests(unittest.TestCase):
             self.assertEqual(client.get("/api/sessions/SES-BOB").status_code, 404)
             self.assertEqual(client.get("/api/sessions/SES-LEGACY").status_code, 404)
             self.assertEqual([item["job_id"] for item in client.get("/api/video-privacy/jobs").json()["jobs"]], ["VID-ALICE"])
+            self.assertEqual(
+                [
+                    item["job_id"]
+                    for item in client.get(
+                        "/api/video-privacy/jobs?case_id=CASE-ABCDEF1234567890"
+                    ).json()["jobs"]
+                ],
+                ["VID-ALICE"],
+            )
+            self.assertEqual(
+                client.get("/api/video-privacy/jobs?case_id=CASE-0123456789ABCDEF").json()["jobs"],
+                [],
+            )
             self.assertEqual(client.get("/api/video-privacy/jobs/VID-BOB").status_code, 404)
             self.assertEqual(client.get("/api/uploads/drafts/DRAFT-ALICE").status_code, 200)
             self.assertEqual(client.get("/api/uploads/drafts/DRAFT-BOB").status_code, 404)

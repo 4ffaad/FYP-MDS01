@@ -34,6 +34,7 @@ _MAX_EVENT_SEGMENT_COMPARISONS = 1_000_000
 _EVENT_SCAN_CHUNK_BYTES = 64 * 1024
 _MAX_SIGNAL_SAMPLES = int(os.getenv("MDS01_MAX_LEGACY_NICOLET_SAMPLES", "5000000"))
 
+
 if any(
     value <= 0
     for value in (
@@ -109,6 +110,56 @@ class NicoletSegment:
     sample_start: int
 
 
+def coalesce_contiguous_segments(
+    segments: tuple[NicoletSegment, ...], sampling_rate: int
+) -> tuple[NicoletSegment, ...]:
+    """Merge time-contiguous segments before resampling or filtering."""
+
+    if sampling_rate <= 0:
+        raise LegacyNicoletError("Legacy Nicolet segment sampling rate is invalid.")
+    if not segments:
+        return ()
+    timing_tolerance = max(1e-6, 0.5 / sampling_rate)
+    coalesced: list[NicoletSegment] = []
+    for segment in segments:
+        if not coalesced:
+            coalesced.append(segment)
+            continue
+        previous = coalesced[-1]
+        delta = segment.start_seconds - (
+            previous.start_seconds + previous.duration_seconds
+        )
+        if delta > timing_tolerance:
+            coalesced.append(segment)
+            continue
+        if delta < -timing_tolerance:
+            raise LegacyNicoletError("Legacy Nicolet recording segments overlap.")
+        coalesced[-1] = NicoletSegment(
+            start_seconds=previous.start_seconds,
+            duration_seconds=(
+                segment.start_seconds
+                + segment.duration_seconds
+                - previous.start_seconds
+            ),
+            sample_count=previous.sample_count + segment.sample_count,
+            sample_start=previous.sample_start,
+        )
+    return tuple(coalesced)
+
+
+def _validate_timestamp_precision(timestamp_seconds: float, sampling_rate: int) -> None:
+    """Reject offsets whose float spacing cannot represent one source sample."""
+
+    if not _finite(timestamp_seconds):
+        raise LegacyNicoletError("Legacy Nicolet timestamp precision is invalid.")
+    with np.errstate(over="ignore", invalid="ignore"):
+        precision = float(np.spacing(np.float64(abs(timestamp_seconds))))
+    if precision >= 1.0 / sampling_rate:
+        raise LegacyNicoletError(
+            "Legacy Nicolet timestamp precision is insufficient for the sample grid."
+        )
+
+
 def _validate_segment_continuity(
     segments: tuple[NicoletSegment, ...], sampling_rate: int
 ) -> None:
@@ -116,14 +167,86 @@ def _validate_segment_continuity(
 
     if sampling_rate <= 0:
         raise LegacyNicoletError("Legacy Nicolet segment sampling rate is invalid.")
+    if not segments:
+        return
     tolerance_seconds = max(1e-6, 0.5 / sampling_rate)
-    for previous, current in zip(segments, segments[1:]):
-        expected_start = previous.start_seconds + previous.duration_seconds
+    first_segment = segments[0]
+    if (
+        not _finite(first_segment.start_seconds)
+        or not _finite(first_segment.duration_seconds)
+        or first_segment.start_seconds < 0
+        or first_segment.duration_seconds <= 0
+    ):
+        raise LegacyNicoletError("Legacy Nicolet recording segments are discontinuous.")
+    _validate_timestamp_precision(first_segment.start_seconds, sampling_rate)
+    expected_start = first_segment.start_seconds + first_segment.duration_seconds
+    _validate_timestamp_precision(expected_start, sampling_rate)
+    for current in segments[1:]:
         if (
             not _finite(current.start_seconds)
+            or not _finite(current.duration_seconds)
+            or current.duration_seconds <= 0
             or abs(current.start_seconds - expected_start) > tolerance_seconds
         ):
             raise LegacyNicoletError("Legacy Nicolet recording segments are discontinuous.")
+        _validate_timestamp_precision(current.start_seconds, sampling_rate)
+        expected_start += current.duration_seconds
+        _validate_timestamp_precision(expected_start, sampling_rate)
+
+
+def _validate_segment_order(
+    segments: tuple[NicoletSegment, ...],
+    sampling_rate: int,
+    total_samples: int | None = None,
+) -> None:
+    """Allow acquisition gaps but reject invalid or misaligned sample grids."""
+
+    if sampling_rate <= 0 or not segments:
+        raise LegacyNicoletError("Legacy Nicolet segment timing is invalid.")
+    tolerance_seconds = max(1e-6, 0.5 / sampling_rate)
+    expected_sample_start = 0
+    previous_segment_end: float | None = None
+    group_start_seconds: float | None = None
+    group_sample_start = 0
+    for segment in segments:
+        if (
+            not _finite(segment.start_seconds)
+            or not _finite(segment.duration_seconds)
+            or segment.start_seconds < 0
+            or segment.duration_seconds <= 0
+            or segment.sample_count <= 0
+            or segment.sample_start != expected_sample_start
+        ):
+            raise LegacyNicoletError("Legacy Nicolet segment timing is invalid.")
+        _validate_timestamp_precision(segment.start_seconds, sampling_rate)
+        segment_end = segment.start_seconds + segment.duration_seconds
+        _validate_timestamp_precision(segment_end, sampling_rate)
+        if previous_segment_end is not None:
+            delta = segment.start_seconds - previous_segment_end
+            if delta < -tolerance_seconds:
+                raise LegacyNicoletError("Legacy Nicolet recording segments overlap.")
+            if delta > tolerance_seconds:
+                group_start_seconds = segment.start_seconds
+                group_sample_start = segment.sample_start
+        else:
+            group_start_seconds = segment.start_seconds
+            group_sample_start = segment.sample_start
+
+        if group_start_seconds is None:
+            raise LegacyNicoletError("Legacy Nicolet segment timing is invalid.")
+        cumulative_sample_duration = (
+            segment.sample_start + segment.sample_count - group_sample_start
+        ) / sampling_rate
+        declared_group_duration = segment_end - group_start_seconds
+        if abs(cumulative_sample_duration - declared_group_duration) > tolerance_seconds:
+            raise LegacyNicoletError(
+                "Legacy Nicolet segment sample grid is misaligned with source timestamps."
+            )
+
+        previous_segment_end = segment_end
+        expected_sample_start += segment.sample_count
+    if total_samples is not None and expected_sample_start != total_samples:
+        raise LegacyNicoletError("Legacy Nicolet segment sample ranges are invalid.")
 
 
 @dataclass(frozen=True)
@@ -582,7 +705,18 @@ class LegacyNicoletReader:
         stream: BinaryIO,
         channel: NicoletChannel,
         total_samples: int,
+        *,
+        sample_start: int = 0,
+        sample_count: int | None = None,
     ) -> np.ndarray:
+        if sample_count is None:
+            sample_count = total_samples - sample_start
+        if (
+            sample_start < 0
+            or sample_count <= 0
+            or sample_start + sample_count > total_samples
+        ):
+            raise LegacyNicoletError("Legacy Nicolet signal range is invalid.")
         entries = self._section_entries.get(channel.section_id, ())
         if not entries:
             raise LegacyNicoletError("Legacy Nicolet channel data section is missing.")
@@ -597,10 +731,11 @@ class LegacyNicoletReader:
         if cursor < total_samples:
             raise LegacyNicoletError("Legacy Nicolet signal data is incomplete.")
 
-        output = np.empty(total_samples, dtype=np.float32)
+        requested_end = sample_start + sample_count
+        output = np.empty(sample_count, dtype=np.float32)
         for start, end, offset in sections:
-            left = max(0, start)
-            right = min(total_samples, end)
+            left = max(sample_start, start)
+            right = min(requested_end, end)
             if right <= left:
                 continue
             sample_count = right - left
@@ -609,7 +744,7 @@ class LegacyNicoletReader:
             data *= channel.scale
             if not np.isfinite(data).all():
                 raise LegacyNicoletError("Legacy Nicolet signal data is non-finite.")
-            output[left:right] = data
+            output[left - sample_start : right - sample_start] = data
         return output
 
     def read_data(self) -> tuple[np.ndarray, int, list[str]]:
@@ -617,6 +752,11 @@ class LegacyNicoletReader:
 
         header = self.read_header()
         _validate_segment_continuity(header.segments, header.sampling_rate)
+        _validate_segment_order(
+            header.segments,
+            header.sampling_rate,
+            header.total_samples,
+        )
         signals: np.ndarray
         labels: list[str]
         if header.sampling_rate == MODEL_SAMPLING_RATE:
@@ -656,6 +796,73 @@ class LegacyNicoletReader:
             raise LegacyNicoletError("Legacy Nicolet signal data is non-finite.")
         return cast(np.ndarray, signals.astype(np.float32, copy=False)), sampling_rate, labels
 
+    def read_data_segments(self) -> tuple[list[tuple[float, np.ndarray]], int, list[str]]:
+        """Read each contiguous acquisition segment without joining time gaps."""
+
+        header = self.read_header()
+        _validate_segment_order(
+            header.segments,
+            header.sampling_rate,
+            header.total_samples,
+        )
+        segments = coalesce_contiguous_segments(header.segments, header.sampling_rate)
+        output: list[tuple[float, np.ndarray]] = []
+        if header.sampling_rate == MODEL_SAMPLING_RATE:
+            selected = select_model_channels(header)
+            with self._open_source() as stream:
+                for segment in segments:
+                    signals = np.empty(
+                        (len(selected), segment.sample_count), dtype=np.float32
+                    )
+                    for index, channel in enumerate(selected):
+                        signals[index] = self._read_channel_samples(
+                            stream,
+                            channel,
+                            header.total_samples,
+                            sample_start=segment.sample_start,
+                            sample_count=segment.sample_count,
+                        )
+                    output.append((segment.start_seconds, signals))
+            sampling_rate = MODEL_SAMPLING_RATE
+        elif header.sampling_rate == LEGACY_SOURCE_SAMPLING_RATE:
+            montage = select_legacy_montage_channels(header)
+            source_channels = {
+                channel for _, left, right in montage for channel in (left, right)
+            }
+            with self._open_source() as stream:
+                for segment in segments:
+                    source_signals = {
+                        channel: self._read_channel_samples(
+                            stream,
+                            channel,
+                            header.total_samples,
+                            sample_start=segment.sample_start,
+                            sample_count=segment.sample_count,
+                        )
+                        for channel in source_channels
+                    }
+                    signals = np.empty(
+                        (len(montage), segment.sample_count), dtype=np.float32
+                    )
+                    for index, (_, left, right) in enumerate(montage):
+                        np.subtract(source_signals[left], source_signals[right], out=signals[index])
+                    del source_signals
+                    signals = resample_poly(
+                        signals,
+                        _LEGACY_RESAMPLE_UP,
+                        _LEGACY_RESAMPLE_DOWN,
+                        axis=1,
+                        window=("kaiser", 5.0),
+                    )
+                    output.append((segment.start_seconds, signals.astype(np.float32, copy=False)))
+            sampling_rate = MODEL_SAMPLING_RATE
+        else:
+            raise LegacyNicoletError("Legacy Nicolet source sampling rate is unsupported.")
+
+        if any(not np.isfinite(signals).all() for _, signals in output):
+            raise LegacyNicoletError("Legacy Nicolet signal data is non-finite.")
+        return output, sampling_rate, list(MODEL_CHANNELS)
+
 
 def select_model_channels(header: NicoletHeader) -> tuple[NicoletChannel, ...]:
     """Select the exact reviewed 18-channel EEG contract."""
@@ -684,6 +891,14 @@ def read_uniform_legacy_nicolet(path: str | Path) -> tuple[np.ndarray, int, list
     """Read a legacy Nicolet file using its common-rate EEG channels."""
 
     return LegacyNicoletReader(path).read_data()
+
+
+def read_uniform_legacy_nicolet_segments(
+    path: str | Path,
+) -> tuple[list[tuple[float, np.ndarray]], int, list[str]]:
+    """Read legacy Nicolet data as separate contiguous signal segments."""
+
+    return LegacyNicoletReader(path).read_data_segments()
 
 
 def read_legacy_nicolet_events(path: str | Path) -> tuple[NicoletEvent, ...]:

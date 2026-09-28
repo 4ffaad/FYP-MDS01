@@ -22,6 +22,51 @@ database access belongs in repositories, and long-running EEG work belongs in
 `backend/app/services/processing_service.py` and is scheduled through FastAPI
 BackgroundTasks.
 
+## Repository map
+
+- `backend/app/main.py` configures FastAPI, auth, routers, startup validation,
+  and retention/recovery tasks.
+- `backend/app/api/` contains HTTP routes; `backend/app/services/` owns upload,
+  processing, auth, case, storage, explanation, and cleanup workflows.
+- `backend/app/database/` contains SQLModel models, the engine/session helper,
+  and repositories. Schema history lives in `backend/migrations/versions/`.
+- `backend/app/eeg/`, `privacy/`, and `ml/` implement EEG input, privacy, and
+  inference. `video_privacy/` is a separate transform; `video_detection/`
+  validates and runs the pinned VSViG/pose pipeline. Offline evaluation and
+  calibration code lives in `backend/app/research/` and `backend/scripts/`.
+- `frontend/src/app/` uses the Next.js App Router; `components/` holds screens
+  and UI, and `lib/` holds the API adapter, types, and client workflows.
+- `scripts/` contains local setup and launchers. `docs/README.md` maps the
+  setup, architecture, backend, frontend, design, and video runbooks.
+
+## Runtime, database, and commands
+
+- `docker-compose.yml` is the team runtime: PostgreSQL 16, the backend,
+  private storage initialization, and VSViG asset initialization. The backend
+  runs Alembic before Uvicorn. Base Compose defaults EEG inference to the
+  development stub; video detection uses the separately verified external
+  bundle.
+- Native mode uses SQLite and local encrypted storage. `scripts/start-native.mjs`
+  applies Alembic before starting FastAPI. `docker-compose.local-research.yml`
+  opts into the local H5 profile. The video-detection Compose file is an empty
+  compatibility overlay; the main Compose file owns that service. The security
+  Compose file is a separate disposable test stack.
+- From the repository root, `node scripts/demo.mjs` selects the local H5
+  research profile and requires its ignored model and reviewed contract;
+  `node scripts/demo.mjs --development-stub` selects the stub. Plain
+  `docker compose up --build` builds and starts the base stack. Native startup
+  uses `node scripts/setup.mjs`, then `node scripts/start-native.mjs`.
+- Backend tests use stdlib `unittest`:
+  `PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v`.
+  Launcher checks use `node --test scripts/setup.test.mjs` and
+  `node --test scripts/start-native.test.mjs`.
+- From `frontend/`, use `npm run dev` for development and `npm run build` for
+  the production build. Frontend checks are `npm run format:check`,
+  `npm run lint`, `npx next typegen`, `npx tsc --noEmit`, and
+  `npm run test:e2e`. Auth, report-API, and real-service browser suites have
+  separate `test:e2e:auth`, `test:e2e:report`, and `test:e2e:real` scripts.
+  See `docs/setup.md` for prerequisites and runtime-specific details.
+
 ## Privacy boundaries
 
 - Keep EEG binaries outside PostgreSQL.
@@ -54,11 +99,16 @@ threshold: 0.5
 Do not invent a real model architecture, output contract, preprocessing
 parameters, or clinical explanation method. For video, use the pinned VSViG
 and Lightweight OpenPose contract in `docs/video-detection.md`; do not replace
-its source, checkpoints, or preprocessing silently.
+its source or checkpoints. The optional `VSVIG_ALLOW_LETTERBOX_ADAPTATION`
+research path is disabled by default; preserve its provenance and never treat
+adapted inputs as validated equivalents to native 1920×1080 inputs.
 
 ## API
 
-The primary API is asynchronous:
+The API exposes authentication under `/api/auth/`, owner-protected
+cases/patient profiles and EEG sessions/uploads/recordings, a separate video
+privacy utility, and independent video-detection resources. The primary EEG
+workflow is asynchronous:
 
 ```text
 POST /api/sessions/upload
@@ -74,15 +124,42 @@ GET  /api/recordings/{record_id}
 GET  /api/recordings/{record_id}/prediction
 GET  /api/recordings/{record_id}/explanation
 GET  /api/recordings/{record_id}/signal
+GET  /api/cases
+GET  /api/cases/{case_id}
+GET  /api/cases/{case_id}/patient-profile
+PUT  /api/cases/{case_id}/patient-profile
+DELETE /api/cases/{case_id}/patient-profile
+POST /api/video-privacy/jobs
+GET  /api/video-privacy/jobs
+POST /api/video-detection/preflight
 POST /api/video-detection/jobs
 GET  /api/video-detection/jobs
 GET  /api/video-detection/jobs/{job_id}
+GET  /api/video-detection/jobs/{job_id}/visualization
 GET  /api/video-detection/jobs/{job_id}/predictions
 ```
 
 The old `/api/v1` prototype routes have been removed. EEG changes use the
 asynchronous session and recording API; video detection remains an independent,
 owner-filtered workflow.
+
+## Test coverage and risk areas
+
+- Backend tests are stdlib `unittest`; most database tests use temporary
+  in-memory SQLite, and model/runtime tests use synthetic or mocked assets.
+  They do not by themselves verify PostgreSQL behavior or real model outputs.
+- The default Playwright configuration uses the browser API stub. Use the
+  dedicated report/auth/real suites when changing their backend integration.
+- No CI workflow is checked into this repository. Run the relevant local
+  checks and record which runtime/profile they cover.
+- `docs/setup.md` describes the demo launcher as stub-first, but
+  `scripts/demo.mjs` currently defaults to H5 and requires local assets. Check
+  the launcher when documenting or selecting the demo profile.
+- Authentication and owner filtering, upload/archive parsing, EDF metadata
+  handling, encrypted file cleanup/retention, model-contract validation, and
+  video admission/model assets are privacy or data-loss boundaries. Keep their
+  regression tests current and verify the affected runtime profile; never
+  treat a stub or synthetic fixture as evidence about clinical performance.
 
 ## Development rules
 
@@ -97,3 +174,5 @@ owner-filtered workflow.
 7. Keep VSViG assets outside Git, install them with the pinned installer, and
    run the model verification command before enabling video detection.
 8. Treat all outputs as research-only; label stub predictions as development data.
+9. For frontend work, follow `frontend/AGENTS.md` (including its installed
+   Next.js documentation requirement) and `DESIGN.md`.

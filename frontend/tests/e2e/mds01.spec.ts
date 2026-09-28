@@ -1,139 +1,80 @@
-import { test, expect } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => window.localStorage.clear());
+  await page.addInitScript(() => {
+    const key = "mds01.e2e-cleaned";
+    if (window.sessionStorage.getItem(key)) return;
+    window.localStorage.clear();
+    window.sessionStorage.setItem(key, "true");
+  });
 });
 
-test("upload leads with one clear action and creates a queued analysis", async ({
-  page,
-}) => {
+async function seedCompletedStubSession(page: Page, sessionId: string) {
+  await page.goto("/dashboard");
+  await page.evaluate((jobId) => {
+    window.localStorage.setItem(
+      "mds01.jobs.v1",
+      JSON.stringify([
+        {
+          jobId,
+          recordingLabel: "Recording 01",
+          submittedAt: new Date(Date.now() - 30_000).toISOString(),
+          status: "complete",
+          privacyMethod: {
+            id: "metadata-scrub",
+            label: "Metadata scrub",
+            description:
+              "Required baseline. Removes identifying EDF metadata while preserving waveform values.",
+            previewTitle: "Waveform preserved",
+            previewDescription:
+              "The waveform stays the same. Identifying EDF header fields are removed before analysis.",
+            required: true,
+          },
+        },
+      ]),
+    );
+  }, sessionId);
+  await page.goto(`/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+test("upload opens one patient-folder review", async ({ page }) => {
   await page.goto("/upload");
   await expect(
-    page.getByRole("heading", { name: "Start a VEEG analysis" }),
+    page.getByRole("heading", { name: "Add a patient recording" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "MDS01 patient review" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Choose patient folder" }),
+  ).toBeVisible();
+  await expect(page.locator('input[type="file"]')).toHaveAttribute(
+    "webkitdirectory",
+    "",
+  );
   await expect(page.getByRole("radio")).toHaveCount(0);
-  const archiveInput = page.locator("#eeg-file");
-  await archiveInput.focus();
-  const uploadTarget = page.locator('label[for="eeg-file"]');
-  expect(
-    await uploadTarget.evaluate(
-      (element) => getComputedStyle(element).boxShadow,
-    ),
-  ).not.toBe("none");
-  await archiveInput.setInputFiles({
-    name: "recording_01.zip",
-    mimeType: "application/zip",
-    buffer: Buffer.from("synthetic"),
-  });
-  await expect(
-    page.getByText("Required baseline", { exact: true }),
-  ).toBeVisible({ timeout: 15000 });
-  await page.getByRole("checkbox", { name: /Signal obfuscation/ }).check();
-  await page.screenshot({
-    path: test.info().outputPath("upload.png"),
-    fullPage: true,
-  });
-  await page.getByRole("button", { name: "Submit for analysis" }).click();
-  await expect(page).toHaveURL(/sessions/);
-  await expect(
-    page.getByText("Analysis session", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText(
-      "1 recording still processing. Only completed results are shown.",
-      { exact: true },
-    ),
-  ).toBeVisible();
-  await expect(page.getByLabel("Status: Queued")).toBeVisible();
-  const processingStatus = page.getByLabel("Status: Processing");
-  await expect(processingStatus).toBeVisible({ timeout: 5000 });
-  await expect(processingStatus.locator("svg")).toHaveClass(/animate-spin/);
 });
 
-test("upload accurately describes the default EEG inference runtime", async ({
+test("intake copy describes the combined workflow without a warning wall", async ({
   page,
 }) => {
   await page.goto("/upload");
-  const modelDisclosure = page.getByText("Both remain research-only");
-  await expect(modelDisclosure).toContainText(
-    "development stub is the local demo default",
-  );
-  await expect(modelDisclosure).toContainText("reviewed H5 runtime is opt-in");
-
-  await page.locator("#eeg-file").setInputFiles({
-    name: "runtime-copy.zip",
-    mimeType: "application/zip",
-    buffer: Buffer.from("synthetic"),
-  });
   await expect(
-    page.getByText("Required baseline", { exact: true }),
-  ).toBeVisible({ timeout: 15000 });
-  const pipelineDetail = page
-    .locator("p")
-    .filter({ hasText: "Encrypt → metadata scrub" });
-  await expect(pipelineDetail).toContainText("development stub by default");
-  await expect(pipelineDetail).toContainText("reviewed H5 runtime opt-in");
+    page.getByText(/report, multiple EEG recordings, and video clips/i),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/not a diagnosis|research-only warning/i),
+  ).toHaveCount(0);
 });
 
-test("privacy preview shows the fixed 18-channel contract and an accessible divider", async ({
+test("legacy patient-intake route redirects to the unified upload", async ({
   page,
 }) => {
-  const signalRequests: string[] = [];
-  page.on("request", (request) => {
-    if (request.url().includes("/signal")) signalRequests.push(request.url());
-  });
-  await page.goto("/upload");
-  await page.locator("#eeg-file").setInputFiles({
-    name: "preview_case.zip",
-    mimeType: "application/zip",
-    buffer: Buffer.from("synthetic"),
-  });
+  await page.goto("/patient-intake");
+  await expect(page).toHaveURL(/\/upload$/);
   await expect(
-    page.getByRole("checkbox", { name: /Signal obfuscation/ }),
-  ).toBeVisible({ timeout: 15000 });
-  await expect(
-    page.getByRole("img", { name: /Synthetic 18-channel VEEG preview/ }),
+    page.getByRole("heading", { name: "Add a patient recording" }),
   ).toBeVisible();
-  await expect(page.getByText("FP1-F7", { exact: true })).toBeVisible();
-  await expect(page.getByText("CZ-PZ", { exact: true })).toBeVisible();
-  const previewScroller = page
-    .getByRole("region", { name: /Waveform preserved/ })
-    .locator(".overflow-x-auto");
-  expect(
-    await previewScroller.evaluate(
-      (element) => element.scrollWidth <= element.clientWidth + 1,
-    ),
-  ).toBe(true);
-  const divider = page.getByRole("slider", {
-    name: "Before and after preview divider",
-  });
-  await expect(divider).toHaveAttribute(
-    "aria-valuetext",
-    /50% before.*50% after/,
-  );
-  await divider.focus();
-  await page.keyboard.press("Home");
-  await expect(divider).toHaveAttribute(
-    "aria-valuetext",
-    /100% before.*0% after/,
-  );
-  await expect(
-    page.locator('clipPath[data-layer-clip="before"] rect'),
-  ).toHaveAttribute("width", "100");
-  await expect(
-    page.locator('clipPath[data-layer-clip="after"] rect'),
-  ).toHaveAttribute("width", "0");
-  await page.keyboard.press("End");
-  await expect(divider).toHaveAttribute("aria-valuetext", /100% after/);
-  await expect(
-    page.locator('clipPath[data-layer-clip="before"] rect'),
-  ).toHaveAttribute("width", "0");
-  await expect(
-    page.locator('clipPath[data-layer-clip="after"] rect'),
-  ).toHaveAttribute("width", "100");
-  await page.getByRole("checkbox", { name: /Signal obfuscation/ }).check();
-  await expect(page.getByText("Signal detail reduced")).toBeVisible();
-  expect(signalRequests).toHaveLength(0);
 });
 
 test("VEEG analysis shows an empty state and no private fields", async ({
@@ -157,9 +98,13 @@ test("VEEG analysis shows an empty state and no private fields", async ({
   await expect(
     page.getByRole("heading", { name: "VEEG analysis" }),
   ).toBeVisible();
-  await expect(
-    page.locator('[data-slot="button"]', { hasText: "New analysis" }),
-  ).toHaveCSS("color", "rgb(255, 255, 255)");
+  if ((page.viewportSize()?.width ?? 0) >= 1024) {
+    await expect(
+      page
+        .getByRole("navigation", { name: "Primary navigation" })
+        .getByRole("link", { name: "New patient review", exact: true }),
+    ).toHaveAttribute("href", "/upload");
+  }
   if ((page.viewportSize()?.width ?? 0) < 1024) {
     const menuButton = page.getByRole("button", { name: /navigation menu/ });
     await expect(menuButton).toBeVisible();
@@ -173,7 +118,7 @@ test("VEEG analysis shows an empty state and no private fields", async ({
     await expect(
       page
         .getByRole("navigation", { name: "Primary navigation" })
-        .getByRole("link", { name: "New analysis", exact: true }),
+        .getByRole("link", { name: "New patient review", exact: true }),
     ).toBeVisible();
     await menuButton.click();
     await expect(menuButton).toHaveAttribute("aria-expanded", "false");
@@ -196,16 +141,7 @@ test("VEEG analysis shows an empty state and no private fields", async ({
 test("completed analysis opens a result with a score timeline and explanation notice", async ({
   page,
 }) => {
-  await page.goto("/upload");
-  await page.locator("#eeg-file").setInputFiles({
-    name: "review_case.zip",
-    mimeType: "application/zip",
-    buffer: Buffer.from("synthetic"),
-  });
-  await expect(
-    page.getByRole("button", { name: "Submit for analysis" }),
-  ).toBeVisible({ timeout: 15000 });
-  await page.getByRole("button", { name: "Submit for analysis" }).click();
+  await seedCompletedStubSession(page, "MDS-STUB-RESULT");
   const sessionRegion = page.getByRole("region", { name: /MDS-/ });
   await expect(page.getByLabel("Status: Complete").first()).toBeVisible({
     timeout: 15000,
@@ -216,18 +152,23 @@ test("completed analysis opens a result with a score timeline and explanation no
   await expect(
     page.getByRole("heading", { name: "Development flag" }),
   ).toBeVisible();
+  const signalPreviewEnabled =
+    process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW === "true";
   await expect(
     page.getByRole("region", { name: "VEEG waveform review" }),
-  ).toBeVisible();
+  ).toHaveCount(signalPreviewEnabled ? 1 : 0);
   await expect(
     page.getByRole("img", { name: /Display-normalized 18-channel VEEG/ }),
-  ).toBeVisible();
-  await expect(
-    page.getByText(
-      "VEEG viewing is disabled because the signal can remain biometrically sensitive.",
-      { exact: true },
-    ),
-  ).toHaveCount(0);
+  ).toHaveCount(signalPreviewEnabled ? 1 : 0);
+  const signalNotice = page.getByText(
+    "VEEG viewing is disabled because the signal can remain biometrically sensitive.",
+    { exact: true },
+  );
+  if (signalPreviewEnabled) {
+    await expect(signalNotice).toHaveCount(0);
+  } else {
+    await expect(signalNotice).toBeVisible();
+  }
   const predictionTimeline = page.getByRole("group", {
     name: "Prediction score timeline",
   });
@@ -298,16 +239,7 @@ test("recording navigation precedes result details on tablet", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 900 });
-  await page.goto("/upload");
-  await page.locator("#eeg-file").setInputFiles({
-    name: "tablet_review.zip",
-    mimeType: "application/zip",
-    buffer: Buffer.from("synthetic"),
-  });
-  await expect(
-    page.getByRole("button", { name: "Submit for analysis" }),
-  ).toBeVisible({ timeout: 15000 });
-  await page.getByRole("button", { name: "Submit for analysis" }).click();
+  await seedCompletedStubSession(page, "MDS-STUB-TABLET");
   await expect(page.getByLabel("Status: Complete").first()).toBeVisible({
     timeout: 15000,
   });
@@ -328,16 +260,7 @@ test("recording navigation precedes result details on tablet", async ({
 test("VEEG analysis groups recordings under the session timestamp", async ({
   page,
 }) => {
-  await page.goto("/upload");
-  await page.locator("#eeg-file").setInputFiles({
-    name: "grouped_case.zip",
-    mimeType: "application/zip",
-    buffer: Buffer.from("synthetic"),
-  });
-  await expect(
-    page.getByRole("button", { name: "Submit for analysis" }),
-  ).toBeVisible({ timeout: 15000 });
-  await page.getByRole("button", { name: "Submit for analysis" }).click();
+  await seedCompletedStubSession(page, "MDS-STUB-GROUPED");
   await page.getByRole("link", { name: "Back to VEEG analysis" }).click();
   await expect(
     page.getByRole("heading", { name: "VEEG analysis" }),
@@ -363,16 +286,7 @@ test("VEEG analysis groups recordings under the session timestamp", async ({
 test("completed sessions can be deleted from VEEG analysis", async ({
   page,
 }) => {
-  await page.goto("/upload");
-  await page.locator("#eeg-file").setInputFiles({
-    name: "delete_case.zip",
-    mimeType: "application/zip",
-    buffer: Buffer.from("synthetic"),
-  });
-  await expect(
-    page.getByRole("button", { name: "Submit for analysis" }),
-  ).toBeVisible({ timeout: 15000 });
-  await page.getByRole("button", { name: "Submit for analysis" }).click();
+  await seedCompletedStubSession(page, "MDS-STUB-DELETE");
   const sessionRegion = page.getByRole("region", { name: /MDS-/ });
   await expect(page.getByLabel("Status: Complete").first()).toBeVisible({
     timeout: 15000,
@@ -405,70 +319,6 @@ test("unknown result has a recoverable error state", async ({ page }) => {
   await expect(
     page.getByRole("link", { name: /Return to VEEG analysis/ }),
   ).toBeVisible();
-});
-
-test("one upload can start VEEG and video review together", async ({
-  page,
-}) => {
-  const videoJob = {
-    job_id: "VID-paired",
-    label: "Paired video review",
-    status: "ready",
-    current_stage: "complete",
-    duration_seconds: 12,
-    fps: 30,
-    created_at: new Date().toISOString(),
-    retention_expires_at: new Date(Date.now() + 3600000).toISOString(),
-    video_available: false,
-    error: null,
-  };
-  await page.route("**/api/video-detection/jobs", async (route) => {
-    if (route.request().method() === "POST")
-      return route.fulfill({ json: { job: videoJob } });
-    return route.fulfill({ json: { jobs: [videoJob] } });
-  });
-  await page.route("**/api/video-detection/jobs/VID-paired", (route) =>
-    route.fulfill({ json: { job: videoJob } }),
-  );
-
-  await page.goto("/upload");
-  await page.locator("#eeg-file").setInputFiles({
-    name: "paired.zip",
-    mimeType: "application/zip",
-    buffer: Buffer.from("synthetic"),
-  });
-  await expect(
-    page.getByText("Required baseline", { exact: true }),
-  ).toBeVisible({ timeout: 15000 });
-  await expect(page.locator("#video-file")).toHaveAttribute(
-    "aria-describedby",
-    "video-file-help",
-  );
-  await page.locator("#video-file").setInputFiles({
-    name: "paired.mp4",
-    mimeType: "video/mp4",
-    buffer: Buffer.from("synthetic"),
-  });
-  await expect(
-    page.getByText("Video seizure review", { exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Submit for analysis" }).click();
-  await expect(page).toHaveURL(
-    /\/analysis\?sessionId=.*&videoJobId=VID-paired/,
-  );
-  await expect(
-    page.getByRole("heading", { name: "Analysis report" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "VEEG analysis" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Video seizure review" }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Face redaction", { exact: false }),
-  ).toBeVisible();
-  await expect(page.getByText("VSViG model", { exact: false })).toBeVisible();
 });
 
 test("demo report shows assumed EEG-video timing and prints a research-only summary", async ({
@@ -541,21 +391,10 @@ test("demo report shows assumed EEG-video timing and prints a research-only summ
       }),
   );
 
-  await page.goto("/upload");
-  await page.locator("#eeg-file").setInputFiles({
-    name: "demo_report.zip",
-    mimeType: "application/zip",
-    buffer: Buffer.from("synthetic"),
-  });
-  await expect(
-    page.getByText("Required baseline", { exact: true }),
-  ).toBeVisible({ timeout: 15000 });
-  await page.locator("#video-file").setInputFiles({
-    name: "demo_report.mp4",
-    mimeType: "video/mp4",
-    buffer: Buffer.from("synthetic"),
-  });
-  await page.getByRole("button", { name: "Submit for analysis" }).click();
+  await seedCompletedStubSession(page, "MDS-STUB-DEMO-REPORT");
+  await page.goto(
+    "/analysis?sessionId=MDS-STUB-DEMO-REPORT&videoJobId=VID-demo-report",
+  );
 
   await expect(
     page.getByRole("heading", { name: "EEG and video review" }),
@@ -615,59 +454,4 @@ test("demo report shows assumed EEG-video timing and prints a research-only summ
     "data-print-requested",
     "true",
   );
-});
-
-test("paired upload can retry video after EEG submission", async ({ page }) => {
-  let videoPosts = 0;
-  const videoJob = {
-    job_id: "VID-retry",
-    label: "Retry video review",
-    status: "queued",
-    current_stage: "queued",
-    duration_seconds: null,
-    fps: null,
-    created_at: new Date().toISOString(),
-    retention_expires_at: new Date(Date.now() + 3600000).toISOString(),
-    video_available: false,
-    error: null,
-  };
-  await page.route("**/api/video-detection/jobs", async (route) => {
-    if (route.request().method() !== "POST")
-      return route.fulfill({ json: { jobs: [] } });
-    videoPosts += 1;
-    if (videoPosts === 1)
-      return route.fulfill({
-        status: 503,
-        json: { detail: "temporarily busy" },
-      });
-    return route.fulfill({ status: 202, json: { job: videoJob } });
-  });
-
-  await page.goto("/upload");
-  await page.locator("#eeg-file").setInputFiles({
-    name: "retry.zip",
-    mimeType: "application/zip",
-    buffer: Buffer.from("synthetic"),
-  });
-  await expect(
-    page.getByText("Required baseline", { exact: true }),
-  ).toBeVisible({
-    timeout: 15000,
-  });
-  await page.locator("#video-file").setInputFiles({
-    name: "retry.mp4",
-    mimeType: "video/mp4",
-    buffer: Buffer.from("synthetic"),
-  });
-  await page.getByRole("button", { name: "Submit for analysis" }).click();
-  await expect(
-    page.getByRole("link", { name: "Open the submitted EEG analysis" }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("The VEEG analysis was submitted", { exact: false }),
-  ).toBeVisible();
-
-  await page.getByRole("button", { name: "Submit for analysis" }).click();
-  await expect(page).toHaveURL(/\/analysis\?sessionId=.*&videoJobId=VID-retry/);
-  expect(videoPosts).toBe(2);
 });

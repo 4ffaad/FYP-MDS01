@@ -1,15 +1,22 @@
 "use client";
+/* eslint-disable @next/next/no-img-element -- Authenticated protected media must bypass Next's optimizer/cache. */
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getResult } from "@/lib/api";
+import { getPatientProfile, getResult, getVideoPrivacyJobs } from "@/lib/api";
 import {
   getDetectionResults,
   type DetectionJob,
   type DetectionResult,
 } from "@/lib/video-detection";
 import { formatRelativeTime } from "@/lib/format";
-import type { AnalysisResult, Session } from "@/lib/types";
+import { reportDetails } from "@/lib/patient-profile-privacy";
+import type {
+  AnalysisResult,
+  PatientProfile,
+  Session,
+  VideoPrivacyJob,
+} from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { EegAnnotationList } from "./EegAnnotationList";
 
@@ -20,6 +27,12 @@ type LoadedEegResult =
 type LoadedVideoResult =
   | { jobId: string; status: "ready"; result: DetectionResult }
   | { jobId: string; status: "error" };
+type LoadedPatientProfile =
+  | { caseId: string; status: "ready"; profile: PatientProfile | null }
+  | { caseId: string; status: "error" };
+type LoadedVideoPrivacyJobs =
+  | { caseId: string; status: "ready"; jobs: VideoPrivacyJob[] }
+  | { caseId: string; status: "error" };
 
 /** Compose independently authorized modality results into a local print view. */
 export function CombinedReviewReport({
@@ -47,6 +60,12 @@ export function CombinedReviewReport({
   const [selectedRecordId, setSelectedRecordId] = useState("");
   const [eegLoad, setEegLoad] = useState<LoadedEegResult | null>(null);
   const [videoLoad, setVideoLoad] = useState<LoadedVideoResult | null>(null);
+  const [profileLoad, setProfileLoad] = useState<LoadedPatientProfile | null>(
+    null,
+  );
+  const [privacyLoad, setPrivacyLoad] = useState<LoadedVideoPrivacyJobs | null>(
+    null,
+  );
   const [offsetInput, setOffsetInput] = useState("0");
   const effectiveRecordId = readyRecordIds.includes(selectedRecordId)
     ? selectedRecordId
@@ -54,6 +73,63 @@ export function CombinedReviewReport({
       ? readyRecordIds[0]
       : "";
   const activeVideoJobId = videoJob?.status === "ready" ? videoJob.job_id : "";
+  const sessionCaseId = hasEegLink ? session?.caseId : null;
+  const videoCaseId = hasVideoLink ? videoJob?.case_id : null;
+  const profileCaseId =
+    sessionCaseId && videoCaseId && sessionCaseId !== videoCaseId
+      ? ""
+      : (sessionCaseId ?? videoCaseId ?? "");
+
+  useEffect(() => {
+    if (!profileCaseId) return;
+    const controller = new AbortController();
+    void getPatientProfile(profileCaseId, controller.signal)
+      .then((profile) => {
+        if (!controller.signal.aborted)
+          setProfileLoad({ caseId: profileCaseId, status: "ready", profile });
+      })
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === "AbortError"))
+          setProfileLoad({ caseId: profileCaseId, status: "error" });
+      });
+    return () => controller.abort();
+  }, [profileCaseId]);
+
+  useEffect(() => {
+    if (!profileCaseId) return;
+    const controller = new AbortController();
+    let retry: ReturnType<typeof setTimeout> | undefined;
+
+    async function loadPrivacyJobs() {
+      try {
+        const jobs = await getVideoPrivacyJobs(
+          profileCaseId,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        setPrivacyLoad({ caseId: profileCaseId, status: "ready", jobs });
+        if (
+          jobs.some(
+            (job) =>
+              !["ready", "needs_review", "failed", "expired"].includes(
+                job.status,
+              ),
+          )
+        ) {
+          retry = setTimeout(() => void loadPrivacyJobs(), 1500);
+        }
+      } catch (error: unknown) {
+        if (!(error instanceof DOMException && error.name === "AbortError"))
+          setPrivacyLoad({ caseId: profileCaseId, status: "error" });
+      }
+    }
+
+    void loadPrivacyJobs();
+    return () => {
+      controller.abort();
+      if (retry) clearTimeout(retry);
+    };
+  }, [profileCaseId]);
 
   useEffect(() => {
     if (!effectiveRecordId) return;
@@ -103,6 +179,12 @@ export function CombinedReviewReport({
   const videoResult =
     currentVideoLoad?.status === "ready" ? currentVideoLoad.result : null;
   const videoError = currentVideoLoad?.status === "error";
+  const currentProfileLoad =
+    profileLoad?.caseId === profileCaseId ? profileLoad : null;
+  const printablePatientDetails =
+    currentProfileLoad?.status === "ready" && currentProfileLoad.profile
+      ? Object.values(reportDetails(currentProfileLoad.profile)).flat()
+      : [];
 
   const offsetSeconds = offsetInput.trim() === "" ? null : Number(offsetInput);
   const offsetIsValid =
@@ -191,6 +273,110 @@ export function CombinedReviewReport({
           )}
         </section>
       )}
+
+      {printablePatientDetails.length > 0 && (
+        <section
+          className="panel p-5 sm:p-6"
+          aria-labelledby="patient-details-heading"
+        >
+          <p className="eyebrow">Patient details · owner-only</p>
+          <h3 id="patient-details-heading" className="mt-2 text-base font-bold">
+            Patient details
+          </h3>
+          <dl className="mt-4 grid gap-4 sm:grid-cols-2">
+            {printablePatientDetails.map((detail, index) => (
+              <div
+                key={`${detail.label}-${index}`}
+                className={detail.value.length > 180 ? "sm:col-span-2" : ""}
+              >
+                <dt className="text-xs text-ink-muted">{detail.label}</dt>
+                <dd className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-ink">
+                  {detail.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-4 text-xs leading-5 text-ink-muted">
+            Only opted-in, privacy-safe report details are included here.
+            Identifiers are omitted; EEG and video results remain separate.
+          </p>
+        </section>
+      )}
+      {currentProfileLoad?.status === "error" && (
+        <p
+          className="rounded-lg border border-amber/30 bg-amber-soft p-3 text-sm text-amber"
+          role="status"
+        >
+          Patient details could not be loaded. EEG and video summaries remain
+          available.
+        </p>
+      )}
+
+      {privacyLoad?.status === "error" &&
+        privacyLoad.caseId === profileCaseId && (
+          <p
+            className="rounded-lg border border-amber/30 bg-amber-soft p-3 text-sm text-amber"
+            role="status"
+          >
+            Owner-linked video privacy evidence could not be loaded.
+          </p>
+        )}
+      {privacyLoad?.status === "ready" &&
+        privacyLoad.caseId === profileCaseId &&
+        privacyLoad.jobs.length > 0 && (
+          <section
+            className="panel overflow-hidden"
+            aria-labelledby="video-privacy-evidence-heading"
+          >
+            <div className="border-b border-rule px-5 py-5 sm:px-6">
+              <h3
+                id="video-privacy-evidence-heading"
+                className="text-base font-bold"
+              >
+                Video privacy and keypoint evidence
+              </h3>
+              <p className="mt-1 text-sm leading-6 text-ink-muted">
+                This preview is separate from the model output. Facial Action
+                Units remain unavailable until a reviewed AU model and input
+                contract are selected.
+              </p>
+            </div>
+            <div className="divide-y divide-rule">
+              {privacyLoad.jobs.map((job) => (
+                <article
+                  key={job.jobId}
+                  className="grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_minmax(240px,0.8fr)]"
+                >
+                  <div>
+                    <h4 className="text-sm font-bold">{job.profileLabel}</h4>
+                    <p className="mt-1 text-xs leading-5 text-ink-muted">
+                      {job.status.replaceAll("_", " ")} ·{" "}
+                      {job.profileDescription}
+                    </p>
+                    {job.poseEvidence && (
+                      <p className="mt-3 text-xs leading-5 text-ink-muted">
+                        {job.poseEvidence.detectedFrames} of{" "}
+                        {job.poseEvidence.sampledFrames} sampled frames produced
+                        body-pose keypoints. Action Units: not configured.
+                      </p>
+                    )}
+                  </div>
+                  {job.previewUrl ? (
+                    <img
+                      className="aspect-video w-full rounded-lg border border-rule bg-black object-contain"
+                      src={job.previewUrl}
+                      alt="Protected, full-frame-blurred video frame with body-joint overlay when detected"
+                    />
+                  ) : (
+                    <div className="grid aspect-video place-items-center rounded-lg border border-rule bg-surface-soft px-4 text-center text-xs text-ink-muted">
+                      Protected preview is being prepared.
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
 
       {hasEegLink && (
         <section
@@ -389,9 +575,9 @@ export function CombinedReviewReport({
               </dl>
               {videoResult.privacy?.model_input_adaptation === "letterbox" && (
                 <p className="mt-4 rounded-lg border border-amber/40 bg-amber-soft px-3 py-2 text-sm text-amber">
-                  Demo-only letterbox adaptation was used. This preprocessing
-                  path is exploratory and has not been validated for clinical
-                  use.
+                  Experimental letterbox adaptation was used. Its scores have
+                  not been validated as equivalent to native-resolution input;
+                  keep this result separate when evaluating the model.
                 </p>
               )}
               <div className="mt-5 border-t border-rule pt-4">

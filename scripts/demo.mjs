@@ -116,8 +116,12 @@ function launchFrontend(frontendDir, { platform = process.platform } = {}) {
 export async function startDemo({
   root = PROJECT_ROOT,
   platform = process.platform,
+  researchH5 = true,
   run = runCommand,
   initializeConfig = setup,
+  hasResearchH5Assets = (projectRoot) =>
+    existsSync(resolve(projectRoot, "backend/model/best_seizure_model.h5")) &&
+    existsSync(resolve(projectRoot, "backend/model/model-contract.json")),
   hasFrontendDependencies = (frontendDir) =>
     existsSync(resolve(frontendDir, "node_modules/next/package.json")),
   waitForBackend = (logger) =>
@@ -150,6 +154,12 @@ export async function startDemo({
     throw new Error("Node.js 22 or newer is required to start the demo.");
   }
 
+  if (researchH5 && !hasResearchH5Assets(root)) {
+    throw new Error(
+      "The local H5 research profile requires the exact ignored model artifact and reviewed contract; no substitute is enabled.",
+    );
+  }
+
   run("docker", ["compose", "version"], { cwd: root });
   for (const message of initializeConfig(root)) logger(message);
 
@@ -162,8 +172,30 @@ export async function startDemo({
     });
   }
 
-  logger("Building and starting PostgreSQL, model assets, and FastAPI...");
-  run("docker", ["compose", "up", "-d", "--build"], { cwd: root });
+  logger(
+    researchH5
+      ? "Building and starting the pinned local H5 research profile..."
+      : "Building and starting PostgreSQL, model assets, and FastAPI...",
+  );
+  const composeProfileArgs = researchH5
+    ? [
+        "--profile",
+        "local-research",
+        "-f",
+        "docker-compose.yml",
+        "-f",
+        "docker-compose.local-research.yml",
+      ]
+    : ["-f", "docker-compose.yml"];
+  const composeRunOptions = { cwd: root };
+  if (!researchH5) {
+    composeRunOptions.env = { ...process.env, MODEL_RUNTIME: "stub" };
+  }
+  run(
+    "docker",
+    ["compose", ...composeProfileArgs, "up", "-d", "--build"],
+    composeRunOptions,
+  );
   logger("Waiting for the backend health check...");
   await waitForBackend(logger);
 
@@ -187,14 +219,36 @@ export async function startDemo({
   logger(
     "Analysis outputs are research-only; pairing and synchronization are not verified automatically.",
   );
+  if (researchH5) {
+    logger(
+      "H5 scores are uncalibrated and non-diagnostic; the backend validates the pinned artifact and reviewed contract at startup.",
+    );
+  }
   logger(
     "Ctrl-C stops the frontend. Docker services and their data remain; use `docker compose down` to stop them.",
   );
   return frontend;
 }
 
+export function parseDemoOptions(arguments_) {
+  const supportedOptions = new Set(["--research-h5", "--development-stub"]);
+  const unknownOption = arguments_.find(
+    (argument) => !supportedOptions.has(argument),
+  );
+  if (unknownOption) throw new Error(`Unknown option: ${unknownOption}`);
+
+  if (
+    arguments_.includes("--research-h5") &&
+    arguments_.includes("--development-stub")
+  ) {
+    throw new Error("--research-h5 and --development-stub cannot be combined.");
+  }
+
+  return { researchH5: !arguments_.includes("--development-stub") };
+}
+
 async function main() {
-  await startDemo();
+  await startDemo(parseDemoOptions(process.argv.slice(2)));
 }
 
 if (

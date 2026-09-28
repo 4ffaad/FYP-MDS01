@@ -6,12 +6,15 @@ import asyncio
 import logging
 import secrets
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from collections.abc import Iterable
 
+from typing import Any, cast
+
 from fastapi import UploadFile
-from sqlalchemy import inspect
-from sqlmodel import Session
+from sqlalchemy import and_, inspect, or_
+from sqlmodel import Session, select
 
 from backend.app.core.config import (
     MAX_ACTIVE_UPLOAD_DRAFTS,
@@ -20,9 +23,12 @@ from backend.app.core.config import (
 )
 from backend.app.database.db import engine
 from backend.app.database.models.eeg import EEGRecording, EEGSession, UploadDraft, utc_now
+from backend.app.database.models.video import VideoPrivacyJob
+from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.database.repository import (
     delete_session_data,
     get_session_by_public_id,
+    get_session_by_upload_draft_id,
     list_flagged_prediction_windows,
     list_flagged_window_counts,
     list_model_metadata,
@@ -35,7 +41,16 @@ from backend.app.database.repository import (
     list_upload_drafts_for_owner,
 )
 from backend.app.services.storage_service import SessionStorage, StorageError
-from backend.app.services.case_service import ensure_case_reference, new_case_id
+from backend.app.services.case_service import (
+    ensure_case_reference,
+    legacy_case_id,
+    lock_owner_case_mutations,
+    new_case_id,
+)
+from backend.app.services.case_profile_service import stage_patient_profile_deletion
+from backend.app.services.case_source_report_service import delete_case_source_report
+from backend.app.ml.interface import public_score_type
+
 from backend.app.database.models.eeg import AnalysisStatus
 from backend.app.privacy.methods import (
     canonical_privacy_profile,
@@ -47,6 +62,14 @@ from backend.app.privacy.retention import model_alert_intervals
 LOGGER = logging.getLogger(__name__)
 DRAFT_UPLOAD_LOCK = asyncio.Lock()
 DRAFT_LIFECYCLE_LOCK = threading.RLock()
+
+
+@dataclass(frozen=True)
+class DraftFinalizationResult:
+    """Session returned by one staged-upload finalization attempt."""
+
+    session: EEGSession
+    created: bool
 
 
 def serialize_draft_lifecycle(function):
@@ -97,6 +120,43 @@ def cleanup_expired_drafts(db: Session, storage: SessionStorage) -> None:
     for draft in expired:
         db.delete(draft)
     db.commit()
+
+
+def _cleanup_finalized_draft(storage: SessionStorage, draft_id: str) -> None:
+    """Remove temporary ciphertext without invalidating a committed session."""
+
+    try:
+        storage.delete_draft(draft_id)
+    except Exception:
+        LOGGER.warning("Encrypted draft cleanup deferred after finalization.")
+
+
+def _has_other_case_work(db: Session, session: EEGSession, case_id: str) -> bool:
+    """Return whether another owned EEG or video row keeps a canonical case alive."""
+
+    if session.owner_user_id is None:
+        return True
+    case_suffix = case_id[-8:]
+    for model, identifier in (
+        (EEGSession, EEGSession.session_id),
+        (VideoDetectionJob, VideoDetectionJob.job_id),
+        (VideoPrivacyJob, VideoPrivacyJob.job_id),
+    ):
+        case_column = cast(Any, model.case_id)
+        owner_column = cast(Any, model.owner_user_id)
+        identifier_column = cast(Any, identifier)
+        statement = select(model.id).where(
+            owner_column == session.owner_user_id,
+            or_(
+                case_column == case_id,
+                and_(case_column.is_(None), identifier_column.endswith(case_suffix)),
+            ),
+        )
+        if model is EEGSession:
+            statement = statement.where(EEGSession.session_id != session.session_id)
+        if db.exec(statement.limit(1)).first() is not None:
+            return True
+    return False
 
 
 def sweep_expired_upload_drafts() -> None:
@@ -213,7 +273,7 @@ def finalize_upload_draft(
     privacy_methods: Iterable[str] | None = None,
     owner_user_id: int | None = None,
     case_id: str | None = None,
-) -> EEGSession:
+) -> DraftFinalizationResult:
     """Convert one encrypted draft into a queued analysis session.
 
     The staged archive is copied without decrypting it, so a failed database
@@ -222,6 +282,13 @@ def finalize_upload_draft(
 
     draft = get_upload_draft(db, draft_id, owner_user_id, for_update=True)
     if draft is None:
+        existing_session = get_session_by_upload_draft_id(
+            db,
+            draft_id,
+            owner_user_id,
+        )
+        if existing_session is not None:
+            return DraftFinalizationResult(existing_session, created=False)
         raise ValueError("Upload draft was not found or has expired.")
     if _is_expired(draft.expires_at):
         storage.delete_draft(draft.draft_id)
@@ -234,31 +301,53 @@ def finalize_upload_draft(
     session = EEGSession(
         owner_user_id=owner_user_id,
         session_id=new_session_id(),
+        upload_draft_id=draft_id,
         case_id=case_id or new_case_id(),
         privacy_method=profile,
         original_filename="",
         original_path="",
     )
-    db.add(session)
-    db.flush()
+    commit_attempted = False
     try:
         original_path = storage.promote_draft(draft.draft_id, session.session_id)
         session.original_path = str(original_path)
-        db.delete(draft)
+        if case_id is not None:
+            lock_owner_case_mutations(db, owner_user_id)
+            ensure_case_reference(db, case_id, owner_user_id)
         db.add(session)
+        db.flush()
+        db.delete(draft)
+        commit_attempted = True
         db.commit()
-        db.refresh(session)
-        try:
-            storage.delete_draft(draft.draft_id)
-        except StorageError:
-            # The session is already committed. Leave only encrypted duplicate
-            # data and let the next retention sweep retry its cleanup.
-            LOGGER.warning("Encrypted draft cleanup deferred after finalization.")
-        return session
     except Exception:
         db.rollback()
+        if commit_attempted:
+            try:
+                committed_session = get_session_by_upload_draft_id(
+                    db,
+                    draft_id,
+                    owner_user_id,
+                )
+            except Exception:
+                LOGGER.warning(
+                    "Upload finalization outcome is unknown; encrypted session data was retained."
+                )
+                raise
+            if committed_session is not None:
+                if committed_session.session_id != session.session_id:
+                    try:
+                        storage.delete_session(session.session_id)
+                    except Exception:
+                        LOGGER.warning("Duplicate encrypted session cleanup deferred.")
+                _cleanup_finalized_draft(storage, draft_id)
+                return DraftFinalizationResult(
+                    committed_session,
+                    created=committed_session.session_id == session.session_id,
+                )
         storage.delete_session(session.session_id)
         raise
+    _cleanup_finalized_draft(storage, draft.draft_id)
+    return DraftFinalizationResult(session, created=True)
 
 
 async def create_session(
@@ -296,19 +385,20 @@ async def create_session(
 
     ensure_case_reference(db, case_id, owner_user_id)
     profile = canonical_privacy_profile(privacy_methods if privacy_methods is not None else privacy_method)
-    session = EEGSession(
-        owner_user_id=owner_user_id,
-        session_id=new_session_id(),
-        case_id=case_id or new_case_id(),
-        privacy_method=profile,
-        original_filename="",
-        original_path="",
-    )
-    db.add(session)
-    db.flush()
+    session_id = new_session_id()
     try:
-        original_path = await storage.save_upload(session.session_id, archive)
-        session.original_path = str(original_path)
+        original_path = await storage.save_upload(session_id, archive)
+        if case_id is not None:
+            lock_owner_case_mutations(db, owner_user_id)
+            ensure_case_reference(db, case_id, owner_user_id)
+        session = EEGSession(
+            owner_user_id=owner_user_id,
+            session_id=session_id,
+            case_id=case_id or new_case_id(),
+            privacy_method=profile,
+            original_filename="",
+            original_path=str(original_path),
+        )
         db.add(session)
         db.commit()
         db.refresh(session)
@@ -316,13 +406,13 @@ async def create_session(
     except asyncio.CancelledError:
         db.rollback()
         try:
-            storage.cleanup_session(session.session_id)
+            storage.cleanup_session(session_id)
         except Exception:
             LOGGER.exception("Cancelled session-upload cleanup failed.")
         raise
     except Exception:
         db.rollback()
-        storage.cleanup_session(session.session_id)
+        storage.cleanup_session(session_id)
         raise
     finally:
         await archive.close()
@@ -395,7 +485,7 @@ def public_record(
         "error_message": record.error_message,
         "model_name": model_metadata.get("model_name") if model_metadata else None,
         "model_version": model_metadata.get("model_version") if model_metadata else None,
-        "score_type": model_metadata.get("score_type") if model_metadata else None,
+        "score_type": public_score_type(model_metadata.get("score_type")) if model_metadata else None,
     }
     if session is not None:
         canonical_profile = canonical_privacy_profile(methods_from_profile(session.privacy_method))
@@ -548,5 +638,30 @@ def delete_session(db: Session, storage: SessionStorage, session: EEGSession) ->
     }
     if session.status in active:
         raise ValueError("Wait until processing finishes before deleting this session.")
+    case_id = session.case_id or legacy_case_id(session.session_id)
+    delete_case_profile = False
+    if session.owner_user_id is not None:
+        lock_owner_case_mutations(db, session.owner_user_id)
+        delete_case_profile = not _has_other_case_work(db, session, case_id)
     storage.delete_session(session.session_id)
-    delete_session_data(db, session)
+    try:
+        if delete_case_profile and session.owner_user_id is not None:
+            stage_patient_profile_deletion(
+                db,
+                case_id=case_id,
+                owner_user_id=session.owner_user_id,
+            )
+        delete_session_data(db, session)
+    except Exception:
+        db.rollback()
+        raise
+    if delete_case_profile and session.owner_user_id is not None:
+        try:
+            delete_case_source_report(
+                db,
+                case_id=case_id,
+                owner_user_id=session.owner_user_id,
+            )
+        except Exception:
+            db.rollback()
+            raise

@@ -425,19 +425,23 @@ function ModelLabel({ recording }: { recording: Recording }) {
       ? "Model alert"
       : "Research threshold flag";
   const modelLabel =
-    recording.status !== "inferred"
-      ? "Result pending"
-      : recording.modelAlertWindowCount > 0
-        ? `${alertLabel} · ${recording.modelAlertWindowCount} ${recording.modelAlertWindowCount === 1 ? "window" : "windows"} flagged`
-        : "No flagged windows";
+    recording.status === "failed"
+      ? "No EEG result saved"
+      : recording.status !== "inferred"
+        ? "Result pending"
+        : recording.modelAlertWindowCount > 0
+          ? `${alertLabel} · ${recording.modelAlertWindowCount} ${recording.modelAlertWindowCount === 1 ? "window" : "windows"} flagged`
+          : "No flagged windows";
   const modelClass =
-    recording.status !== "inferred"
-      ? "text-ink-muted"
-      : recording.modelAlertWindowCount > 0
-        ? development || !calibrated
-          ? "font-semibold text-amber"
-          : "font-semibold text-red"
-        : "text-ink-muted";
+    recording.status === "failed"
+      ? "font-semibold text-amber"
+      : recording.status !== "inferred"
+        ? "text-ink-muted"
+        : recording.modelAlertWindowCount > 0
+          ? development || !calibrated
+            ? "font-semibold text-amber"
+            : "font-semibold text-red"
+          : "text-ink-muted";
   return (
     <>
       <p className={`mt-1 text-xs ${modelClass}`}>{modelLabel}</p>

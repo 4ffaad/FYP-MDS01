@@ -80,8 +80,11 @@ export interface Recording {
 
 export interface CaseSummary {
   caseId: string;
+  patientName?: string | null;
+  reportSummary?: string | null;
   modalities: Array<"eeg" | "video">;
   analysisCount: number;
+  privacyPreviewCount: number;
   latestCreatedAt: string;
   status: "processing" | "complete" | "needs_review";
   flaggedIntervalCount: number;
@@ -98,7 +101,23 @@ export interface CaseAnalysis {
 
 export interface CaseDetail {
   caseId: string;
+  patientName?: string | null;
   analyses: CaseAnalysis[];
+}
+
+export interface PatientProfileDetail {
+  label: string;
+  value: string;
+}
+
+export interface PatientProfile {
+  name: string;
+  hospitalId: string;
+  age: string;
+  findings: string;
+  details?: PatientProfileDetail[];
+  reviewed: true;
+  reviewedAt: string;
 }
 
 export type SessionStatus =
@@ -220,10 +239,13 @@ export interface AnalysisResult {
 }
 
 export interface ApiErrorPayload {
-  detail?: string;
+  detail?: unknown;
 }
 
-export type VideoPrivacyProfile = "face-redacted" | "pose-only";
+export type VideoPrivacyProfile =
+  | "face-redacted"
+  | "face-redacted-pose-preview"
+  | "pose-only";
 export type VideoPrivacyStatus =
   | "queued"
   | "preflight"
@@ -235,12 +257,27 @@ export type VideoPrivacyStatus =
   | "expired";
 
 export interface VideoPrivacyStage {
-  id: "preflight" | "privacy-transform" | "output-validation" | "cleanup";
+  id:
+    | "preflight"
+    | "privacy-transform"
+    | "keypoint-preview"
+    | "output-validation"
+    | "cleanup";
   status: "pending" | "active" | "complete";
+}
+
+export interface VideoPrivacyPoseEvidence {
+  model: "Lightweight OpenPose";
+  detectedFrames: number;
+  sampledFrames: number;
+  trackingStopped: boolean;
+  status: "not-detected" | "partial" | "complete";
+  actionUnits: "not-configured";
 }
 
 export interface VideoPrivacyJob {
   jobId: string;
+  caseId: string | null;
   label: string;
   profile: VideoPrivacyProfile;
   profileLabel: string;
@@ -261,6 +298,7 @@ export interface VideoPrivacyJob {
   fps: number | null;
   width: number | null;
   height: number | null;
+  poseEvidence: VideoPrivacyPoseEvidence | null;
   createdAt: string;
   completedAt: string | null;
   error: string | null;

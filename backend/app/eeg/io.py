@@ -10,15 +10,22 @@ import stat
 import numpy as np
 
 from backend.app.eeg.edf_io import read_uniform_edf
-from backend.app.eeg.contracts import MODEL_CHANNELS, MODEL_SAMPLING_RATE
+from backend.app.eeg.contracts import (
+    EEGInputContractError,
+    MODEL_CHANNELS,
+    MODEL_SAMPLING_RATE,
+    require_model_sampling_rate,
+)
 from backend.app.eeg.legacy_nicolet import (
     NicoletEvent,
     LEGACY_SOURCE_SAMPLING_RATE,
+    coalesce_contiguous_segments,
     read_legacy_nicolet_events,
     read_uniform_legacy_nicolet,
+    read_uniform_legacy_nicolet_segments,
     select_legacy_montage_channels,
     select_model_channels,
-    _validate_segment_continuity,
+    _validate_segment_order,
     validate_legacy_nicolet,
 )
 
@@ -38,7 +45,7 @@ class EEGTechnicalMetadata:
     sampling_rate: int
     channel_count: int
     channel_labels: list[str]
-    conversion_details: dict[str, int | str] | None = None
+    conversion_details: dict[str, object] | None = None
 
 
 def _require_nicolet_file_without_symlinks(path: Path, *, label: str) -> Path:
@@ -99,9 +106,7 @@ def _read_nicolet(path: Path, *, preload: bool):
 def _nicolet_technical_metadata(raw) -> tuple[int, list[str], float]:
     """Validate header fields and bound the signal array before loading it."""
 
-    sampling_rate = float(raw.info["sfreq"])
-    if not np.isfinite(sampling_rate) or sampling_rate <= 0 or sampling_rate != round(sampling_rate):
-        raise ValueError("Nicolet sampling rate must be a positive integer.")
+    sampling_rate = require_model_sampling_rate(raw.info["sfreq"], "Nicolet .data input")
     labels = [str(label).strip() for label in raw.ch_names]
     if not labels or len(labels) != len(set(labels)) or any(not label for label in labels):
         raise ValueError("Nicolet channel labels are missing or ambiguous.")
@@ -151,6 +156,8 @@ def validate_nicolet(path: str | Path) -> EEGTechnicalMetadata:
             channel_count=len(labels),
             channel_labels=labels,
         )
+    except EEGInputContractError as exc:
+        raise ValueError(str(exc)) from exc
     except Exception as exc:
         raise ValueError("Nicolet EEG files are unreadable or malformed.") from exc
     finally:
@@ -166,32 +173,70 @@ def validate_legacy_nicolet_e(path: str | Path) -> EEGTechnicalMetadata:
         raise ValueError("Input is not a legacy Nicolet .e recording.")
     try:
         header = validate_legacy_nicolet(candidate)
-        _validate_segment_continuity(header.segments, header.sampling_rate)
+        _validate_segment_order(
+            header.segments,
+            header.sampling_rate,
+            header.total_samples,
+        )
         if header.sampling_rate == MODEL_SAMPLING_RATE:
             select_model_channels(header)
         elif header.sampling_rate == LEGACY_SOURCE_SAMPLING_RATE:
             select_legacy_montage_channels(header)
         else:
             raise ValueError("Legacy Nicolet source sampling rate is unsupported.")
-        duration = sum(segment.duration_seconds for segment in header.segments)
+        duration = max(
+            segment.start_seconds + segment.duration_seconds
+            for segment in header.segments
+        )
+        analysis_segments = coalesce_contiguous_segments(
+            header.segments, header.sampling_rate
+        )
+        has_time_gaps = len(analysis_segments) > 1
+        model_segments: list[dict[str, int | float]] = []
+        model_sample_start = 0
+        for segment in analysis_segments:
+            model_sample_count = (
+                segment.sample_count * MODEL_SAMPLING_RATE
+                + header.sampling_rate
+                - 1
+            ) // header.sampling_rate
+            model_segments.append(
+                {
+                    "sample_start": model_sample_start,
+                    "sample_count": model_sample_count,
+                    "start_seconds": segment.start_seconds,
+                    "duration_seconds": segment.duration_seconds,
+                }
+            )
+            model_sample_start += model_sample_count
         return EEGTechnicalMetadata(
             format="nicolet-e",
             duration_seconds=duration,
             sampling_rate=MODEL_SAMPLING_RATE,
             channel_count=len(MODEL_CHANNELS),
             channel_labels=list(MODEL_CHANNELS),
-            conversion_details=(
-                {
-                    "source_sampling_rate_hz": header.sampling_rate,
-                    "source_channel_count": len(header.channels),
-                    "source_montage": "legacy_referential_10_20",
-                    "electrode_aliases": "T3->T7,T4->T8,T5->P7,T6->P8",
-                    "bipolar_channels": "reviewed_18_channel_contract",
-                    "resampling": "polyphase_128_over_250_kaiser_beta_5",
-                }
-                if header.sampling_rate == LEGACY_SOURCE_SAMPLING_RATE
-                else None
-            ),
+            conversion_details={
+                "source_sampling_rate_hz": header.sampling_rate,
+                "source_channel_count": len(header.channels),
+                "source_montage": (
+                    "legacy_referential_10_20"
+                    if header.sampling_rate == LEGACY_SOURCE_SAMPLING_RATE
+                    else "reviewed_18_channel_contract"
+                ),
+                "electrode_aliases": "T3->T7,T4->T8,T5->P7,T6->P8",
+                "bipolar_channels": "reviewed_18_channel_contract",
+                "resampling": (
+                    "polyphase_128_over_250_kaiser_beta_5"
+                    if header.sampling_rate == LEGACY_SOURCE_SAMPLING_RATE
+                    else "none"
+                ),
+                "signal_duration_seconds": sum(
+                    segment.duration_seconds for segment in header.segments
+                ),
+                "timeline_duration_seconds": duration,
+                "has_time_gaps": has_time_gaps,
+                "model_segments": model_segments,
+            },
         )
     except Exception as exc:
         raise ValueError("Legacy Nicolet EEG files are unreadable or malformed.") from exc
@@ -233,6 +278,36 @@ def read_uniform_legacy_eeg(path: str | Path) -> tuple[np.ndarray, int, list[str
         ):
             raise ValueError("Legacy Nicolet signal data is invalid.")
         return signals, sampling_rate, labels
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("Legacy Nicolet EEG files are unreadable or malformed.") from exc
+
+
+def read_uniform_legacy_eeg_segments(
+    path: str | Path,
+) -> tuple[list[tuple[float, np.ndarray]], int, list[str]]:
+    """Read validated Nicolet signal segments without joining acquisition gaps."""
+
+    candidate = Path(path)
+    if detect_eeg_format(candidate) != "nicolet-e":
+        raise ValueError("Input is not a legacy Nicolet .e recording.")
+    try:
+        segments, sampling_rate, labels = read_uniform_legacy_nicolet_segments(candidate)
+        if (
+            not segments
+            or not labels
+            or len(labels) != len(set(labels))
+            or any(
+                signals.ndim != 2
+                or signals.shape[0] != len(labels)
+                or signals.shape[1] <= 0
+                or not np.isfinite(signals).all()
+                for _start_seconds, signals in segments
+            )
+        ):
+            raise ValueError("Legacy Nicolet signal segments are invalid.")
+        return segments, sampling_rate, labels
     except ValueError:
         raise
     except Exception as exc:

@@ -11,6 +11,7 @@ import type {
   Session,
 } from "@/lib/types";
 import { Icon } from "./Icon";
+import { LoadingOrb } from "./LoadingOrb";
 import { RecordingNavigator } from "./RecordingNavigator";
 import { PredictionTimeline } from "./PredictionTimeline";
 import { SignalViewer } from "./SignalViewer";
@@ -68,10 +69,13 @@ function ResultContent({ recordId }: { recordId: string }) {
   if (!result)
     return (
       <div className="page-frame">
-        <div
-          className="h-56 animate-pulse rounded-lg border border-rule bg-surface"
-          aria-label="Loading result"
-        />
+        <div className="flex min-h-56 items-center justify-center px-5 py-12">
+          <LoadingOrb
+            label="Loading recording review…"
+            state="searching"
+            size={64}
+          />
+        </div>
       </div>
     );
 
@@ -182,7 +186,8 @@ function ResultContent({ recordId }: { recordId: string }) {
                   This score is not a probability or clinical prediction.
                 </p>
               )}
-              {result.scoreType === "uncalibrated_probability" && (
+              {(result.scoreType === "uncalibrated_model_score" ||
+                result.scoreType === "uncalibrated_probability") && (
                 <p className="mt-1 text-sm leading-6 text-amber">
                   <span className="font-semibold">
                     Uncalibrated model score.
@@ -508,7 +513,10 @@ function predictionCopy(
 function formatScoreType(scoreType: string): string {
   if (scoreType === "calibrated_probability") return "Calibrated probability";
   if (scoreType === "development_score") return "Development score";
-  if (scoreType === "uncalibrated_probability")
+  if (
+    scoreType === "uncalibrated_model_score" ||
+    scoreType === "uncalibrated_probability"
+  )
     return "Uncalibrated model score";
   return scoreType.replaceAll("_", " ");
 }

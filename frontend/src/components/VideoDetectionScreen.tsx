@@ -13,7 +13,6 @@ import {
 } from "@/components/VideoProcessingStatus";
 import {
   getDetection,
-  getDetectionVisualization,
   getDetectionResults,
   listDetections,
   uploadDetection,
@@ -28,14 +27,17 @@ function formatTime(seconds: number) {
 
 function formatPrivacyQualityFlag(flag: string) {
   return flag === "intermittent_detection"
-    ? "Face detection was intermittent across the clip."
+    ? "The detector reported exactly one face in only some frames."
     : flag === "no_detection"
-      ? "No usable face detection was recorded for part of the clip."
+      ? "The detector did not report exactly one face in any frame."
       : flag.replaceAll("_", " ");
 }
 
-function formatTimestampOffset(seconds: number) {
-  return `${seconds >= 0 ? "+" : ""}${seconds.toFixed(3)} s`;
+function formatFaceDetectionCoverage(coverage: number) {
+  return new Intl.NumberFormat(undefined, {
+    style: "percent",
+    maximumFractionDigits: 1,
+  }).format(coverage);
 }
 
 function formatRetentionExpiry(value: string) {
@@ -98,8 +100,11 @@ export function VideoDetectionUploadScreen() {
           Video seizure review
         </h1>
         <p className="mt-3 max-w-2xl text-sm leading-6 text-ink-muted">
-          Upload one video to review a privacy-safe skeleton visualization,
-          VSViG model scores, and possible event intervals.
+          Upload one video to review privacy diagnostics, VSViG model scores,
+          and possible event intervals. Detection exposes no preview or
+          playback; its privacy-safe validation visualization is transient and
+          deleted. A separate video-privacy workflow may retain its own
+          protected preview.
         </p>
 
         <form onSubmit={submit} className="panel mt-8 max-w-2xl space-y-5 p-6">
@@ -115,13 +120,16 @@ export function VideoDetectionUploadScreen() {
               className="mt-2 text-sm leading-6 text-ink-muted"
             >
               AVI, MP4, MOV or WebM showing one patient. The pinned contract
-              requires 1920×1080 input by default; smaller clips such as 640×480
-              are letterboxed only when the operator has explicitly approved
-              adaptation. Use a readable constant-frame-rate clip of at least
-              five seconds where possible; low-quality or incomplete pose can
-              still fail closed. Lightweight OpenPose and VSViG use the same
-              full-frame-blurred protected model-input frames. Audio is excluded
-              from the visual model input. Your account owns this upload.
+              requires 1920×1080 input. The local H5 profile experimentally
+              upscales smaller clips into a 1920×1080 frame while preserving
+              aspect ratio, with black padding when needed. Upscaling adds no
+              captured detail and is not validated as equivalent to
+              native-resolution input. Use a readable constant-frame-rate clip
+              of at least five seconds where possible; low-quality or incomplete
+              pose can still fail closed. Lightweight OpenPose and VSViG use the
+              same full-frame-blurred protected model-input frames. Audio is
+              excluded from the visual model input. Your account owns this
+              upload.
             </p>
             <input
               id="detection-video"
@@ -135,14 +143,16 @@ export function VideoDetectionUploadScreen() {
           </div>
 
           <p className="text-sm leading-6 text-ink-muted">
-            The API stores the multipart upload in encrypted private storage
-            before background processing begins. A queued source may still
+            The browser sends the upload over this computer’s local connection;
+            the API encrypts it as it streams into private storage before
+            background processing begins. This local HTTP connection has no TLS
+            and must not be exposed to a network. A queued source may still
             contain audio temporarily; it is excluded from the visual model and
             retained outputs, then deleted during cleanup. One shared pose pass
-            feeds the VSViG model and the privacy-safe visualization. The
-            original and temporary model-input files are deleted after
-            processing; only the encrypted protected review artifact is retained
-            until the job’s displayed expiry.
+            feeds the VSViG model and a temporary privacy-safe visualization
+            used for validation. The visualization, original, and temporary
+            model-input files are deleted after processing; only encrypted
+            predictions and provenance are retained until the displayed expiry.
           </p>
           {error && (
             <div
@@ -200,16 +210,6 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
   const [job, setJob] = useState<DetectionJob | null>(null);
   const [result, setResult] = useState<DetectionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [visualizationUrl, setVisualizationUrl] = useState<string | null>(null);
-  const [visualizationError, setVisualizationError] = useState<string | null>(
-    null,
-  );
-  const [visualizationJobId, setVisualizationJobId] = useState<string | null>(
-    null,
-  );
-  const [visualizationAttempt, setVisualizationAttempt] = useState(0);
-  const [visualizationAttemptForJobId, setVisualizationAttemptForJobId] =
-    useState<number | null>(null);
   const [resultRetryKey, setResultRetryKey] = useState(0);
 
   useEffect(() => {
@@ -273,58 +273,7 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
     };
   }, [jobId, resultRetryKey]);
 
-  const visualizationPath =
-    job?.status === "ready" && job.visualization_available
-      ? job.visualization_url
-      : null;
-
-  useEffect(() => {
-    if (!visualizationPath) return;
-
-    const abort = new AbortController();
-    let objectUrl: string | null = null;
-
-    getDetectionVisualization(jobId, abort.signal)
-      .then((blob) => {
-        if (abort.signal.aborted) return;
-        objectUrl = URL.createObjectURL(blob);
-        setVisualizationUrl(objectUrl);
-        setVisualizationJobId(jobId);
-        setVisualizationAttemptForJobId(visualizationAttempt);
-      })
-      .catch((mediaError: unknown) => {
-        if (abort.signal.aborted) return;
-        setVisualizationJobId(jobId);
-        setVisualizationAttemptForJobId(visualizationAttempt);
-        setVisualizationError(
-          mediaError instanceof Error
-            ? mediaError.message
-            : "The protected visualization could not be loaded.",
-        );
-      });
-
-    return () => {
-      abort.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [jobId, visualizationAttempt, visualizationPath]);
-
   const duration = job?.duration_seconds || 1;
-  const protectedVideoUrl =
-    visualizationJobId === jobId &&
-    visualizationAttemptForJobId === visualizationAttempt
-      ? visualizationUrl
-      : null;
-  const protectedVideoError =
-    visualizationJobId === jobId &&
-    visualizationAttemptForJobId === visualizationAttempt
-      ? visualizationError
-      : null;
-  const protectedVideoLoading = Boolean(
-    visualizationPath &&
-      (visualizationJobId !== jobId ||
-        visualizationAttemptForJobId !== visualizationAttempt),
-  );
 
   return (
     <div className="page-frame">
@@ -340,9 +289,9 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
         </h1>
         {job?.retention_expires_at && (
           <p className="mt-2 text-xs leading-5 text-ink-muted">
-            Protected artifact retention ends{" "}
+            Encrypted prediction retention ends{" "}
             {formatRetentionExpiry(job.retention_expires_at)}. Source and
-            temporary model-input files are removed earlier during cleanup.
+            temporary model-input video are removed after processing.
           </p>
         )}
         {error && (
@@ -382,13 +331,35 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
             )}
             {job.status === "expired" && (
               <p className="mt-5 text-sm">
-                The retention period ended. Source video, the temporary model
-                input, and retained review artifacts have been removed.
+                The retention period ended. Encrypted prediction data, source
+                video, and the temporary model input have been removed.
               </p>
             )}
 
             {result && (
               <>
+                {result.privacy?.model_input_adaptation === "letterbox" && (
+                  <section
+                    className="mt-6 rounded-lg border border-amber/40 bg-amber-soft px-5 py-4"
+                    role="status"
+                    aria-labelledby="video-adaptation-heading"
+                  >
+                    <h2
+                      id="video-adaptation-heading"
+                      className="text-sm font-bold text-ink"
+                    >
+                      Experimental input adaptation
+                    </h2>
+                    <p className="mt-2 text-sm leading-6 text-ink-muted">
+                      This lower-resolution clip was resized to 1920×1080 while
+                      preserving its aspect ratio; black padding was added only
+                      where needed. The adaptation adds no captured detail and
+                      has not been validated as equivalent to native-resolution
+                      input. Treat its scores as research-only and review the
+                      time-aligned model evidence.
+                    </p>
+                  </section>
+                )}
                 {result.privacy?.review_required && (
                   <section
                     className="mt-6 rounded-lg border border-amber/40 bg-amber-soft px-5 py-4"
@@ -403,9 +374,10 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
                       Privacy quality needs review
                     </h2>
                     <p className="mt-2 text-sm leading-6 text-ink-muted">
-                      Face detection or frame quality was intermittent. Review
-                      the protected visualization before relying on the model
-                      evidence.
+                      One or more privacy-quality checks need review. This does
+                      not change the full-frame blur, which is applied to every
+                      frame. Treat flagged windows as uncertain and review them
+                      with the appropriate context.
                     </p>
                     {result.privacy.quality_flags.length > 0 && (
                       <ul className="mt-2 list-disc pl-5 text-xs leading-5 text-ink-muted">
@@ -416,16 +388,32 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
                     )}
                   </section>
                 )}
-                <VideoReviewPanel
-                  result={result}
-                  duration={duration}
-                  videoUrl={protectedVideoUrl}
-                  mediaLoading={protectedVideoLoading}
-                  mediaError={protectedVideoError}
-                  onRetryVisualization={() =>
-                    setVisualizationAttempt((attempt) => attempt + 1)
-                  }
-                />
+                {typeof result.privacy?.face_detection_coverage === "number" &&
+                  Number.isFinite(result.privacy.face_detection_coverage) &&
+                  result.privacy.face_detection_coverage >= 0 &&
+                  result.privacy.face_detection_coverage <= 1 && (
+                    <section
+                      className="mt-4 rounded-lg border border-rule bg-surface-soft px-5 py-4"
+                      aria-labelledby="face-detection-coverage-heading"
+                    >
+                      <h2
+                        id="face-detection-coverage-heading"
+                        className="text-sm font-bold text-ink"
+                      >
+                        De-identification diagnostic
+                      </h2>
+                      <p className="mt-2 text-sm leading-6 text-ink-muted">
+                        OpenCV Haar reported exactly one face in{" "}
+                        {formatFaceDetectionCoverage(
+                          result.privacy.face_detection_coverage,
+                        )}{" "}
+                        of frames. Full-frame blur was applied to every frame,
+                        independent of detection. This coverage signal does not
+                        guarantee anonymity.
+                      </p>
+                    </section>
+                  )}
+                <VideoReviewPanel result={result} duration={duration} />
                 <VideoEvidence
                   prediction={result.predictions.find(
                     (prediction) => prediction.model_evidence,
@@ -506,10 +494,11 @@ function ModelDetails({
     "Source geometry": sourceResolution
       ? `${sourceResolution[0]}×${sourceResolution[1]} → ${privacy?.model_input_adaptation ?? "adaptation not reported"} → ${modelResolution ? `${modelResolution[0]}×${modelResolution[1]}` : "model geometry not reported"}`
       : "Not reported",
-    "Source timestamp offset":
-      privacy?.source_timestamp_offset_seconds !== undefined
-        ? formatTimestampOffset(privacy.source_timestamp_offset_seconds)
-        : "Not reported",
+    "Letterbox padding (L/T/R/B)":
+      privacy?.model_input_adaptation === "letterbox" &&
+      privacy.model_input_padding_ltrb
+        ? `${privacy.model_input_padding_ltrb.join(" / ")} px`
+        : "None",
     Threshold: model.threshold,
     Postprocessing: model.postprocessing,
   };

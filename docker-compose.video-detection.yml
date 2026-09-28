@@ -1,7 +1,0 @@
-# Compatibility overlay.
-# Video detection is part of docker-compose.yml, so the supported command is:
-#   docker compose up --build
-#
-# This file remains empty so older explicit `-f` invocations continue to work
-# without maintaining a second copy of the secure service definitions.
-services: {}

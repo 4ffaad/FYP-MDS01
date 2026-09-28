@@ -77,6 +77,49 @@ class StorageSecurityTests(unittest.TestCase):
             self.assertEqual([path.name for path in extracted], ["recording.data"])
             self.assertEqual((root / "sessions" / "SES-TEST" / "extracted" / "recording.head").read_bytes(), b"private header")
 
+    def test_archive_extracts_multiple_legacy_nicolet_e_recordings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "multiple-nicolet-e.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("patient/recording-10.e", b"synthetic ten")
+                output.writestr("patient/recording-2.e", b"synthetic two")
+
+            extracted = SessionStorage(root / "sessions").extract_eeg_recordings(
+                "SES-TEST", archive
+            )
+
+            self.assertEqual(
+                [path.name for path in extracted],
+                ["recording-2.e", "recording-10.e"],
+            )
+            self.assertEqual(
+                [path.read_bytes() for path in extracted],
+                [b"synthetic two", b"synthetic ten"],
+            )
+
+    def test_archive_extracts_mixed_eeg_formats_in_one_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "mixed-eeg.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("case/recording-10.edf", b"synthetic edf")
+                output.writestr("case/recording-2.e", b"synthetic legacy nicolet")
+                output.writestr("case/recording-1.data", b"synthetic nicolet data")
+                output.writestr("case/recording-1.head", b"synthetic nicolet header")
+
+            storage = SessionStorage(root / "sessions")
+            extracted = storage.extract_eeg_recordings("SES-TEST", archive)
+
+            self.assertEqual(
+                [path.name for path in extracted],
+                ["recording-1.data", "recording-2.e", "recording-10.edf"],
+            )
+            self.assertEqual(
+                (root / "sessions" / "SES-TEST" / "extracted" / "recording-1.head").read_bytes(),
+                b"synthetic nicolet header",
+            )
+
     def test_nicolet_data_without_head_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -316,6 +359,26 @@ class StorageSecurityTests(unittest.TestCase):
             path = VideoStorage(root).visualization_path("VID-MISSING")
             self.assertEqual(path, root / "VID-MISSING" / "retained" / "video.visualization.mp4.enc")
             self.assertFalse(root.exists())
+
+    def test_legacy_detection_visualization_cleanup_is_canonical(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = VideoStorage(Path(directory) / "sessions", storage_key=b"s" * 32)
+            job_id = "VID-LEGACY"
+            visualization = storage.visualization_path(job_id)
+            visualization.parent.mkdir(parents=True)
+            visualization.write_bytes(b"encrypted legacy preview")
+            predictions = visualization.parent / "predictions.json.enc"
+            predictions.write_bytes(b"encrypted predictions")
+
+            storage.delete_legacy_visualization(job_id, visualization)
+
+            self.assertFalse(visualization.exists())
+            self.assertTrue(predictions.exists())
+            outside = Path(directory) / "outside.enc"
+            outside.write_bytes(b"protected")
+            with self.assertRaises(StorageError):
+                storage.delete_legacy_visualization(job_id, outside)
+            self.assertTrue(outside.exists())
 
     def test_cleanup_response_runs_when_stream_send_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

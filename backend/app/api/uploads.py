@@ -4,14 +4,19 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, status
 from sqlmodel import Session
 
 from backend.app.core.config import UPLOAD_DRAFT_TTL_SECONDS
 from backend.app.core.security import mutation_owner_id, owner_id, require_api_auth
+from backend.app.core.stream_upload import UnsupportedRawUpload, request_stream_upload
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
-from backend.app.database.repository import get_upload_draft
+from backend.app.api.upload_contracts import binary_upload_openapi
+from backend.app.database.repository import (
+    get_session_by_upload_draft_id,
+    get_upload_draft,
+)
 from backend.app.database.models.eeg import utc_now
 from backend.app.services.session_service import (
     cleanup_expired_drafts,
@@ -40,9 +45,13 @@ def _public_draft(draft) -> dict:
     }
 
 
-@router.post("/drafts", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/drafts",
+    status_code=status.HTTP_201_CREATED,
+    openapi_extra=binary_upload_openapi(),
+)
 async def stage_upload(
-    archive: UploadFile = File(...),
+    request: Request,
     db: Session = Depends(get_session),
     current_user: User | None = Depends(require_api_auth),
 ) -> dict:
@@ -50,9 +59,8 @@ async def stage_upload(
 
     Parameters
     ----------
-    archive : fastapi.UploadFile
-        ZIP archive containing EDF/EDF+, legacy Nicolet ``.e``, or Nicolet
-        ``.data`` files with matching ``.head`` sidecars.
+    request : starlette.requests.Request
+        Raw ZIP request body, streamed directly into encrypted storage.
     db : sqlmodel.Session
         Request-scoped database session.
 
@@ -67,11 +75,14 @@ async def stage_upload(
         Raised with 400 for invalid files or 503 for storage failures.
     """
 
-    if not archive.filename or not archive.filename.lower().endswith(".zip"):
-        raise HTTPException(
-            status_code=400,
-            detail="Upload one ZIP archive containing EDF/EDF+, legacy Nicolet .e, or Nicolet .data files with matching .head sidecars.",
+    try:
+        archive = request_stream_upload(
+            request,
+            filename="recordings.zip",
+            content_type="application/zip",
         )
+    except UnsupportedRawUpload as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
     storage = SessionStorage()
     expires_at = utc_now() + timedelta(seconds=UPLOAD_DRAFT_TTL_SECONDS)
     try:
@@ -129,7 +140,7 @@ def finalize_staged_upload(
     Returns
     -------
     dict
-        HTTP 202 payload containing the new session ID.
+        HTTP 202 payload containing the session associated with this draft.
 
     Raises
     ------
@@ -147,6 +158,18 @@ def finalize_staged_upload(
         privacy_profile = canonical_privacy_profile(selected_methods)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    owner_user_id = mutation_owner_id(current_user)
+    existing_session = get_session_by_upload_draft_id(
+        db,
+        draft_id,
+        owner_user_id,
+    )
+    if existing_session is not None:
+        return {
+            "session_id": existing_session.session_id,
+            "case_id": existing_session.case_id,
+            "status": existing_session.status.value,
+        }
     if not processing_capacity.reserve():
         raise HTTPException(status_code=503, detail="The analysis service is at capacity. Try again later.")
 
@@ -155,12 +178,12 @@ def finalize_staged_upload(
         storage = SessionStorage()
         cleanup_expired_drafts(db, storage)
         try:
-            session = finalize_upload_draft(
+            finalization = finalize_upload_draft(
                 db,
                 storage,
                 draft_id,
                 privacy_profile,
-                owner_user_id=mutation_owner_id(current_user),
+                owner_user_id=owner_user_id,
                 case_id=case_id,
             )
         except CaseReferenceError as exc:
@@ -169,8 +192,10 @@ def finalize_staged_upload(
             raise HTTPException(status_code=503, detail="Private EEG storage is temporarily unavailable.") from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        background_tasks.add_task(processing_capacity.run_reserved, session.session_id)
-        handed_off = True
+        session = finalization.session
+        if finalization.created:
+            background_tasks.add_task(processing_capacity.run_reserved, session.session_id)
+            handed_off = True
         return {"session_id": session.session_id, "case_id": session.case_id, "status": session.status.value}
     except StorageError as exc:
         raise HTTPException(status_code=503, detail="Private EEG storage is temporarily unavailable.") from exc

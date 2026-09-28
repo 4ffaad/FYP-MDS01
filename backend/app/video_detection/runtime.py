@@ -5,11 +5,23 @@ No checkpoint, source code, or patient data is downloaded here.
 """
 
 import importlib.util
+import importlib.machinery
 import json
+import math
+import os
+import platform
 from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+from backend.app.core.config import (
+    VIDEO_MAX_DURATION_SECONDS,
+    VIDEO_MAX_FRAMES,
+    VIDEO_MAX_FPS,
+    VIDEO_MAX_HEIGHT,
+    VIDEO_MAX_WIDTH,
+    VIDEO_MIN_FPS,
+)
 from backend.app.video_detection.contract import DetectionError, load_contract, validate_predictions
 from backend.app.video_detection.visualization import render_visualization
 
@@ -50,8 +62,49 @@ def _track_single_pose(previous_poses, keypoints, pose_class, track_function):
     return current_poses
 
 
+def _adapt_pinned_vsvig_source(source: str) -> str:
+    """Use timm's current registry import without changing the verified file."""
+
+    deprecated_import = "from timm.models.registry import register_model"
+    current_import = "from timm.models import register_model"
+    if source.count(deprecated_import) != 1:
+        raise DetectionError("runtime_incompatible")
+    return source.replace(deprecated_import, current_import, 1)
+
+
+def _configure_torch_backend(torch, enabled: bool | None = None) -> None:
+    """Disable NNPACK by default only on ARM, where its warning is noisy."""
+
+    if enabled is None:
+        configured = os.environ.get("MDS01_NNPACK_ENABLED")
+        if configured is None:
+            if platform.machine().lower() not in {"aarch64", "arm64"}:
+                return
+            enabled = False
+        else:
+            normalized = configured.lower()
+            if normalized not in {"true", "false"}:
+                raise DetectionError("runtime_incompatible")
+            enabled = normalized == "true"
+    torch.backends.nnpack.set_flags(enabled)
+
+
+class _PinnedVSViGSourceLoader(importlib.machinery.SourceFileLoader):
+    """Compile the verified upstream source with one import-path update."""
+
+    def get_code(self, fullname):
+        source = Path(self.path).read_text(encoding="utf-8")
+        adapted = _adapt_pinned_vsvig_source(source)
+        return self.source_to_code(adapted, self.path)
+
+
 def module_from_file(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
+    source_path = Path(path)
+    if source_path.name == "VSViG.py" and source_path.parent.name == "vsvig":
+        loader = _PinnedVSViGSourceLoader(name, str(source_path))
+        spec = importlib.util.spec_from_loader(name, loader)
+    else:
+        spec = importlib.util.spec_from_file_location(name, source_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"could not load upstream module: {name}")
     module = importlib.util.module_from_spec(spec)
@@ -76,6 +129,7 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
     import numpy as np
     import torch
 
+    _configure_torch_backend(torch)
     torch.set_num_threads(2)
     sys.path.insert(0, str(root / "openpose"))
     from demo import infer_fast
@@ -236,15 +290,170 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
     return result
 
 
+def run_pose_preview(
+    blurred_source: Path,
+    visualization_output: Path,
+    preview_output: Path,
+) -> dict:
+    """Overlay single-person OpenPose evidence on an already-blurred video.
+
+    This preview-only path deliberately does not load VSViG or produce a
+    prediction. It accepts the video-privacy bounds, not the stricter VSViG
+    1920×1080 admission contract.
+    """
+
+    root, contract = load_contract()
+    import cv2
+    import numpy as np
+    import torch
+
+    _configure_torch_backend(torch)
+    torch.set_num_threads(2)
+    sys.path.insert(0, str(root / "openpose"))
+    from demo import infer_fast
+    from models.with_mobilenet import PoseEstimationWithMobileNet
+    from modules.keypoints import extract_keypoints, group_keypoints
+    from modules.pose import Pose, track_poses
+
+    pose = PoseEstimationWithMobileNet()
+    checkpoint = torch.load(root / "pose.pth", map_location="cpu", weights_only=True)
+    pose.load_state_dict(checkpoint.get("state_dict", checkpoint), strict=True)
+    pose.eval()
+
+    capture = cv2.VideoCapture(str(blurred_source))
+    if not capture.isOpened() or visualization_output.is_symlink() or preview_output.is_symlink():
+        capture.release()
+        raise DetectionError("video_incompatible")
+    fps = float(capture.get(cv2.CAP_PROP_FPS) or 0)
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    duration = frame_count / fps if fps > 0 else math.inf
+    if (
+        not math.isfinite(fps)
+        or fps < VIDEO_MIN_FPS
+        or fps > VIDEO_MAX_FPS
+        or frame_count <= 0
+        or frame_count > VIDEO_MAX_FRAMES
+        or not math.isfinite(duration)
+        or duration <= 0
+        or duration > VIDEO_MAX_DURATION_SECONDS
+        or width <= 0
+        or height <= 0
+        or width > VIDEO_MAX_WIDTH
+        or height > VIDEO_MAX_HEIGHT
+    ):
+        capture.release()
+        raise DetectionError("video_incompatible")
+
+    sample_fps = float(contract["preprocessing"]["sample_fps"])
+    pose_height = int(contract["preprocessing"]["pose_height"])
+    min_keypoint_score = float(contract["preprocessing"]["min_keypoint_score"])
+    pose_samples: list[tuple[float, np.ndarray]] = []
+    previous_poses = []
+    tracking_stopped = False
+    sampled_frames = 0
+    frame_index = 0
+    next_sample = 0
+    try:
+        with torch.inference_mode():
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                index = frame_index
+                frame_index += 1
+                timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
+                if not math.isfinite(timestamp) or abs(timestamp - index / fps) > max(0.05, 1 / fps):
+                    raise DetectionError("video_incompatible")
+                if index < round(next_sample * fps / sample_fps):
+                    continue
+                next_sample += 1
+                sampled_frames += 1
+                if tracking_stopped:
+                    continue
+
+                heatmaps, pafs, scale, pad = infer_fast(
+                    pose, frame, pose_height, 8, 4, True
+                )
+                by_type, total = [], 0
+                for joint_index in range(18):
+                    total += extract_keypoints(
+                        heatmaps[:, :, joint_index], by_type, total
+                    )
+                entries, points = group_keypoints(by_type, pafs)
+                if len(entries) != 1:
+                    if len(entries) > 1 or previous_poses:
+                        tracking_stopped = True
+                    continue
+
+                keypoints = np.zeros((18, 3), dtype=np.float32)
+                incomplete = False
+                for joint_index, point_id in enumerate(entries[0][:18]):
+                    if point_id < 0:
+                        incomplete = True
+                        break
+                    point = points[int(point_id)]
+                    keypoints[joint_index] = (
+                        (point[0] * 2 - pad[1]) / scale,
+                        (point[1] * 2 - pad[0]) / scale,
+                        point[2],
+                    )
+                if (
+                    incomplete
+                    or (keypoints[:, 2] < min_keypoint_score).any()
+                    or (keypoints[:, :2] < 0).any()
+                    or (keypoints[:, 0] >= width).any()
+                    or (keypoints[:, 1] >= height).any()
+                ):
+                    if previous_poses:
+                        tracking_stopped = True
+                    continue
+                try:
+                    previous_poses = _track_single_pose(
+                        previous_poses, keypoints, Pose, track_poses
+                    )
+                except DetectionError:
+                    tracking_stopped = True
+                    continue
+                pose_samples.append((index / fps, keypoints.copy()))
+    finally:
+        capture.release()
+
+    if frame_index != frame_count:
+        raise DetectionError("truncated_video")
+    visualization = render_visualization(
+        blurred_source,
+        visualization_output,
+        pose_samples,
+        preview_path=preview_output,
+    )
+    return {
+        "sampled_frames": sampled_frames,
+        "detected_frames": len(pose_samples),
+        "tracking_stopped": tracking_stopped,
+        "visualization": visualization,
+    }
+
+
 if __name__ == "__main__":
     try:
-        visualization_output = None
-        if len(sys.argv) == 4:
+        if len(sys.argv) == 6 and sys.argv[1] == "--pose-preview":
+            preview = run_pose_preview(
+                Path(sys.argv[2]), Path(sys.argv[4]), Path(sys.argv[5])
+            )
+            Path(sys.argv[3]).write_text(
+                json.dumps(preview, allow_nan=False), encoding="utf-8"
+            )
+        elif len(sys.argv) == 4:
             visualization_output = Path(sys.argv[3])
-        elif len(sys.argv) != 3:
+            result = run(Path(sys.argv[1]), visualization_output)
+            Path(sys.argv[2]).write_text(json.dumps(result, allow_nan=False))
+        elif len(sys.argv) == 3:
+            result = run(Path(sys.argv[1]))
+            Path(sys.argv[2]).write_text(json.dumps(result, allow_nan=False))
+        else:
             raise DetectionError("runtime_incompatible")
-        result = run(Path(sys.argv[1]), visualization_output)
-        Path(sys.argv[2]).write_text(json.dumps(result, allow_nan=False))
     except DetectionError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(2)

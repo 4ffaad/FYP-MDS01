@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from sqlalchemy import delete, inspect
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from backend.app.database.db import engine
@@ -51,6 +52,7 @@ from backend.app.privacy.methods import SIGNAL_OBFUSCATION, methods_from_profile
 from backend.app.privacy.retention import (
     detected_intervals,
     select_window_indices,
+    write_model_window_npz,
     write_obfuscated_npz,
     write_scrubbed_edf_clip,
 )
@@ -124,6 +126,8 @@ def _safe_error(exc: Exception) -> str:
         return "The EEG input or processing request was invalid."
     if isinstance(exc, RuntimeError):
         return "The EEG processing runtime failed."
+    if isinstance(exc, IntegrityError):
+        return "EEG results could not be saved consistently."
     return "Processing failed unexpectedly."
 
 
@@ -597,6 +601,33 @@ def _process_record(
     try:
         if extracted_path.suffix.lower() == ".edf":
             windows, starts, _details = preprocess_edf(str(deid_path))
+        elif extracted_path.suffix.lower() == ".e":
+            model_segments = (
+                conversion_details.get("model_segments")
+                if isinstance(conversion_details, dict)
+                else None
+            )
+            if not isinstance(model_segments, list) or not model_segments:
+                raise ValueError("Legacy Nicolet segment metadata is unavailable.")
+            try:
+                segment_layout = [
+                    (
+                        segment["sample_start"],
+                        segment["sample_count"],
+                        segment["start_seconds"],
+                        segment["duration_seconds"],
+                    )
+                    for segment in model_segments
+                    if isinstance(segment, dict)
+                ]
+            except KeyError as exc:
+                raise ValueError("Legacy Nicolet segment metadata is invalid.") from exc
+            if len(segment_layout) != len(model_segments):
+                raise ValueError("Legacy Nicolet segment metadata is invalid.")
+            windows, starts, _details = preprocess_eeg(
+                str(deid_path),
+                segments=segment_layout,
+            )
         else:
             windows, starts, _details = preprocess_eeg(str(deid_path))
         record.preprocessed_path = None
@@ -651,60 +682,71 @@ def _process_record(
     explanation_attempt = _begin_attempt(db, session, ProcessingStage.EXPLAINABILITY, record)
     retained_artifact_path: str | None = None
     try:
-        stored_predictions = list_predictions_for_processing(db, record.id)
-        shap_by_window: dict[int, dict] = {}
-        if ENABLE_SHAP_EXPLANATIONS and hasattr(inference, "model"):
-            try:
-                shap_by_window = build_shap_explanations(
-                    model=inference.model,
-                    windows=model_windows,
-                    predictions=predictions,
-                    background_path=_shap_background_for_profile(session.privacy_method),
-                    threshold=inference.threshold,
-                    max_windows=SHAP_MAX_WINDOWS,
-                    time_bins=SHAP_TIME_BINS,
-                )
-            except ShapExplanationError:
-                # Attribution is optional research output. A failed explainer
-                # must never discard valid model predictions or retained clips.
-                shap_by_window = {}
-        for stored in stored_predictions:
-            payload = build_score_summary(
-                record_id=record.record_id,
-                prediction=WindowPrediction(
-                    window_index=stored.window_index,
-                    start_seconds=stored.start_seconds,
-                    end_seconds=stored.end_seconds,
-                    probability=stored.probability,
-                    seizure_detected=stored.seizure_detected,
-                    score_type=stored.score_type,
-                    calibration_method=stored.calibration_method,
-                    raw_score=stored.raw_score,
-                    calibrated_probability=stored.calibrated_probability,
+        explanation_saved = True
+        try:
+            stored_predictions = list_predictions_for_processing(db, record.id)
+            shap_by_window: dict[int, dict] = {}
+            if ENABLE_SHAP_EXPLANATIONS and hasattr(inference, "model"):
+                try:
+                    shap_by_window = build_shap_explanations(
+                        model=inference.model,
+                        windows=model_windows,
+                        predictions=predictions,
+                        background_path=_shap_background_for_profile(session.privacy_method),
+                        threshold=inference.threshold,
+                        max_windows=SHAP_MAX_WINDOWS,
+                        time_bins=SHAP_TIME_BINS,
+                    )
+                except ShapExplanationError:
+                    # Attribution is optional research output. A failed explainer
+                    # must never discard valid model predictions or retained clips.
+                    shap_by_window = {}
+            for stored in stored_predictions:
+                payload = build_score_summary(
+                    record_id=record.record_id,
+                    prediction=WindowPrediction(
+                        window_index=stored.window_index,
+                        start_seconds=stored.start_seconds,
+                        end_seconds=stored.end_seconds,
+                        probability=stored.probability,
+                        seizure_detected=stored.seizure_detected,
+                        score_type=stored.score_type,
+                        calibration_method=stored.calibration_method,
+                        raw_score=stored.raw_score,
+                        calibrated_probability=stored.calibrated_probability,
+                        calibration_version=stored.calibration_version,
+                        calibration_dataset=stored.calibration_dataset,
+                    ),
+                    model_name=stored.model_name,
+                    model_version=stored.model_version,
+                    threshold=stored.threshold,
                     calibration_version=stored.calibration_version,
                     calibration_dataset=stored.calibration_dataset,
-                ),
-                model_name=stored.model_name,
-                model_version=stored.model_version,
-                threshold=stored.threshold,
-                calibration_version=stored.calibration_version,
-                calibration_dataset=stored.calibration_dataset,
-                privacy_method=session.privacy_method,
-            )
-            attribution = shap_by_window.get(stored.window_index)
-            if attribution is not None:
-                payload["method"] = "shap-gradient"
-                payload["research_attribution"] = attribution
-            db.add(
-                Explanation(
-                    prediction_db_id=stored.id,
-                    method=payload["method"],
-                    explanation_path="",
-                    explanation_data=json.dumps(payload),
-                    is_clinical=False,
+                    privacy_method=session.privacy_method,
                 )
+                attribution = shap_by_window.get(stored.window_index)
+                if attribution is not None:
+                    payload["method"] = "shap-gradient"
+                    payload["research_attribution"] = attribution
+                db.add(
+                    Explanation(
+                        prediction_db_id=stored.id,
+                        method=payload["method"],
+                        explanation_path="",
+                        explanation_data=json.dumps(payload),
+                        is_clinical=False,
+                    )
+                )
+            db.commit()
+        except Exception as exc:
+            # Inference rows were committed before explainability. A failed
+            # optional explanation must not erase valid model output.
+            explanation_saved = False
+            _fail_attempt(db, explanation_attempt, _safe_error(exc))
+            LOGGER.warning(
+                "EEG explanation output could not be saved; preserving predictions (%s).",
+                type(exc).__name__,
             )
-        db.commit()
         retained_artifact_path = _retain_positive_artifact(
             session=session,
             record=record,
@@ -713,12 +755,18 @@ def _process_record(
             model_windows=model_windows,
             window_starts=starts,
             predictions=predictions,
+            has_time_gaps=(
+                bool(conversion_details.get("has_time_gaps", False))
+                if isinstance(conversion_details, dict)
+                else False
+            ),
         )
         record.retained_artifact_path = retained_artifact_path
         record.status = RecordingStatus.INFERRED
         db.add(record)
         db.commit()
-        _finish_attempt(db, explanation_attempt, ProcessingStatus.SUCCEEDED)
+        if explanation_saved:
+            _finish_attempt(db, explanation_attempt, ProcessingStatus.SUCCEEDED)
     except Exception as exc:
         db.rollback()
         if retained_artifact_path:
@@ -739,6 +787,7 @@ def _retain_positive_artifact(
     model_windows: np.ndarray,
     window_starts: np.ndarray,
     predictions: list[WindowPrediction],
+    has_time_gaps: bool = False,
 ) -> str | None:
     """Encrypt only model-positive EEG segments for private retention.
 
@@ -775,6 +824,23 @@ def _retain_positive_artifact(
     intervals = [(0.0, record.duration_seconds or 0.0)] if ENABLE_FULL_SIGNAL_PREVIEW else alert_intervals
 
     temporary_dir = storage.directory(session.session_id, "work")
+    if has_time_gaps:
+        indexes = (
+            np.arange(len(window_starts), dtype=np.int64)
+            if ENABLE_FULL_SIGNAL_PREVIEW
+            else select_window_indices(window_starts, intervals)
+        )
+        if not len(indexes):
+            return None
+        temporary_path = temporary_dir / f"{record.record_id}.retained.npz"
+        write_model_window_npz(temporary_path, model_windows, window_starts, indexes)
+        return str(
+            storage.store_encrypted_artifact(
+                session.session_id,
+                temporary_path,
+                f"{record.record_id}.npz",
+            )
+        )
     if SIGNAL_OBFUSCATION not in methods_from_profile(session.privacy_method):
         temporary_path = temporary_dir / f"{record.record_id}.retained.edf"
         write_scrubbed_edf_clip(source_path, temporary_path, intervals)

@@ -311,6 +311,18 @@ class AuthenticationSecurityTests(unittest.TestCase):
         self.assertTrue(schema["paths"]["/api/sessions"]["get"]["security"])
         self.assertNotIn("security", schema["paths"]["/api/auth/session"]["get"])
 
+        privacy_parameters = schema["paths"]["/api/video-privacy/jobs"]["post"]["parameters"]
+        self.assertTrue(
+            any(item["name"] == "X-Video-Format" and item["required"] for item in privacy_parameters)
+        )
+        self.assertTrue(
+            any(item["name"] == "X-Video-Profile" and item["required"] for item in privacy_parameters)
+        )
+        for path in ("/api/video-detection/jobs", "/api/video-detection/preflight"):
+            parameters = schema["paths"][path]["post"]["parameters"]
+            self.assertTrue(any(item["name"] == "X-Video-Format" and item["required"] for item in parameters))
+            self.assertFalse(any(item["name"] == "X-Video-Profile" for item in parameters))
+
     def test_security_headers_are_added(self) -> None:
         with auth_environment(APP_ENV="test", AUTH_MODE="local"):
             with TestClient(app) as client:

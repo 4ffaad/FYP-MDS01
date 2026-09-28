@@ -24,6 +24,7 @@ from backend.app.services.session_service import public_record
 from backend.app.services.signal_service import SignalPreviewUnavailable, build_signal_preview
 from backend.app.services.storage_service import SessionStorage
 from backend.app.privacy.retention import model_alert_intervals
+from backend.app.ml.interface import public_score_type
 
 
 router = APIRouter(prefix="/api", tags=["recordings"])
@@ -111,7 +112,7 @@ def get_prediction(
     session = get_session_by_database_id(db, record.session_db_id, owner_id(current_user))
     predictions = list_predictions(db, record.id)
     first = predictions[0] if predictions else None
-    score_type = first.score_type if first else None
+    score_type = public_score_type(first.score_type) if first else None
     calibrated = any(item.calibrated_probability is not None for item in predictions)
     highest = max(predictions, key=lambda item: item.probability, default=None)
     intervals = model_alert_intervals(predictions)
@@ -162,10 +163,9 @@ def get_prediction(
                 "start_seconds": item.start_seconds,
                 "end_seconds": item.end_seconds,
                 "score": item.probability,
-                "probability": item.probability,
                 "raw_score": item.raw_score,
                 "calibrated_probability": item.calibrated_probability,
-                "score_type": item.score_type,
+                "score_type": public_score_type(item.score_type),
                 "calibration_method": item.calibration_method,
                 "calibration_version": item.calibration_version,
                 "calibration_dataset": item.calibration_dataset,
@@ -268,9 +268,23 @@ def get_explanation(
         items.append({
             "method": explanation.method,
             "is_clinical": explanation.is_clinical,
-            "data": payload,
+            "data": public_explanation_payload(payload),
         })
     return {"record_id": record.record_id, "explanations": items}
+
+
+def public_explanation_payload(payload: object) -> object:
+    """Sanitize old explanation artifacts that used probability-named fields."""
+
+    if not isinstance(payload, dict):
+        return payload
+    result = dict(payload)
+    score_type = result.get("score_type")
+    if isinstance(score_type, str):
+        result["score_type"] = public_score_type(score_type)
+    if "probability" in result:
+        result.setdefault("score", result.pop("probability"))
+    return result
 
 
 @router.get("/recordings/{record_id}/signal")

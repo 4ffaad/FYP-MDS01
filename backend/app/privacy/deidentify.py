@@ -14,6 +14,10 @@ import secrets
 import numpy as np
 import pyedflib
 
+from backend.app.eeg.contracts import MODEL_CHANNELS
+
+_NEUTRAL_START_DATETIME = datetime(1970, 1, 1)
+
 
 def _contains_identifier(value: str) -> bool:
     """Return whether an EDF text field contains meaningful metadata.
@@ -27,12 +31,28 @@ def _contains_identifier(value: str) -> bool:
     return bool(normalized) and normalized not in {"X", "X X X X"}
 
 
+def _reviewed_channel_indexes(labels: list[str]) -> list[int]:
+    """Return the exact reviewed model montage order, rejecting ambiguity."""
+
+    matches: dict[str, int] = {}
+    for index, raw_label in enumerate(labels):
+        label = str(raw_label).strip()
+        if label not in MODEL_CHANNELS:
+            continue
+        if label in matches:
+            raise ValueError("EEG contains an ambiguous reviewed model channel.")
+        matches[label] = index
+    if any(label not in matches for label in MODEL_CHANNELS):
+        raise ValueError("EEG does not contain the reviewed 18-channel montage.")
+    return [matches[label] for label in MODEL_CHANNELS]
+
+
 def generate_record_id() -> str:
     """Return a random identifier for one EEG recording, unrelated to PII."""
     return f"REC-{secrets.token_hex(16).upper()}"
 
 
-def inspect_metadata(edf_path: str) -> dict:
+def inspect_metadata(edf_path: str | Path) -> dict:
     """
     Return safe technical metadata and flags showing whether PII is present.
 
@@ -45,6 +65,7 @@ def inspect_metadata(edf_path: str) -> dict:
     try:
         patient_name = reader.getPatientName().strip()
         patient_code = reader.getPatientCode().strip()
+        signal_labels = [str(label).strip() for label in reader.getSignalLabels()]
         potential_identifiers_present = {
             "patient_code": _contains_identifier(patient_code),
             "patient_name": _contains_identifier(patient_name),
@@ -54,11 +75,17 @@ def inspect_metadata(edf_path: str) -> dict:
             "equipment": _contains_identifier(reader.getEquipment()),
             "admincode": _contains_identifier(reader.getAdmincode()),
             "recording_additional": _contains_identifier(reader.getRecordingAdditional()),
+            "sex": _contains_identifier(reader.getSex()),
+            "recording_datetime": reader.getStartdatetime() != _NEUTRAL_START_DATETIME,
+            "non_model_channel_labels": any(label not in MODEL_CHANNELS for label in signal_labels),
         }
         return {
             "technical": {
                 "number_of_channels": reader.signals_in_file,
-                "channel_labels": reader.getSignalLabels(),
+                "channel_labels": [
+                    label if label in MODEL_CHANNELS else "<redacted>"
+                    for label in signal_labels
+                ],
                 "sampling_frequencies_hz": reader.getSampleFrequencies().tolist(),
                 "duration_seconds": reader.getFileDuration(),
             },
@@ -112,6 +139,9 @@ def scrub_signal_header(
     scrubbed = dict(header)
     if label is not None:
         scrubbed["label"] = label
+    # EDF's physical-dimension field is not part of the model contract and
+    # may contain free text; preserve sample/calibration values without it.
+    scrubbed["dimension"] = ""
     scrubbed["transducer"] = ""
     scrubbed["prefilter"] = ""
 
@@ -153,13 +183,20 @@ def _verify_scrubbed_edf(edf_path: Path) -> None:
 
     reader = pyedflib.EdfReader(str(edf_path))
     try:
+        if reader.getSignalLabels() != list(MODEL_CHANNELS):
+            raise ValueError("Scrubbed EDF does not contain the reviewed model channels.")
+        if reader.getStartdatetime() != _NEUTRAL_START_DATETIME:
+            raise ValueError("Scrubbed EDF contains a non-neutral recording date.")
+        if _contains_identifier(reader.getSex()):
+            raise ValueError("Scrubbed EDF contains demographic metadata.")
         signal_headers = reader.getSignalHeaders()
         if any(
-            _contains_identifier(str(header.get("transducer") or ""))
+            str(header.get("dimension") or "") not in {"", "V"}
+            or _contains_identifier(str(header.get("transducer") or ""))
             or _contains_identifier(str(header.get("prefilter") or ""))
             for header in signal_headers
         ):
-            raise ValueError("Scrubbed EDF contains signal-header text.")
+            raise ValueError("Scrubbed EDF contains unsafe signal-header metadata.")
         _onsets, _durations, descriptions = reader.readAnnotations()
         if any(str(description).strip() for description in descriptions):
             raise ValueError("Scrubbed EDF contains annotation descriptions.")
@@ -172,12 +209,12 @@ def _verify_scrubbed_edf(edf_path: Path) -> None:
 
 def deidentify_edf(input_path: str | Path, output_path: str | Path, record_id: str) -> Path:
     """
-    Write a metadata-scrubbed copy of an EDF while preserving EEG data exactly.
+    Write a metadata-scrubbed EDF with only the reviewed model montage.
 
-    Digital samples are copied rather than calibrated physical values.  This
-    avoids a second analogue-to-digital conversion and preserves the source
-    signal values, labels and sample frequencies. Privacy-sensitive transducer
-    and prefilter text is cleared rather than copied.
+    Digital samples for the exact reviewed 18-channel montage are copied rather
+    than recalibrated. Other channels are dropped so arbitrary channel labels
+    cannot carry patient metadata into the model-input artifact. Missing or
+    duplicate reviewed channels fail closed.
     Relative annotation timing is preserved, while the identifying calendar
     start date is normalized to a fixed neutral date.
 
@@ -198,17 +235,22 @@ def deidentify_edf(input_path: str | Path, output_path: str | Path, record_id: s
     reader = pyedflib.EdfReader(str(source))
     writer = None
     try:
+        source_labels = [str(label).strip() for label in reader.getSignalLabels()]
+        channel_indexes = _reviewed_channel_indexes(source_labels)
+        source_headers = reader.getSignalHeaders()
         digital_signals = [
-            reader.readSignal(channel, digital=True)
-            for channel in range(reader.signals_in_file)
+            reader.readSignal(channel_index, digital=True)
+            for channel_index in channel_indexes
         ]
         signal_headers = [
             scrub_signal_header(
-                header,
-                str(header.get("label", "")).strip(),
+                source_headers[channel_index],
+                model_label,
                 digital_signals[index],
             )
-            for index, header in enumerate(reader.getSignalHeaders())
+            for index, (model_label, channel_index) in enumerate(
+                zip(MODEL_CHANNELS, channel_indexes, strict=True)
+            )
         ]
         # Physical ranges were normalized by scrub_signal_header so pyedflib
         # can encode them in EDF+'s fixed-width fields without truncation.
@@ -233,7 +275,7 @@ def deidentify_edf(input_path: str | Path, output_path: str | Path, record_id: s
 
         writer = pyedflib.EdfWriter(
             str(destination),
-            reader.signals_in_file,
+            len(MODEL_CHANNELS),
             file_type=reader.filetype,
         )
         writer.setHeader(safe_header)
@@ -280,8 +322,13 @@ def deidentify_nicolet(input_path: str | Path, output_path: str | Path, record_i
     writer = None
     try:
         raw = read_nicolet_bounded(source)
+        source_labels = [str(label).strip() for label in raw.ch_names]
         signals = np.asarray(raw.get_data(), dtype=np.float64)
-        labels = [str(label).strip() for label in raw.ch_names]
+        if signals.ndim != 2 or signals.shape[0] != len(source_labels):
+            raise ValueError("Nicolet signal data cannot be safely de-identified.")
+        channel_indexes = _reviewed_channel_indexes(source_labels)
+        signals = signals[channel_indexes]
+        labels = list(MODEL_CHANNELS)
         sampling_rate = float(raw.info["sfreq"])
         if (
             signals.ndim != 2
@@ -365,9 +412,24 @@ def deidentify_legacy_nicolet(input_path: str | Path, output_path: str | Path, r
     """Convert a legacy single-file Nicolet recording to a scrubbed EDF."""
 
     del record_id
-    from backend.app.eeg.io import read_uniform_legacy_eeg
+    from backend.app.eeg.io import read_uniform_legacy_eeg_segments
 
-    signals, sampling_rate, labels = read_uniform_legacy_eeg(input_path)
+    segments, sampling_rate, source_labels = read_uniform_legacy_eeg_segments(input_path)
+    if not segments or any(
+        signals.ndim != 2 or signals.shape[0] != len(source_labels)
+        for _start_seconds, signals in segments
+    ):
+        raise ValueError("Legacy Nicolet signal data cannot be safely de-identified.")
+    channel_indexes = _reviewed_channel_indexes(source_labels)
+    total_samples = sum(signals.shape[1] for _start_seconds, signals in segments)
+    signals = np.empty((len(channel_indexes), total_samples), dtype=np.float32)
+    sample_start = 0
+    for _start_seconds, segment_signals in segments:
+        sample_end = sample_start + segment_signals.shape[1]
+        signals[:, sample_start:sample_end] = segment_signals[channel_indexes]
+        sample_start = sample_end
+    del segments
+    labels = list(MODEL_CHANNELS)
     if (
         signals.ndim != 2
         or signals.shape[0] != len(labels)

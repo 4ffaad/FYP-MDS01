@@ -1,9 +1,9 @@
 # MDS01 interface
 
-A task-focused research workspace. People upload one EEG archive and, separately,
-one video; they inspect processing and review flagged windows. Video privacy is
-a separate workflow. The interface must make those boundaries and the
-limitations of the output clear.
+A calm, task-focused review workspace. A single patient-folder intake groups
+the selected report, any number of EEG recordings, and every video clip into
+one opaque case. EEG and video still run through separate processing paths; the
+case view brings their review status and evidence together.
 
 ## Source of truth
 
@@ -24,10 +24,12 @@ The existing `teal` utility token names map to blue. Reuse them consistently; do
 ## Layout and hierarchy
 
 - Shared header and page frame align to a 1320px maximum. Horizontal gutters are 24px, reduced to 16px on small screens.
-- Three top-level destinations: **EEG analysis**, **Video privacy**, and **Video detection**. Upload is an EEG action, not a fourth workspace.
+- **Workspace**, **Cases**, and one **New patient review** action form the main navigation. Modality-specific tools remain available without competing with the patient review flow.
+- `/upload` is the canonical patient-folder intake. One folder creates one case; selected EEGs are packaged together, every supported video is automatically submitted for a full-frame-blurred, body-keypoint privacy preview, and EEG signal obfuscation is the only selectable privacy option. This flow does not launch VSViG.
 - Left-align headings, explanatory text and empty states. Use one clear primary action.
 - Use space and dividers for structure. Reserve bordered panels for interactive data, upload targets and independently reviewable content.
 - Keep form options visible together; avoid panels nested inside panels, decorative icon tiles, redundant badges and repeated warnings.
+- Follow the supplied reference's quiet white surfaces, strong readable type, clear file inventory and restrained interaction motion. Keep upload copy task-oriented; retain research/model caveats near results where they help interpret scores.
 - Preserve the MDS01 wordmark. Do not substitute stock medical icons for the brand.
 
 ## Typography and controls

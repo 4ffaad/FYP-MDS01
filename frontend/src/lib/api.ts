@@ -3,6 +3,8 @@ import type {
   CaseSummary,
   CaseDetail,
   CaseAnalysis,
+  PatientProfile,
+  PatientProfileDetail,
   AuthUser,
   ApiErrorPayload,
   DisplayStatus,
@@ -19,9 +21,11 @@ import type {
   SignalPreview,
   UploadDraft,
   VideoPrivacyJob,
+  VideoPrivacyPoseEvidence,
   VideoPrivacyProfile,
   VideoPrivacyStage,
 } from "./types";
+import { prepareVideoUploadFile } from "./safe-upload";
 
 function defaultApiBaseUrl(): string {
   if (process.env.NODE_ENV === "production") {
@@ -41,6 +45,7 @@ const API_BASE_URL = (
 ).replace(/\/$/, "");
 const REQUEST_CREDENTIALS: RequestCredentials = "include";
 const USE_STUB = process.env.NEXT_PUBLIC_USE_API_STUB === "true";
+export const API_STUB_ENABLED = USE_STUB;
 export const AUTH_MODE = process.env.NEXT_PUBLIC_AUTH_MODE ?? "backend";
 export const ENABLE_SIGNAL_PREVIEW =
   process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW === "true";
@@ -237,6 +242,7 @@ export async function logoutAccount(): Promise<void> {
 
 type BackendVideoJob = {
   job_id: string;
+  case_id: string | null;
   label: string;
   profile: VideoPrivacyProfile;
   profile_label: string;
@@ -257,6 +263,14 @@ type BackendVideoJob = {
   fps: number | null;
   width: number | null;
   height: number | null;
+  pose_evidence: {
+    model: "Lightweight OpenPose";
+    detected_frames: number;
+    sampled_frames: number;
+    tracking_stopped: boolean;
+    status: VideoPrivacyPoseEvidence["status"];
+    action_units: "not-configured";
+  } | null;
   created_at: string;
   completed_at: string | null;
   error: string | null;
@@ -281,6 +295,7 @@ function writeStubVideoJobs(jobs: StubVideoJob[]): void {
 function videoJobFromBackend(job: BackendVideoJob): VideoPrivacyJob {
   return {
     jobId: job.job_id,
+    caseId: job.case_id,
     label: job.label,
     profile: job.profile,
     profileLabel: job.profile_label,
@@ -301,6 +316,16 @@ function videoJobFromBackend(job: BackendVideoJob): VideoPrivacyJob {
     fps: job.fps,
     width: job.width,
     height: job.height,
+    poseEvidence: job.pose_evidence
+      ? {
+          model: job.pose_evidence.model,
+          detectedFrames: job.pose_evidence.detected_frames,
+          sampledFrames: job.pose_evidence.sampled_frames,
+          trackingStopped: job.pose_evidence.tracking_stopped,
+          status: job.pose_evidence.status,
+          actionUnits: job.pose_evidence.action_units,
+        }
+      : null,
     createdAt: job.created_at,
     completedAt: job.completed_at,
     error: job.error,
@@ -353,13 +378,19 @@ function stubVideoJob(profile: VideoPrivacyProfile): VideoPrivacyJob {
   const now = new Date().toISOString();
   return {
     jobId: `VID-${Date.now().toString(36).toUpperCase()}`,
+    caseId: null,
     label: "Video upload 01",
     profile,
-    profileLabel: profile === "face-redacted" ? "Face redaction" : "Pose-only",
+    profileLabel:
+      profile === "face-redacted-pose-preview"
+        ? "Full-frame blur + body-keypoint preview"
+        : profile === "face-redacted"
+          ? "Full-frame blur"
+          : "Legacy pose-only",
     profileDescription:
-      profile === "face-redacted"
-        ? "The full frame is blurred on every frame. Face-detection coverage is a quality signal for review; it does not change the blur extent."
-        : "Replace the scene with pose landmarks on a non-identifying background.",
+      profile === "face-redacted-pose-preview"
+        ? "Full-frame blur precedes Lightweight OpenPose. No VSViG score or facial Action Units are produced."
+        : "The full frame is blurred on every frame. Face-detection coverage is a quality signal for review.",
     status: "queued",
     currentStage: "preflight",
     stages: [
@@ -386,6 +417,7 @@ function stubVideoJob(profile: VideoPrivacyProfile): VideoPrivacyJob {
     fps: 30,
     width: 1280,
     height: 720,
+    poseEvidence: null,
     createdAt: now,
     completedAt: null,
     error: null,
@@ -513,7 +545,7 @@ type BackendPredictionResponse = {
     start_seconds: number;
     end_seconds: number;
     score?: number;
-    probability: number;
+    probability?: number;
     raw_score?: number | null;
     calibrated_probability?: number | null;
     score_type?: string;
@@ -657,14 +689,14 @@ export function toDisplayStatus(status: string): DisplayStatus {
   return "processing";
 }
 
-function recordingFromBackend(
+export function recordingFromBackend(
   recording: BackendRecording,
   session?: BackendSession,
 ): Recording {
   return {
     recordId: recording.record_id,
     sequenceIndex: recording.sequence_index,
-    displayName: recording.source_filename,
+    displayName: `Recording ${String(recording.sequence_index).padStart(2, "0")}`,
     sourceFormat: recording.source_format ?? undefined,
     status: recording.status,
     durationSeconds: recording.duration_seconds,
@@ -845,7 +877,7 @@ function mergeAlertIntervals(
 function predictionScore(
   prediction: BackendPredictionResponse["predictions"][number],
 ): number {
-  return prediction.score ?? prediction.probability;
+  return prediction.score ?? prediction.probability ?? 0;
 }
 
 function findHighestWindow(
@@ -947,8 +979,11 @@ export async function getSessions(signal?: AbortSignal): Promise<Session[]> {
 
 type BackendCaseSummary = {
   case_id: string;
+  patient_name?: string | null;
+  report_summary?: string | null;
   modalities: Array<"eeg" | "video">;
   analysis_count: number;
+  privacy_preview_count?: number;
   latest_created_at: string;
   status: CaseSummary["status"];
   flagged_interval_count: number;
@@ -960,8 +995,11 @@ export async function getCases(signal?: AbortSignal): Promise<CaseSummary[]> {
     const sessions = await getSessions(signal);
     return sessions.map((session) => ({
       caseId: session.caseId ?? `CASE-${session.sessionId.slice(-8)}`,
+      patientName: null,
+      reportSummary: null,
       modalities: ["eeg"],
       analysisCount: 1,
+      privacyPreviewCount: 0,
       latestCreatedAt: session.createdAt,
       status:
         toDisplayStatus(session.status) === "failed" ||
@@ -978,8 +1016,11 @@ export async function getCases(signal?: AbortSignal): Promise<CaseSummary[]> {
     const cases = await getJson<BackendCaseSummary[]>("/api/cases", signal);
     return cases.map((item) => ({
       caseId: item.case_id,
+      patientName: item.patient_name ?? null,
+      reportSummary: item.report_summary ?? null,
       modalities: item.modalities,
       analysisCount: item.analysis_count,
+      privacyPreviewCount: item.privacy_preview_count ?? 0,
       latestCreatedAt: item.latest_created_at,
       status: item.status,
       flaggedIntervalCount: item.flagged_interval_count,
@@ -999,6 +1040,7 @@ export async function getCase(
 ): Promise<CaseDetail> {
   const response = await getJson<{
     case_id: string;
+    patient_name?: string | null;
     analyses: Array<{
       id: string;
       modality: "eeg" | "video";
@@ -1009,6 +1051,7 @@ export async function getCase(
   }>(`/api/cases/${encodeURIComponent(caseId)}`, signal);
   return {
     caseId: response.case_id,
+    patientName: response.patient_name ?? null,
     analyses: response.analyses.map((analysis) => ({
       id: analysis.id,
       modality: analysis.modality,
@@ -1017,6 +1060,135 @@ export async function getCase(
       reviewReady: analysis.review_ready,
     })),
   };
+}
+
+export async function savePatientProfile(
+  caseId: string,
+  details: PatientProfileDetail[],
+  signal?: AbortSignal,
+): Promise<PatientProfile> {
+  if (USE_STUB) {
+    throw new ApiError(
+      "Patient identity cannot be saved in UI stub mode. Use the authenticated local backend.",
+      503,
+    );
+  }
+  const response = await putJson<{
+    profile: {
+      name: string;
+      hospital_id: string;
+      age: string;
+      findings: string;
+      details: PatientProfileDetail[];
+      reviewed: true;
+      reviewed_at: string;
+    };
+  }>(
+    `/api/cases/${encodeURIComponent(caseId)}/patient-profile`,
+    {
+      details,
+      review_confirmed: true,
+    },
+    signal,
+  );
+  return {
+    name: response.profile.name,
+    hospitalId: response.profile.hospital_id,
+    age: response.profile.age,
+    findings: response.profile.findings,
+    details: response.profile.details,
+    reviewed: response.profile.reviewed,
+    reviewedAt: response.profile.reviewed_at,
+  };
+}
+
+export async function getCaseSourceReportPdf(
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/cases/${encodeURIComponent(caseId)}/report`,
+    {
+      signal,
+      headers: { Accept: "application/pdf" },
+      credentials: REQUEST_CREDENTIALS,
+      cache: "no-store",
+    },
+  );
+  if (!response.ok) throw await readError(response);
+  return response.blob();
+}
+
+export async function saveCaseSourceReportPdf(
+  caseId: string,
+  pdf: File,
+): Promise<void> {
+  if (
+    pdf.type !== "application/pdf" &&
+    !pdf.name.toLocaleLowerCase("en-US").endsWith(".pdf")
+  ) {
+    throw new Error("Choose a PDF file for the source report.");
+  }
+  const response = await fetch(
+    `${API_BASE_URL}/api/cases/${encodeURIComponent(caseId)}/report`,
+    {
+      method: "PUT",
+      body: pdf,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/pdf",
+      },
+      credentials: REQUEST_CREDENTIALS,
+      cache: "no-store",
+    },
+  );
+  if (!response.ok) throw await readError(response, false);
+}
+
+export async function deleteCaseSourceReportPdf(caseId: string): Promise<void> {
+  await requestWithoutBody(
+    `/api/cases/${encodeURIComponent(caseId)}/report`,
+    "DELETE",
+    undefined,
+    false,
+  );
+}
+
+export async function getPatientProfile(
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<PatientProfile | null> {
+  if (USE_STUB) return null;
+  const response = await getJson<{
+    profile: {
+      name: string;
+      hospital_id: string;
+      age: string;
+      findings: string;
+      details?: PatientProfileDetail[];
+      reviewed: true;
+      reviewed_at: string;
+    } | null;
+  }>(`/api/cases/${encodeURIComponent(caseId)}/patient-profile`, signal);
+  return response.profile
+    ? {
+        name: response.profile.name,
+        hospitalId: response.profile.hospital_id,
+        age: response.profile.age,
+        findings: response.profile.findings,
+        details: response.profile.details ?? [],
+        reviewed: response.profile.reviewed,
+        reviewedAt: response.profile.reviewed_at,
+      }
+    : null;
+}
+
+export async function deletePatientProfile(caseId: string): Promise<void> {
+  if (USE_STUB) return;
+  await requestWithoutBody(
+    `/api/cases/${encodeURIComponent(caseId)}/patient-profile`,
+    "DELETE",
+  );
 }
 
 /** Return the backend asset URL for a protected video response. */
@@ -1033,6 +1205,11 @@ export async function submitVideoPrivacy(
   file: File,
   onProgress: (progress: number) => void,
   signal?: AbortSignal,
+  options: {
+    profile?: VideoPrivacyProfile;
+    caseId?: string;
+    idempotencyKey?: string;
+  } = {},
 ): Promise<VideoPrivacyJob> {
   if (USE_STUB) {
     for (const progress of [22, 56, 100]) {
@@ -1041,23 +1218,47 @@ export async function submitVideoPrivacy(
         throw new DOMException("Upload aborted.", "AbortError");
       onProgress(progress);
     }
-    const job = stubVideoJob("face-redacted");
+    const job = stubVideoJob(options.profile ?? "face-redacted");
     writeStubVideoJobs([
       { job, submittedAt: job.createdAt },
       ...readStubVideoJobs(),
     ]);
     return job;
   }
-  const formData = new FormData();
-  formData.append("video", file);
-  formData.append("profile", "face-redacted");
-  const response = await uploadJson<{ job: BackendVideoJob }>(
+  const safeName = prepareVideoUploadFile(file);
+  const extension = safeName.name.split(".").pop() ?? "";
+  const response = await uploadBinary<{ job: BackendVideoJob }>(
     "/api/video-privacy/jobs",
-    formData,
+    safeName,
     onProgress,
     signal,
+    {
+      "X-Video-Format": extension,
+      "X-Video-Profile": options.profile ?? "face-redacted",
+      ...(options.caseId ? { "X-Case-ID": options.caseId } : {}),
+      ...(options.idempotencyKey
+        ? { "Idempotency-Key": options.idempotencyKey }
+        : {}),
+    },
   );
   return videoJobFromBackend(response.job);
+}
+
+/** List privacy previews attached to one owner-scoped case. */
+export async function getVideoPrivacyJobs(
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<VideoPrivacyJob[]> {
+  if (USE_STUB) {
+    const jobs = readStubVideoJobs().map(advanceStubVideoJob);
+    writeStubVideoJobs(jobs);
+    return jobs.map((item) => item.job).filter((job) => job.caseId === caseId);
+  }
+  const response = await getJson<{ jobs: BackendVideoJob[] }>(
+    `/api/video-privacy/jobs?case_id=${encodeURIComponent(caseId)}`,
+    signal,
+  );
+  return response.jobs.map(videoJobFromBackend);
 }
 
 /** Read one video privacy job and advance the local stub when enabled. */
@@ -1197,14 +1398,12 @@ export async function stageUpload(
     writeStubDrafts([draft, ...readStubDrafts()]);
     return draft;
   }
-  const formData = new FormData();
-  formData.append("archive", file);
-  const response = await uploadJson<{
+  const response = await uploadBinary<{
     draft_id: string;
     status: "staged";
     created_at: string;
     expires_at: string;
-  }>("/api/uploads/drafts", formData, onProgress, signal);
+  }>("/api/uploads/drafts", file, onProgress, signal);
   return {
     draftId: response.draft_id,
     status: response.status,
@@ -1648,6 +1847,23 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function putJson<T>(
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "PUT",
+    signal,
+    body: JSON.stringify(body),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    credentials: REQUEST_CREDENTIALS,
+    cache: "no-store",
+  });
+  if (!response.ok) throw await readError(response, false);
+  return (await response.json()) as T;
+}
+
 async function readError(
   response: Response,
   notifyExpiry = true,
@@ -1662,11 +1878,33 @@ async function readError(
   let message = `Request failed with status ${response.status}.`;
   try {
     const payload = (await response.json()) as ApiErrorPayload;
-    if (payload.detail) message = payload.detail;
+    message = responseErrorMessage(payload.detail, response.status);
   } catch {
     /* Keep the status message. */
   }
   return new ApiError(message, response.status);
+}
+
+function responseErrorMessage(detail: unknown, status: number): string {
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (status === 422) {
+    return "The request was rejected (422). Check the submitted fields and files.";
+  }
+  return `Request failed with status ${status}.`;
+}
+
+function uploadErrorMessage(status: number, detail: unknown): string {
+  if (status === 422) {
+    return "Upload rejected (422). Verify the selected files and that the frontend and backend upload contracts match.";
+  }
+  if (status === 413) return "The upload exceeds the service size limit.";
+  if (status === 415)
+    return "This file format is not supported by the upload service.";
+  if (status === 409)
+    return "The service is busy with another upload or video analysis.";
+  if (status >= 500 && typeof detail === "string" && detail.trim())
+    return detail;
+  return `Upload failed with status ${status}.`;
 }
 
 export function uploadJson<T>(
@@ -1675,12 +1913,37 @@ export function uploadJson<T>(
   onProgress: (progress: number) => void,
   signal?: AbortSignal,
 ): Promise<T> {
+  return uploadRequest(path, body, onProgress, signal);
+}
+
+export function uploadBinary<T>(
+  path: string,
+  body: Blob,
+  onProgress: (progress: number) => void,
+  signal?: AbortSignal,
+  headers: Record<string, string> = {},
+): Promise<T> {
+  return uploadRequest(path, body, onProgress, signal, {
+    "Content-Type": "application/octet-stream",
+    ...headers,
+  });
+}
+
+function uploadRequest<T>(
+  path: string,
+  body: FormData | Blob,
+  onProgress: (progress: number) => void,
+  signal?: AbortSignal,
+  headers: Record<string, string> = {},
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("POST", `${API_BASE_URL}${path}`);
     request.withCredentials = true;
     request.responseType = "json";
     request.setRequestHeader("Accept", "application/json");
+    for (const [name, value] of Object.entries(headers))
+      request.setRequestHeader(name, value);
     request.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable)
         onProgress(Math.round((event.loaded / event.total) * 100));
@@ -1691,10 +1954,10 @@ export function uploadJson<T>(
       if (request.status === 401 && typeof window !== "undefined") {
         window.dispatchEvent(new Event("mds01:auth-expired"));
       }
-      const detail = (request.response as ApiErrorPayload | null)?.detail;
+      const payload = request.response as ApiErrorPayload | null;
       reject(
         new ApiError(
-          detail ?? `Upload failed with status ${request.status}.`,
+          uploadErrorMessage(request.status, payload?.detail),
           request.status,
         ),
       );

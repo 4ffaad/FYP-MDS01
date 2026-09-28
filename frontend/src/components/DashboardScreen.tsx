@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteSession,
@@ -11,6 +10,10 @@ import {
 } from "@/lib/api";
 import type { DisplayStatus, Session } from "@/lib/types";
 import { Icon } from "./Icon";
+import {
+  RecentPatientHistory,
+  type WorkspaceCaseSummary,
+} from "./RecentPatientHistory";
 import { SessionGroup } from "./SessionRecordings";
 import { Button } from "@/components/ui/button";
 
@@ -28,6 +31,7 @@ const POLL_INTERVAL_MS = 4000;
 export function DashboardScreen() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [caseCount, setCaseCount] = useState(0);
+  const [recentCases, setRecentCases] = useState<WorkspaceCaseSummary[]>([]);
   const [filter, setFilter] = useState<"all" | DisplayStatus>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +52,32 @@ export function DashboardScreen() {
         ),
       );
       setCaseCount(nextCases.length);
+      setRecentCases(
+        [...nextCases]
+          .sort(
+            (left, right) =>
+              Date.parse(right.latestCreatedAt) -
+              Date.parse(left.latestCreatedAt),
+          )
+          .slice(0, 4)
+          .map(
+            ({
+              caseId,
+              modalities,
+              analysisCount,
+              latestCreatedAt,
+              status,
+              flaggedIntervalCount,
+            }) => ({
+              caseId,
+              modalities,
+              analysisCount,
+              latestCreatedAt,
+              status,
+              flaggedIntervalCount,
+            }),
+          ),
+      );
       setError(null);
     } catch (refreshError) {
       if (
@@ -159,15 +189,15 @@ export function DashboardScreen() {
             >
               <Link href="/upload">
                 <Icon name="upload" className="size-4" />
-                New analysis
+                New patient review
               </Link>
             </Button>
           </div>
           <div className="mt-8 grid gap-3 sm:grid-cols-3">
             <Metric
-              label="Cases"
+              label="Patient history"
               value={caseCount}
-              detail="Privacy-safe history"
+              detail="Owner-scoped reviews"
               icon="list"
             />
             <Metric
@@ -265,14 +295,11 @@ export function DashboardScreen() {
             )}
           </section>
 
-          <aside className="space-y-5">
-            <WorkflowCard
-              icon="list"
-              eyebrow="Longitudinal review"
-              title="Follow a case"
-              description="See EEG and video analyses together with privacy status, model evidence, and explanation readiness."
-              href="/cases"
-              action="Open cases"
+          <aside>
+            <RecentPatientHistory
+              items={recentCases}
+              loading={loading}
+              error={error}
             />
           </aside>
         </div>
@@ -312,42 +339,6 @@ function Metric({
   );
 }
 
-function WorkflowCard({
-  icon,
-  eyebrow,
-  title,
-  description,
-  href,
-  action,
-}: {
-  icon: "activity" | "shield" | "list";
-  eyebrow: string;
-  title: string;
-  description: string;
-  href: string;
-  action: string;
-}) {
-  return (
-    <motion.section
-      className="premium-card p-5 sm:p-6"
-      whileHover={{ y: -3 }}
-      transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-    >
-      <Icon name={icon} className="size-6 text-teal" weight="bold" />
-      <p className="eyebrow mt-5">{eyebrow}</p>
-      <h2 className="mt-1 text-lg font-bold">{title}</h2>
-      <p className="mt-2 text-sm leading-6 text-ink-muted">{description}</p>
-      <Link
-        href={href}
-        className="mt-5 inline-flex min-h-10 items-center gap-2 text-sm font-bold text-teal-dark underline decoration-teal/40 underline-offset-4 hover:decoration-teal"
-      >
-        {action}
-        <Icon name="arrow" className="size-4" />
-      </Link>
-    </motion.section>
-  );
-}
-
 function LoadingRows() {
   return (
     <div className="space-y-3 px-5 py-5 sm:px-7" aria-label="Loading sessions">
@@ -368,7 +359,7 @@ function EmptyDashboard({ filtered }: { filtered: boolean }) {
       <p className="mt-2 max-w-md text-sm leading-6 text-ink-muted">
         {filtered
           ? "Choose another status to see the rest of your VEEG sessions."
-          : "Start with VEEG, video, or both from New analysis above."}
+          : "Start with one patient folder from New patient review above."}
       </p>
       <Link
         className="mt-5 inline-flex min-h-10 items-center gap-2 text-sm font-bold text-teal-dark underline underline-offset-4"

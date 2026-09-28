@@ -23,4 +23,13 @@ test("video privacy route opens its protected transform workflow", async ({
   await expect(
     page.getByText(/Face-detection coverage is a quality signal for review/),
   ).toBeVisible();
+  await expect(
+    page.getByRole("radio", { name: /Full-frame blur only/ }),
+  ).toBeChecked();
+  await page
+    .getByRole("radio", { name: /Full-frame blur \+ body-keypoint preview/ })
+    .check();
+  await expect(
+    page.getByText(/Facial Action Units are not configured/i),
+  ).toBeVisible();
 });

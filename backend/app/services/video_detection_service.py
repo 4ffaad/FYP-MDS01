@@ -28,10 +28,21 @@ from backend.app.database.models.video import VideoPrivacyProfile, utc_now
 from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.database import video_detection_repository as repository
 from backend.app.services.video_storage_service import VideoStorage
-from backend.app.services.case_service import ensure_case_reference, new_case_id
+from backend.app.services.storage_service import StorageError
+from backend.app.services.case_service import (
+    cleanup_case_profile_if_empty,
+    ensure_case_reference,
+    lock_owner_case_mutations,
+    new_case_id,
+)
 from backend.app.video_detection.contract import DetectionError, load_contract
 from backend.app.video_detection.visualization import validate_visualization_artifact
-from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProcessorError
+from backend.app.video_privacy.processor import (
+    VideoPrivacyProcessor,
+    VideoProcessorError,
+    preflight_video_subprocess,
+    video_worker_environment,
+)
 
 ERRORS = {
     "assets_missing": "Mount the official model assets by running the pinned VSViG installer; see docs/video-detection.md.",
@@ -39,7 +50,8 @@ ERRORS = {
     "contract_invalid": "The VSViG model contract is incomplete or incompatible.",
     "asset_mismatch": "A pinned VSViG, pose, source, or partition asset failed its integrity check.",
     "runtime_incompatible": "The VSViG runtime could not load both published checkpoints. Run the documented runtime verification command.",
-    "video_incompatible": "Use a readable AVI, MP4, MOV, or WebM clip of at least 5 seconds with stable frame timing. The pinned VSViG path requires 1920x1080 input unless an operator-approved letterbox adaptation is enabled.",
+    "video_incompatible": "Use a readable AVI, MP4, MOV, or WebM clip of at least 5 seconds with stable frame timing.",
+    "video_resolution_mismatch": "This clip does not use the required original 1920×1080 resolution. Select the matching 1920×1080 original, or ask the operator to enable experimental letterboxing.",
     "ambiguous_or_missing_pose": "A single patient could not be identified throughout this clip. Review the framing and try a shorter clip.",
     "incomplete_pose": "Too many patient landmarks were missing or obscured for this model. Try a shorter clip with one fully visible patient, steady framing, and clearer lighting. No detection result was published.",
     "invalid_patch": "The clip could not produce valid model input patches.",
@@ -74,9 +86,108 @@ def _preflight_uploaded_video(storage: VideoStorage, job_id: str, encrypted: Pat
     deadline = time.monotonic() + VIDEO_PREFLIGHT_TIMEOUT_SECONDS
     source = storage.materialize_original(job_id, encrypted, deadline=deadline)
     try:
-        return VideoPrivacyProcessor.preflight(source, deadline=deadline)
+        return preflight_video_subprocess(
+            source,
+            timeout_seconds=deadline - time.monotonic(),
+        )
     finally:
         storage.delete_work_file(source)
+
+
+def _video_admission(info: dict[str, float | int]) -> dict[str, object]:
+    """Describe native admission or explicitly enabled experimental adaptation."""
+
+    width = int(info["width"])
+    height = int(info["height"])
+    fps = float(info["fps"])
+    frame_count = int(info["frame_count"])
+    duration = frame_count / fps if fps > 0 else 0.0
+    needs_adaptation = (width, height) != (1920, 1080)
+    if needs_adaptation and not VSVIG_ALLOW_LETTERBOX_ADAPTATION:
+        return {
+            "accepted": False,
+            "width": width,
+            "height": height,
+            "required_width": 1920,
+            "required_height": 1080,
+            "adaptation": "none",
+            "experimental": False,
+            "message": ERRORS["video_resolution_mismatch"],
+        }
+    if not math.isfinite(duration) or duration < 5 or duration > VIDEO_MAX_DURATION_SECONDS:
+        return {
+            "accepted": False,
+            "width": width,
+            "height": height,
+            "required_width": 1920,
+            "required_height": 1080,
+            "adaptation": "letterbox" if needs_adaptation else "none",
+            "experimental": needs_adaptation,
+            "message": ERRORS["video_incompatible"],
+        }
+    return {
+        "accepted": True,
+        "width": width,
+        "height": height,
+        "required_width": 1920,
+        "required_height": 1080,
+        "adaptation": "letterbox" if needs_adaptation else "none",
+        "experimental": needs_adaptation,
+        "fps": fps,
+        "duration_seconds": duration,
+        "message": (
+            "Experimental letterbox adaptation passed preflight. This input has not been validated as equivalent to native-resolution video; results are research-only."
+            if needs_adaptation
+            else "Native-resolution preflight passed. EEG/video synchronization is not established."
+        ),
+    }
+
+
+async def preflight_video_upload(storage: VideoStorage, upload: UploadFile) -> dict[str, object]:
+    """Encrypt, preflight, and delete one clip without creating an inference job."""
+
+    try:
+        storage.cleanup_stale_preflight_uploads()
+    except Exception:
+        LOGGER.warning("Stale video preflight cleanup unavailable; retrying next sweep.")
+    if Path(upload.filename or "").suffix.lower() not in {".avi", ".mp4", ".mov", ".webm"}:
+        raise DetectionError("video_incompatible")
+    if upload.content_type not in {
+        "video/mp4",
+        "video/quicktime",
+        "video/webm",
+        "video/x-msvideo",
+        "application/octet-stream",
+    }:
+        raise DetectionError("video_incompatible")
+    preflight_id = f"VID-PREFLIGHT-{secrets.token_hex(12).upper()}"
+    try:
+        with storage.preflight_upload_lease(preflight_id):
+            try:
+                encrypted = await storage.save_upload(preflight_id, upload)
+                info = await asyncio.to_thread(
+                    _preflight_uploaded_video, storage, preflight_id, encrypted
+                )
+                return _video_admission(info)
+            except VideoProcessorError:
+                return {
+                    "accepted": False,
+                    "width": None,
+                    "height": None,
+                    "required_width": 1920,
+                    "required_height": 1080,
+                    "adaptation": "none",
+                    "experimental": False,
+                    "message": ERRORS["video_incompatible"],
+                }
+            finally:
+                try:
+                    storage.delete_job(preflight_id)
+                except Exception as exc:
+                    LOGGER.warning("Temporary video preflight cleanup is pending.")
+                    raise StorageError("Temporary video cleanup is pending.") from exc
+    finally:
+        await upload.close()
 
 
 def _rollback_admission_job(db: Session, job: VideoDetectionJob, storage: VideoStorage) -> bool:
@@ -84,6 +195,8 @@ def _rollback_admission_job(db: Session, job: VideoDetectionJob, storage: VideoS
 
     job_id = job.job_id
     original_path = job.original_path
+    case_id = job.case_id
+    owner_user_id = job.owner_user_id
     try:
         storage.delete_job(job_id)
     except Exception:
@@ -98,6 +211,12 @@ def _rollback_admission_job(db: Session, job: VideoDetectionJob, storage: VideoS
         return False
     db.delete(job)
     db.commit()
+    if case_id and owner_user_id is not None:
+        cleanup_case_profile_if_empty(
+            db,
+            case_id=case_id,
+            owner_user_id=owner_user_id,
+        )
     return True
 
 
@@ -120,7 +239,6 @@ def expire_job(db, job, storage, *, force: bool = False):
 
 def public_job(db, job, storage):
     expire_job(db, job, storage)
-    visualization_available = job.status == "ready" and bool(job.visualization_path)
     return {
         "job_id": job.job_id, "case_id": job.case_id,
         "label": "Video detection " + job.job_id[-6:],
@@ -128,8 +246,6 @@ def public_job(db, job, storage):
         "duration_seconds": job.duration_seconds, "fps": job.fps,
         "created_at": job.created_at, "retention_expires_at": job.retention_expires_at,
         "video_available": False,
-        "visualization_available": visualization_available,
-        "visualization_url": f"/api/video-detection/jobs/{job.job_id}/visualization" if visualization_available else None,
         "error": ERRORS.get(job.error_code), "research_only": True,
     }
 
@@ -154,6 +270,9 @@ async def create_job(
     ensure_case_reference(db, case_id, owner)
     # Verify the expensive assets off the event loop, before accepting patient bytes.
     await asyncio.to_thread(load_contract)
+    if case_id is not None:
+        lock_owner_case_mutations(db, owner)
+        ensure_case_reference(db, case_id, owner)
     job = VideoDetectionJob(owner_user_id=owner, case_id=case_id or new_case_id(), job_id=f"VID-{secrets.token_hex(16).upper()}",
                             retention_expires_at=utc_now() + timedelta(seconds=VIDEO_RETENTION_SECONDS))
     db.add(job)
@@ -163,6 +282,15 @@ async def create_job(
         encrypted = await storage.save_upload(job.job_id, upload)
         job.original_path = str(encrypted)
         info = await asyncio.to_thread(_preflight_uploaded_video, storage, job.job_id, encrypted)
+        if not _video_admission(info)["accepted"]:
+            raise DetectionError(
+                "video_resolution_mismatch"
+                if (
+                    (int(info["width"]), int(info["height"])) != (1920, 1080)
+                    and not VSVIG_ALLOW_LETTERBOX_ADAPTATION
+                )
+                else "video_incompatible"
+            )
         job.fps = float(info["fps"])
         job.duration_seconds = int(info["frame_count"]) / job.fps
         if not math.isfinite(job.duration_seconds) or not 0 < job.duration_seconds <= VIDEO_MAX_DURATION_SECONDS:
@@ -182,8 +310,15 @@ async def create_job(
 
 
 def execute(command: list[str], timeout: float) -> subprocess.CompletedProcess:
-    return subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,  # nosec B603
-                          stderr=subprocess.PIPE, timeout=max(1, timeout), check=True)
+    return subprocess.run(  # nosec B603
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        timeout=max(1, timeout),
+        check=True,
+        env=video_worker_environment(),
+    )
 
 
 def process_job(job_id: str):
@@ -306,30 +441,25 @@ def process_job(job_id: str):
                 "model_input": "full-frame-blurred video",
                 "pose_model_input": "same full-frame-blurred model-input video",
                 "model_input_adaptation": normalization["adaptation"],
+                "adaptation_experimental": normalization["adaptation"] == "letterbox",
                 "source_resolution": [normalization["source_width"], normalization["source_height"]],
                 "model_resolution": [normalization["width"], normalization["height"]],
-                "source_timestamp_offset_seconds": normalization["source_timestamp_offset_seconds"],
+                "model_input_padding_ltrb": normalization["padding_ltrb"],
                 "face_detection_coverage": privacy.detected_frames / max(privacy.frame_count, 1),
                 "quality_flags": privacy.quality_flags,
                 "review_required": privacy.needs_review,
-                "audio_policy": "audio is excluded from model input and the retained privacy-safe visualization",
-                "visualization": {
-                    "retained": "encrypted_owner_scoped_preview",
-                    "audio_included": False,
-                    "method": "full-frame-blur-and-skeleton-overlay",
-                },
+                "audio_policy": "audio is excluded from model input; no video artifact is retained",
             }
+            result.pop("visualization", None)
             output.write_text(json.dumps(result, allow_nan=False))
             if expired(job):
                 expire_job(db, job, storage, force=True)
                 return
             job.predictions_path = str(storage.store_artifact(job_id, output, "predictions.json"))
-            job.visualization_path = str(
-                storage.store_artifact(job_id, visualization, "video.visualization.mp4")
-            )
             storage.cleanup(job_id, keep_retained=True)
             job.original_path = None
             job.video_path = None
+            job.visualization_path = None
             job.status, job.current_stage = "ready", "complete"
         except asyncio.CancelledError:
             db.rollback()
@@ -367,15 +497,32 @@ def process_job(job_id: str):
         db.commit()
 
 
+def _remove_legacy_visualization(db, job, storage) -> None:
+    """Delete previously retained detection video using only its canonical path."""
+
+    if not job.visualization_path:
+        return
+    storage.delete_legacy_visualization(job.job_id, Path(job.visualization_path))
+    job.visualization_path = None
+    db.add(job)
+    db.commit()
+
+
 def sweep(*, startup=False):
-    """Remove expired ciphertext without requiring someone to visit the job."""
+    """Remove expired ciphertext and safely retry old standalone preflight cleanup."""
+
+    storage = VideoStorage()
+    try:
+        storage.cleanup_stale_preflight_uploads()
+    except Exception:
+        LOGGER.warning("Stale video preflight cleanup unavailable; retrying next sweep.")
     if not inspect(engine).has_table(VideoDetectionJob.__tablename__):
         return
     with Session(engine) as db:
-        storage = VideoStorage()
         if not startup:
             for ready_job in repository.list_ready_jobs(db):
                 try:
+                    _remove_legacy_visualization(db, ready_job, storage)
                     storage.cleanup(ready_job.job_id, keep_retained=True)
                 except Exception:
                     logging.getLogger(__name__).warning(
@@ -418,6 +565,10 @@ def sweep(*, startup=False):
                 db.add(job)
                 db.commit()
             if startup and job.status == "ready":
+                try:
+                    _remove_legacy_visualization(db, job, storage)
+                except Exception:
+                    LOGGER.warning("Legacy video cleanup unavailable; retrying next sweep.")
                 storage.cleanup(job.job_id, keep_retained=True)
             expire_job(db, job, storage)
 

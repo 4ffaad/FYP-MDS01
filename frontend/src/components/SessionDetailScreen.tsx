@@ -13,6 +13,7 @@ import {
 import { formatSubmittedAt } from "@/lib/format";
 import type { Session } from "@/lib/types";
 import { Icon } from "./Icon";
+import { LoadingOrb } from "./LoadingOrb";
 import { DeleteSessionButton, SessionRecordings } from "./SessionRecordings";
 import { StatusBadge } from "./StatusBadge";
 import { Progress } from "@/components/ui/progress";
@@ -100,10 +101,13 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
   if (!session)
     return (
       <div className="page-frame">
-        <div
-          className="h-64 animate-pulse rounded-lg border border-rule bg-surface"
-          aria-label="Loading session"
-        />
+        <div className="flex min-h-64 items-center justify-center px-5 py-12">
+          <LoadingOrb
+            label="Loading EEG session…"
+            state="searching"
+            size={64}
+          />
+        </div>
       </div>
     );
 

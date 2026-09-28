@@ -1,13 +1,7 @@
 "use client";
 
 import { Label } from "@primer/react";
-import {
-  useMemo,
-  useRef,
-  useState,
-  type MouseEvent,
-  type KeyboardEvent,
-} from "react";
+import { useMemo, useState, type MouseEvent, type KeyboardEvent } from "react";
 import { Icon } from "@/components/Icon";
 import type { DetectionResult } from "@/lib/video-detection";
 
@@ -70,21 +64,11 @@ function eventsFor(
 export function VideoReviewPanel({
   result,
   duration,
-  videoUrl,
-  mediaLoading,
-  mediaError,
-  onRetryVisualization,
 }: {
   result: DetectionResult;
   duration: number;
-  videoUrl: string | null;
-  mediaLoading: boolean;
-  mediaError: string | null;
-  onRetryVisualization?: () => void;
 }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
-  const [showScore, setShowScore] = useState(true);
   const [showEvents, setShowEvents] = useState(true);
   const timeline = useMemo(() => timelineFor(result), [result]);
   const events = useMemo(() => eventsFor(result, timeline), [result, timeline]);
@@ -112,7 +96,6 @@ export function VideoReviewPanel({
 
   function seek(timestamp: number) {
     const nextTime = Math.max(0, Math.min(duration, timestamp));
-    if (videoRef.current) videoRef.current.currentTime = nextTime;
     setCurrentTime(nextTime);
   }
 
@@ -124,16 +107,16 @@ export function VideoReviewPanel({
       <div className="border-b border-rule bg-surface-soft/80 px-5 py-5 sm:px-7">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="eyebrow">Protected review workspace</p>
+            <p className="eyebrow">Privacy-preserving results</p>
             <h2
               id="video-review-heading"
               className="mt-1 text-xl font-semibold sm:text-2xl"
             >
-              Privacy-safe video and model evidence
+              Model evidence and event timeline
             </h2>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-ink-muted">
-              Playback shows the protected visualization only. The VSViG score
-              is synchronized to the window covering the current video time.
+              This workflow retains only encrypted predictions. Select a time
+              below to inspect the matching model window and event boundaries.
             </p>
           </div>
           <Label
@@ -149,86 +132,20 @@ export function VideoReviewPanel({
 
       <div className="grid gap-6 p-5 sm:p-7 lg:grid-cols-[minmax(0,1.15fr)_minmax(17rem,0.85fr)]">
         <div className="min-w-0">
-          <div className="relative aspect-video overflow-hidden rounded-2xl bg-[#0f171d] shadow-inner">
-            {videoUrl ? (
-              <video
-                ref={videoRef}
-                className="size-full object-contain"
-                controls
-                controlsList="nodownload"
-                disablePictureInPicture
-                playsInline
-                preload="metadata"
-                src={videoUrl}
-                aria-label="Privacy-safe video with skeleton overlay"
-                onTimeUpdate={(event) =>
-                  setCurrentTime(event.currentTarget.currentTime)
-                }
-              />
-            ) : (
-              <div className="flex size-full min-h-64 flex-col items-center justify-center px-6 text-center text-white">
-                <span className="grid size-12 place-items-center rounded-2xl bg-white/10 text-teal-light">
-                  {mediaLoading ? (
-                    <Icon name="spinner" className="size-6 animate-spin" />
-                  ) : (
-                    <Icon name="shield" className="size-6" />
-                  )}
-                </span>
-                <p className="mt-4 text-sm font-semibold">
-                  {mediaLoading
-                    ? "Loading protected visualization"
-                    : "Protected visualization unavailable"}
-                </p>
-                <p className="mt-2 max-w-sm text-xs leading-5 text-white/65">
-                  {mediaError ??
-                    "This legacy result has no retained review video. The original video is never exposed here."}
-                </p>
-                {mediaError && onRetryVisualization && (
-                  <button
-                    type="button"
-                    className="mt-4 rounded-lg border border-white/20 px-3 py-2 text-xs font-semibold text-white transition hover:border-white/40 hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-teal-light/60"
-                    onClick={onRetryVisualization}
-                  >
-                    Retry protected video
-                  </button>
-                )}
-              </div>
-            )}
-            {videoUrl && showScore && currentPoint && (
-              <div className="pointer-events-none absolute left-4 top-4 rounded-xl border border-white/15 bg-[#0f171d]/90 px-3 py-2 text-white shadow-lg backdrop-blur">
-                <p className="text-[0.65rem] font-bold tracking-[0.12em] text-teal-light uppercase">
-                  VSViG model score
-                </p>
-                <p className="mt-1 font-mono text-xl font-semibold tabular-nums">
-                  {currentPoint.score.toFixed(2)}
-                </p>
-                <p className="text-[0.65rem] text-white/65">
-                  Uncalibrated · not a probability
-                </p>
-              </div>
-            )}
-            {videoUrl && showEvents && currentEvent && (
-              <div className="pointer-events-none absolute bottom-4 left-4 rounded-lg border border-amber-300/30 bg-amber-950/85 px-3 py-2 text-xs text-amber-100 shadow-lg backdrop-blur">
-                Event {events.indexOf(currentEvent) + 1} · human review
-              </div>
-            )}
+          <div className="flex aspect-video min-h-64 flex-col items-center justify-center rounded-2xl border border-rule bg-surface-soft px-6 text-center">
+            <span className="grid size-12 place-items-center rounded-2xl bg-teal-soft text-teal-dark">
+              <Icon name="shield" className="size-6" />
+            </span>
+            <h3 className="mt-4 text-sm font-semibold">Video not retained</h3>
+            <p className="mt-2 max-w-md text-xs leading-5 text-ink-muted">
+              No video artifact is retained or served. The source and temporary
+              model-input video are removed after processing; review the
+              encrypted predictions and time-aligned evidence below.
+            </p>
           </div>
 
           <fieldset className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-3 text-xs text-ink-muted">
-            <legend className="sr-only">Video overlay controls</legend>
-            <span className="inline-flex items-center gap-2 font-semibold text-teal-dark">
-              <Icon name="check" className="size-4" weight="bold" />
-              Skeleton overlay baked into protected video
-            </span>
-            <label className="inline-flex cursor-pointer items-center gap-2">
-              <input
-                className="size-4 accent-teal"
-                type="checkbox"
-                checked={showScore}
-                onChange={(event) => setShowScore(event.target.checked)}
-              />
-              Current score
-            </label>
+            <legend className="sr-only">Timeline display controls</legend>
             <label className="inline-flex cursor-pointer items-center gap-2">
               <input
                 className="size-4 accent-teal"
@@ -253,7 +170,7 @@ export function VideoReviewPanel({
           </h3>
           <p className="mt-2 text-sm leading-6 text-ink-muted">
             {hasPotentialEvent
-              ? "The configured research threshold was crossed in one or more windows. Review the protected video and event boundaries before drawing conclusions."
+              ? "The configured research threshold was crossed in one or more windows. Review the selected windows and event boundaries before drawing conclusions."
               : "No VSViG window crossed the configured research threshold. This does not rule out seizure activity."}
           </p>
           <dl className="mt-6 grid gap-4 border-t border-rule pt-5">
@@ -275,6 +192,17 @@ export function VideoReviewPanel({
                 <dd className="font-mono text-sm font-semibold tabular-nums text-ink">
                   {formatTime(events[0].start_time)}–
                   {formatTime(events[0].end_time)}
+                </dd>
+              </div>
+            )}
+            {currentPoint && (
+              <div className="flex items-end justify-between gap-4">
+                <dt className="text-xs text-ink-muted">
+                  Selected window score
+                </dt>
+                <dd className="font-mono text-sm font-semibold tabular-nums text-ink">
+                  {currentPoint.score.toFixed(2)}
+                  {currentEvent ? " · within flagged interval" : ""}
                 </dd>
               </div>
             )}
@@ -363,15 +291,15 @@ function RiskTimeline({
           </h3>
         </div>
         <p className="text-xs text-ink-muted">
-          Click the chart or an event to seek the video. Focus the chart and use
-          Home, End, or the arrow keys for keyboard seeking.
+          Select a point or event to inspect its time. Focus the chart and use
+          Home, End, or the arrow keys to move the selection.
         </p>
       </div>
       <svg
         className="mt-5 h-auto w-full cursor-crosshair overflow-visible text-ink-muted"
         viewBox="0 0 900 190"
         role="group"
-        aria-label="VSViG model scores over video time"
+        aria-label="VSViG model scores over recording time"
         aria-describedby="risk-timeline-help"
         tabIndex={0}
         onClick={handleChartClick}
@@ -554,8 +482,6 @@ function EventList({
 }
 
 function PrivacyIndicator({ result }: { result: DetectionResult }) {
-  const hasVisualization = result.visualization?.available === true;
-  const hasNoAudio = result.visualization?.audio_included === false;
   const hasPrivacyMetadata =
     result.privacy?.method === "face-detection-and-full-frame-blur";
   return (
@@ -572,20 +498,16 @@ function PrivacyIndicator({ result }: { result: DetectionResult }) {
             Privacy protection
           </h3>
           <ul className="mt-3 grid gap-2 text-xs leading-5 text-ink-muted sm:grid-cols-3">
-            <PrivacyCheck
-              ok={hasVisualization}
-              text="Protected visualization available"
-            />
+            <PrivacyCheck ok text="Only encrypted predictions retained" />
             <PrivacyCheck
               ok={hasPrivacyMetadata}
               text="Face-redaction provenance recorded"
             />
-            <PrivacyCheck ok={hasNoAudio} text="No audio in visual artifact" />
+            <PrivacyCheck ok text="Source and model-input video removed" />
           </ul>
           <p className="mt-3 text-[0.7rem] leading-5 text-ink-faint">
-            The original upload and temporary model input are deleted after
-            processing. The retained artifact is encrypted private storage; this
-            transform does not guarantee anonymity.
+            Detection results are kept only as an encrypted prediction artifact.
+            De-identification does not guarantee anonymity.
           </p>
         </div>
       </div>

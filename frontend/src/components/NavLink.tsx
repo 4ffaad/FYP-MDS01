@@ -20,12 +20,14 @@ export function NavLink({
   className,
 }: NavLinkProps) {
   const pathname = usePathname();
+  const matchesSection = (route: string) =>
+    route === "/"
+      ? pathname === "/"
+      : pathname === route || pathname.startsWith(`${route}/`);
   const active =
     href === "/dashboard"
-      ? ["/dashboard", "/upload", "/sessions", "/results"].some((route) =>
-          pathname.startsWith(route),
-        )
-      : pathname.startsWith(href);
+      ? ["/", "/dashboard", "/sessions", "/results"].some(matchesSection)
+      : matchesSection(href);
 
   return (
     <Link

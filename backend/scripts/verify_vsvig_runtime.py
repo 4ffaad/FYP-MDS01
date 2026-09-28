@@ -18,7 +18,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from backend.app.video_detection.contract import DetectionError, load_contract
-from backend.app.video_detection.runtime import module_from_file
+from backend.app.video_detection.runtime import _configure_torch_backend, module_from_file
 
 
 def verify() -> dict:
@@ -27,6 +27,7 @@ def verify() -> dict:
     import numpy  # noqa: F401  # dependency check
     import torch
 
+    _configure_torch_backend(torch)
     torch.set_num_threads(2)
     openpose_root = root / "openpose"
     sys.path.insert(0, str(openpose_root))

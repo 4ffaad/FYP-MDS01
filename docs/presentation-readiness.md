@@ -35,8 +35,9 @@ video upload
 Audio is excluded from the visual model input. The uploaded source may contain
 audio while it is encrypted and waiting for processing; the visual runtime does
 not decode audio into model input. The original and temporary model-input video
-are deleted after the job; only encrypted scores/provenance and the
-owner-scoped, audio-free privacy-safe visualization are retained until expiry.
+are deleted after the job; the temporary privacy-safe visualization is also
+deleted after validation, and only encrypted scores/provenance are retained
+until expiry.
 The separate Video privacy utility has a different owner-only output policy and
 is not the seizure detector.
 
@@ -45,8 +46,8 @@ is not the seizure detector.
 - Authenticated owner-scoped EEG and video job APIs.
 - Development-only local administrator role, with a password generated into the
   ignored `.env` rather than embedded in docs or source.
-- Encrypted application storage after multipart intake; framework upload spool
-  data remains private to the backend container and is cleaned with the job.
+- Raw media bytes are streamed directly into encrypted private storage; upload
+  routes do not create multipart file-spool copies.
 - Every frame receives full-frame blur; Haar face-detection coverage informs
   quality flags and the minimum-coverage gate.
 - A fail-closed rule when face coverage is too low.
@@ -74,12 +75,16 @@ is not the seizure detector.
 
 ## Current local demo constraints
 
-- The default Compose EEG runtime is `development-stub`; its scores demonstrate
-  UI/data flow only. It does not provide real EEG model predictions or SHAP
-  attribution for this dataset.
+- The tracked base Compose file uses `development-stub`; its scores demonstrate
+  UI/data flow only. The quickstart (`npm run dev`, then
+  `docker compose up --build`) selects the exact local H5 research profile.
+- H5 outputs are uncalibrated, non-diagnostic, and not probabilities; running
+  the candidate does not establish clinical validity.
 - A read-only inventory found 552 640×480 AVI files and 806 1920×1080 MP4
   files. Inventory metadata is not full decode or model-admission evidence.
-  Low-resolution letterboxing remains disabled by default.
+  The default detection setting blocks the 640×480 clips; the experimental
+  letterbox option can adapt them, but its scores are not equivalent evidence
+  to native-resolution results.
 - An isolated full-frame-blur-to-VSViG smoke on four small native-resolution
   MP4 candidates had three privacy-admission rejections; the one that passed
   privacy was rejected by the ambiguous/missing-pose gate. No successful video
@@ -162,8 +167,8 @@ is not the seizure detector.
 
 1. **Problem and review context** — why visual seizure review needs a temporal
    signal and human review; state the research-only boundary.
-2. **Two inputs, one workspace** — one EEG EDF ZIP plus one separate video; show
-   that the modalities remain independent.
+2. **One patient folder, one case** — a report, multiple EEG recordings, and
+   selected video clips; show that the modalities remain independent.
 3. **Privacy-first video path** — encryption, full-frame blur on every frame,
    detector coverage/quality gate, no audio model input, transient cleanup.
 4. **Model stack** — Lightweight OpenPose supplies keypoints; official VSViG
@@ -185,12 +190,12 @@ is not the seizure detector.
    [the video runbook](video-detection.md).
 2. Open the frontend and sign in with the locally configured development
    account.
-3. Open **New analysis** and show that the EEG archive and video are separate
-   upload lanes.
-4. Submit the consented EEG and video, then open the combined review report.
-5. Select the intended completed EEG recording if the archive contains more
-   than one. Review the sanitized source event times separately from model
-   outputs.
+3. Open **New patient review**, select one patient folder, and review the EEGs,
+   video clips, and report details before submission.
+4. Confirm selected video clips before their separate preflight, then create the
+   case and open the combined review report.
+5. Select a completed EEG recording when the case contains more than one.
+   Review the sanitized source event times separately from model outputs.
 6. If demonstrating a pairing, state that it is assumed. The default offset is
    0 seconds; change it only to a supplied demo value and point out that it is
    local to the page and not verified or saved.

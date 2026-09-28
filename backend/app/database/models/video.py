@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Column, Text
+from sqlalchemy import Column, Index, Text
 from sqlmodel import Field, SQLModel
 
 from backend.app.database.models.types import EnumString
@@ -18,9 +18,10 @@ def utc_now() -> datetime:
 
 
 class VideoPrivacyProfile(str, Enum):
-    """The only privacy transforms supported by the v1 video surface."""
+    """Supported privacy transforms for standalone video jobs."""
 
     FACE_REDACTED = "face-redacted"
+    FACE_REDACTED_POSE_PREVIEW = "face-redacted-pose-preview"
     POSE_ONLY = "pose-only"
 
 
@@ -41,10 +42,21 @@ class VideoPrivacyJob(SQLModel, table=True):
     """Metadata for one video transform; media stays in private storage."""
 
     __tablename__ = "video_privacy_jobs"
+    __table_args__ = (
+        Index(
+            "uq_video_privacy_owner_idempotency_hash",
+            "owner_user_id",
+            "idempotency_key_hash",
+            unique=True,
+        ),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     owner_user_id: int | None = Field(default=None, foreign_key="users.id", index=True)
+    case_id: str | None = Field(default=None, index=True, max_length=64)
     job_id: str = Field(index=True, unique=True, max_length=64)
+    idempotency_key_hash: str | None = Field(default=None, max_length=64)
+    content_fingerprint: str | None = Field(default=None, max_length=64)
     profile: VideoPrivacyProfile = Field(
         sa_column=Column(
             EnumString(VideoPrivacyProfile),
@@ -67,6 +79,8 @@ class VideoPrivacyJob(SQLModel, table=True):
     fps: float | None = None
     width: int | None = None
     height: int | None = None
+    pose_detected_frames: int | None = Field(default=None, ge=0)
+    pose_sampled_frames: int | None = Field(default=None, ge=0)
     current_stage: str | None = Field(default=None, max_length=32)
     original_path: str | None = Field(default=None, max_length=1024)
     output_path: str | None = Field(default=None, max_length=1024)

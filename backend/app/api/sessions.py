@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from fastapi import BackgroundTasks, APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import BackgroundTasks, APIRouter, Depends, HTTPException, Request, Response, status
 from sqlmodel import Session
 
 from backend.app.core.security import mutation_owner_id, owner_id, require_api_auth
+from backend.app.core.stream_upload import UnsupportedRawUpload, request_stream_upload
 from backend.app.privacy.methods import canonical_privacy_profile, normalize_privacy_methods
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
+from backend.app.api.upload_contracts import binary_upload_openapi
 from backend.app.services.session_service import (
     create_session,
     get_session_or_none,
@@ -20,18 +22,20 @@ from backend.app.services.session_service import (
 from backend.app.services.processing_capacity import processing_capacity
 from backend.app.services.storage_service import SessionStorage, StorageError
 from backend.app.services.case_service import CaseReferenceError
+from backend.app.services.case_source_report_service import CaseSourceReportError
 
 
 router = APIRouter(prefix="/api", tags=["sessions"])
 
 
-@router.post("/sessions/upload", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/sessions/upload",
+    status_code=status.HTTP_202_ACCEPTED,
+    openapi_extra=binary_upload_openapi(),
+)
 async def upload_session(
     background_tasks: BackgroundTasks,
-    archive: UploadFile = File(...),
-    privacy_method: str = Form("metadata-scrub"),
-    privacy_methods: str | None = Form(None),
-    case_id: str | None = Form(None),
+    request: Request,
     db: Session = Depends(get_session),
     current_user: User | None = Depends(require_api_auth),
 ) -> dict:
@@ -39,8 +43,8 @@ async def upload_session(
 
     Parameters
     ----------
-    archive : fastapi.UploadFile
-        ZIP archive containing one or more EDF recordings.
+    request : starlette.requests.Request
+        Raw ZIP request body; bytes are streamed directly into encrypted storage.
     privacy_method : str
         ``metadata-scrub`` or ``signal-obfuscation`` research privacy mode.
     background_tasks : fastapi.BackgroundTasks
@@ -61,22 +65,28 @@ async def upload_session(
         unavailable.
     """
 
-    if not archive.filename or not archive.filename.lower().endswith(".zip"):
-        raise HTTPException(
-            status_code=400,
-            detail="Upload one ZIP archive containing EDF/EDF+ files or Nicolet .data files with matching .head sidecars.",
-        )
-    case_id = case_id if isinstance(case_id, str) and case_id else None
+    privacy_method = request.headers.get("x-privacy-method", "metadata-scrub")
+    privacy_methods = request.headers.get("x-privacy-methods")
+    case_id = request.headers.get("x-case-id") or None
     try:
         selected_methods = normalize_privacy_methods(
-            privacy_methods if isinstance(privacy_methods, str) else None,
+            privacy_methods,
             privacy_method,
         )
         privacy_profile = canonical_privacy_profile(selected_methods)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    try:
+        archive = request_stream_upload(
+            request,
+            filename="recordings.zip",
+            content_type="application/zip",
+        )
+    except UnsupportedRawUpload as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
     if not processing_capacity.reserve():
+        await archive.close()
         raise HTTPException(status_code=503, detail="The analysis service is at capacity. Try again later.")
 
     try:
@@ -98,6 +108,8 @@ async def upload_session(
     except Exception:
         processing_capacity.release()
         raise
+    finally:
+        await archive.close()
 
     background_tasks.add_task(processing_capacity.run_reserved, session.session_id)
     payload = {
@@ -254,4 +266,6 @@ def delete_session_route(
         delete_session(db, SessionStorage(), session)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CaseSourceReportError as exc:
+        raise HTTPException(503, "Case report cleanup is unavailable.") from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -11,7 +11,7 @@ import {
   shouldRetryRequest,
   submitVideoPrivacy,
 } from "@/lib/api";
-import type { VideoPrivacyJob } from "@/lib/types";
+import type { VideoPrivacyJob, VideoPrivacyProfile } from "@/lib/types";
 import { formatBytes } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -20,6 +20,7 @@ import { Icon } from "./Icon";
 const STAGE_LABELS: Record<string, string> = {
   preflight: "Preflight",
   "privacy-transform": "Privacy transform",
+  "keypoint-preview": "Body-keypoint preview",
   "output-validation": "Output validation",
   cleanup: "Cleanup",
 };
@@ -27,10 +28,10 @@ const STAGE_LABELS: Record<string, string> = {
 export function VideoPrivacyUploadScreen() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
+  const [profile, setProfile] = useState<VideoPrivacyProfile>("face-redacted");
   const [progress, setProgress] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   function handleFile(event: ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files?.[0] ?? null;
     setFile(selected);
@@ -46,7 +47,9 @@ export function VideoPrivacyUploadScreen() {
     setSubmitting(true);
     setError(null);
     try {
-      const job = await submitVideoPrivacy(file, setProgress);
+      const job = await submitVideoPrivacy(file, setProgress, undefined, {
+        profile,
+      });
       router.push(`/video-privacy/${encodeURIComponent(job.jobId)}`);
     } catch (submissionError) {
       setSubmitting(false);
@@ -66,8 +69,8 @@ export function VideoPrivacyUploadScreen() {
             Protect a patient video before review
           </h1>
           <p className="mt-3 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
-            Upload a video and review a face-redacted protected output. Video is
-            processed separately from VEEG analysis.
+            Upload a video and review a protected output. Video is processed
+            separately from VEEG analysis.
           </p>
         </div>
 
@@ -172,7 +175,7 @@ export function VideoPrivacyUploadScreen() {
           >
             <div className="border-b border-rule px-5 py-5 sm:px-7">
               <h2 id="privacy-policy-heading" className="text-base font-bold">
-                Face redaction
+                Privacy and preview stages
               </h2>
               <p className="mt-1 text-sm leading-6 text-ink-muted">
                 Every frame receives full-frame blur, whether or not a face is
@@ -181,6 +184,49 @@ export function VideoPrivacyUploadScreen() {
               </p>
             </div>
             <div className="space-y-4 px-5 py-6 sm:px-7">
+              <fieldset className="space-y-3" disabled={submitting}>
+                <legend className="mb-3 text-xs font-bold uppercase tracking-[0.08em] text-ink-muted">
+                  Choose a local processing path
+                </legend>
+                <label className="flex items-start gap-3 rounded-lg border border-rule bg-surface p-3 text-sm text-ink">
+                  <input
+                    className="mt-1 size-4 accent-teal"
+                    type="radio"
+                    name="video-privacy-profile"
+                    value="face-redacted"
+                    checked={profile === "face-redacted"}
+                    onChange={() => setProfile("face-redacted")}
+                  />
+                  <span>
+                    <strong className="block">Full-frame blur only</strong>
+                    <span className="text-xs leading-5 text-ink-muted">
+                      Produce an audio-free, fully blurred video. No pose
+                      detector or classification model runs.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-3 rounded-lg border border-rule bg-surface p-3 text-sm text-ink">
+                  <input
+                    className="mt-1 size-4 accent-teal"
+                    type="radio"
+                    name="video-privacy-profile"
+                    value="face-redacted-pose-preview"
+                    checked={profile === "face-redacted-pose-preview"}
+                    onChange={() => setProfile("face-redacted-pose-preview")}
+                  />
+                  <span>
+                    <strong className="block">
+                      Full-frame blur + body-keypoint preview
+                    </strong>
+                    <span className="text-xs leading-5 text-ink-muted">
+                      Run the pinned Lightweight OpenPose detector only on
+                      blurred frames and render its body-joint overlay. This
+                      preview produces no VSViG score. Facial Action Units are
+                      not configured because no reviewed AU model is selected.
+                    </span>
+                  </span>
+                </label>
+              </fieldset>
               <div className="rounded-md border border-amber/30 bg-amber-soft px-3.5 py-3 text-xs leading-5 text-ink-muted">
                 <span className="font-semibold text-ink">
                   Audio-free output:
@@ -429,7 +475,7 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
                     <img
                       className="aspect-video w-full rounded-lg border border-rule bg-black object-contain"
                       src={job.previewUrl}
-                      alt="Representative frame from the protected video"
+                      alt="Representative full-frame-blurred frame with body-joint overlay when detected"
                     />
                   ) : (
                     <div className="grid aspect-video place-items-center rounded-lg border border-rule bg-surface-muted text-center">
@@ -463,6 +509,28 @@ export function VideoPrivacyJobScreen({ jobId }: { jobId: string }) {
                       value="Removed from retained output"
                     />
                     <PolicyRow label="Metadata" value="Scrubbed" />
+                    {job.poseEvidence && (
+                      <>
+                        <PolicyRow
+                          label="Pose detector"
+                          value={job.poseEvidence.model}
+                        />
+                        <PolicyRow
+                          label="Pose samples"
+                          value={`${job.poseEvidence.detectedFrames} / ${job.poseEvidence.sampledFrames} frames`}
+                        />
+                        <PolicyRow
+                          label="Facial Action Units"
+                          value="Not configured"
+                        />
+                        {job.poseEvidence.trackingStopped && (
+                          <p className="rounded-md bg-amber-soft px-3 py-2 text-xs leading-5 text-ink-muted">
+                            Pose overlay stopped when a person was missing or
+                            ambiguous. The preview does not switch subjects.
+                          </p>
+                        )}
+                      </>
+                    )}
                     <PolicyRow
                       label="Retention"
                       value={formatExpiry(job.retentionExpiresAt)}

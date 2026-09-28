@@ -22,6 +22,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const isVideoPrivacy = pathname.startsWith("/video-privacy");
   const isVideoDetection = pathname.startsWith("/video-detection");
+  const isUpload = pathname === "/upload";
   const isDashboard = pathname.startsWith("/dashboard") || pathname === "/";
   const isLogin = pathname === "/login";
 
@@ -113,9 +114,11 @@ export function AppShell({ children }: { children: ReactNode }) {
                 ? "MDS01 video detection"
                 : isVideoPrivacy
                   ? "MDS01 video privacy"
-                  : isDashboard
-                    ? "MDS01 analysis workspace"
-                    : "MDS01 EEG analysis"
+                  : isUpload
+                    ? "MDS01 patient review"
+                    : isDashboard
+                      ? "MDS01 analysis workspace"
+                      : "MDS01 EEG analysis"
             }
             onClick={() => setMenuOpen(false)}
           >
@@ -125,9 +128,11 @@ export function AppShell({ children }: { children: ReactNode }) {
                   ? "detection"
                   : isVideoPrivacy
                     ? "video"
-                    : isDashboard
-                      ? "workspace"
-                      : "eeg"
+                    : isUpload
+                      ? "review"
+                      : isDashboard
+                        ? "workspace"
+                        : "eeg"
               }
             />
           </Link>
@@ -142,11 +147,11 @@ export function AppShell({ children }: { children: ReactNode }) {
             </NavLink>
             <NavLink href="/upload">
               <Icon name="upload" className="size-4" />
-              New analysis
+              New patient review
             </NavLink>
             <NavLink href="/cases">
               <Icon name="list" className="size-4" />
-              Cases
+              Patient History
             </NavLink>
           </nav>
 
@@ -224,11 +229,11 @@ export function AppShell({ children }: { children: ReactNode }) {
             )}
             <NavLink href="/upload" onNavigate={() => setMenuOpen(false)}>
               <Icon name="upload" className="size-4" />
-              New analysis
+              New patient review
             </NavLink>
             <NavLink href="/cases" onNavigate={() => setMenuOpen(false)}>
               <Icon name="list" className="size-4" />
-              Cases
+              Patient History
             </NavLink>
           </nav>
         </div>
@@ -249,14 +254,18 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <footer className="mt-auto shrink-0 border-t border-rule">
         <div className="site-container flex flex-col justify-between gap-2 py-5 text-xs leading-5 text-ink-faint sm:flex-row">
-          <p>MDS01 · Research only</p>
+          <p>{isUpload ? "MDS01 · Patient review" : "MDS01 · Research only"}</p>
           <p>
-            {isVideoPrivacy
-              ? "Privacy transforms do not guarantee anonymity."
-              : "Model output is not a diagnosis."}{" "}
-            {isVideoDetection
-              ? "Encrypted privacy-safe preview and model results are retained only for the configured review period."
-              : "Original uploads are never displayed."}
+            {isUpload
+              ? "One patient review can include every supported EEG recording and video clip."
+              : isVideoPrivacy
+                ? "Privacy transforms do not guarantee anonymity."
+                : "Model output is not a diagnosis."}{" "}
+            {isUpload
+              ? "Each modality keeps its own privacy treatment and evidence trail."
+              : isVideoDetection
+                ? "Detection retains encrypted predictions and safe provenance only; no video preview or playback is available."
+                : "Original uploads are never displayed."}
           </p>
         </div>
       </footer>

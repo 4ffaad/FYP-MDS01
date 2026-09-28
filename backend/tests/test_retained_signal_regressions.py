@@ -21,13 +21,73 @@ from backend.app.database.models.eeg import (
     RecordingStatus,
 )
 from backend.app.eeg.model_input import MODEL_CHANNELS, MODEL_SAMPLING_RATE
-from backend.app.privacy.retention import write_obfuscated_npz, write_scrubbed_edf_clip
-from backend.app.services.signal_service import build_signal_preview
+from backend.app.privacy.retention import (
+    write_model_window_npz,
+    write_obfuscated_npz,
+    write_scrubbed_edf_clip,
+)
+from backend.app.services.signal_service import _read_npz_preview, build_signal_preview
 from backend.app.services.storage_service import SessionStorage
 
 
 class RetainedSignalRegressionTests(unittest.TestCase):
     """Protect retained previews against overlap and calibration regressions."""
+
+    def test_model_window_npz_preserves_large_source_time_offsets(self) -> None:
+        gap_seconds = float(2 * 365 * 24 * 60 * 60)
+        starts = np.asarray([gap_seconds, gap_seconds + 2.0], dtype=np.float64)
+        windows = np.zeros((2, 1024, len(MODEL_CHANNELS)), dtype=np.float32)
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "retained.npz"
+            write_model_window_npz(artifact, windows, starts, np.asarray([0, 1]))
+            with np.load(artifact) as payload:
+                saved_starts = payload["window_start_seconds"]
+            preview = _read_npz_preview(artifact, [], gap_seconds, 6.0, 2048)
+
+        self.assertEqual(saved_starts.dtype, np.float64)
+        np.testing.assert_array_equal(saved_starts, starts)
+        expected_times = gap_seconds + np.arange(6 * MODEL_SAMPLING_RATE, dtype=np.float64) / MODEL_SAMPLING_RATE
+        np.testing.assert_array_equal(preview["time_seconds"], expected_times)
+
+    def test_model_window_writer_rejects_offsets_without_sample_precision(self) -> None:
+        windows = np.zeros((1, 1024, len(MODEL_CHANNELS)), dtype=np.float32)
+        starts = np.asarray([1e14], dtype=np.float64)
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "retained.npz"
+            with self.assertRaisesRegex(ValueError, "timestamp precision"):
+                write_model_window_npz(artifact, windows, starts, np.asarray([0]))
+
+    def test_npz_preview_rejects_legacy_offsets_without_sample_precision(self) -> None:
+        windows = np.zeros((1, 1024, len(MODEL_CHANNELS)), dtype=np.float32)
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "legacy-retained.npz"
+            np.savez_compressed(
+                artifact,
+                model_windows=windows,
+                window_start_seconds=np.asarray([1e14], dtype=np.float64),
+            )
+            with self.assertRaisesRegex(ValueError, "timestamp precision"):
+                _read_npz_preview(artifact, [], 1e14, 4.0, 2048)
+
+    def test_npz_preview_preserves_fractional_gap_times_and_segments(self) -> None:
+        gap_start = 4.0000005
+        starts = np.asarray([0.0, gap_start], dtype=np.float64)
+        windows = np.zeros((2, 1024, len(MODEL_CHANNELS)), dtype=np.float32)
+        windows[1] = 1.0
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "retained.npz"
+            write_model_window_npz(artifact, windows, starts, np.asarray([0, 1]))
+            preview = _read_npz_preview(artifact, [], 0.0, 8.01, 4096)
+
+        times = np.asarray(preview["time_seconds"], dtype=np.float64)
+        self.assertEqual(times[1024], gap_start)
+        self.assertEqual(
+            preview["segments"],
+            [
+                {"source_start_seconds": 0.0, "source_end_seconds": 4.0},
+                {"source_start_seconds": gap_start, "source_end_seconds": gap_start + 4.0},
+            ],
+        )
 
     def test_obfuscated_overlap_is_stitched_once_in_source_time(self) -> None:
         """Overlapping model windows produce one monotonic sample timeline."""
@@ -48,7 +108,11 @@ class RetainedSignalRegressionTests(unittest.TestCase):
             self.addCleanup(engine.dispose)
             SQLModel.metadata.create_all(engine)
             with Session(engine) as db:
-                session = EEGSession(session_id="SES-OVERLAP", status=AnalysisStatus.COMPLETED)
+                session = EEGSession(
+                    session_id="SES-OVERLAP",
+                    status=AnalysisStatus.COMPLETED,
+                    privacy_method="metadata-scrub+signal-obfuscation",
+                )
                 db.add(session)
                 db.commit()
                 db.refresh(session)
@@ -87,6 +151,73 @@ class RetainedSignalRegressionTests(unittest.TestCase):
             self.assertEqual(len(times), 8 * MODEL_SAMPLING_RATE)
             self.assertTrue(np.all(np.diff(times) > 0))
             np.testing.assert_array_equal(samples, np.arange(8 * MODEL_SAMPLING_RATE))
+
+    def test_gapped_npz_preview_representation_matches_privacy_profile(self) -> None:
+        profiles = (
+            ("metadata-scrub", write_model_window_npz, "metadata-scrubbed"),
+            (
+                "metadata-scrub+signal-obfuscation",
+                write_obfuscated_npz,
+                "signal-obfuscated",
+            ),
+        )
+        for index, (privacy_method, write_artifact, expected) in enumerate(profiles):
+            with self.subTest(privacy_method=privacy_method), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                storage = SessionStorage(root / "sessions", b"s" * 32)
+                source = root / "retained.npz"
+                windows = np.random.default_rng(index).normal(
+                    size=(1, 1024, len(MODEL_CHANNELS))
+                ).astype(np.float32)
+                write_artifact(source, windows, np.asarray([0.0]), np.asarray([0]))
+                encrypted = storage.store_encrypted_artifact(
+                    f"SES-REPRESENTATION-{index}",
+                    source,
+                    f"REC-REPRESENTATION-{index}.npz",
+                )
+
+                engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+                SQLModel.metadata.create_all(engine)
+                with Session(engine) as db:
+                    session = EEGSession(
+                        session_id=f"SES-REPRESENTATION-{index}",
+                        status=AnalysisStatus.COMPLETED,
+                        privacy_method=privacy_method,
+                    )
+                    db.add(session)
+                    db.commit()
+                    db.refresh(session)
+                    assert session.id is not None
+                    record = EEGRecording(
+                        record_id=f"REC-REPRESENTATION-{index}",
+                        session_db_id=session.id,
+                        sequence_index=1,
+                        original_filename="",
+                        duration_seconds=4,
+                        status=RecordingStatus.INFERRED,
+                        retained_artifact_path=str(encrypted),
+                    )
+                    db.add(record)
+                    db.commit()
+                    db.refresh(record)
+                    assert record.id is not None
+                    db.add(
+                        Prediction(
+                            recording_db_id=record.id,
+                            window_index=0,
+                            model_name="test-model",
+                            model_version="1",
+                            probability=0.9,
+                            seizure_detected=True,
+                            start_seconds=0,
+                            end_seconds=4,
+                        )
+                    )
+                    db.commit()
+                    with patch("backend.app.services.signal_service.ENABLE_SIGNAL_PREVIEW", True):
+                        preview = build_signal_preview(db, session, record, storage, 0, 4, 64)
+                engine.dispose()
+                self.assertEqual(preview["representation"], expected)
 
     def test_scrubbed_edf_clip_preserves_physical_waveform(self) -> None:
         """A retained EDF keeps source calibration while removing identifiers."""

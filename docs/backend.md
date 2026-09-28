@@ -117,6 +117,26 @@ For private auditability, the recording also stores a SHA-256 checksum of the
 extracted source and JSON describing any reviewed format conversion; these
 fields are not returned by the public recording/session serializers.
 
+For legacy `.e` files with non-overlapping acquisition gaps, private conversion
+metadata preserves each segment's model-sample range and elapsed offset. The
+scrubbed EDF stores observed samples without inserting gap samples; the worker
+resamples and filters each segment independently, creates windows within each
+segment, and maps predictions back to the elapsed timeline. Positive gapped
+recordings retain encrypted model windows with their source-relative timestamps,
+not a continuous EDF clip that could conceal the original gaps.
+
+For every model-input EDF, de-identification requires the full reviewed
+18-channel bipolar montage, writes those channels in the contract's exact
+order, and drops all other channels and their labels. Missing or duplicate
+required channels fail closed; unknown labels are never treated as equivalent.
+Patient/operator/equipment/sex/birthdate metadata is cleared, the source
+calendar timestamp is replaced with `1970-01-01 00:00:00`, annotation text is
+blanked, and relative event timing is retained for review. The generated EDF is
+reopened and checked before preprocessing. This rewrites only a private derived
+copy: the source upload remains encrypted until the cleanup stage and is never
+modified in place. Metadata scrubbing does not remove identity information
+that may be present in the EEG waveform itself.
+
 The projection method is intentionally shape-preserving so the same transformed
 windows feed both downstream branches:
 
@@ -136,13 +156,13 @@ nor metadata scrubbing removes every possible EEG biometric signal.
 
 ## H5 runtime boundary
 
-New Docker installations default to the deterministic development stub. Set
-`MODEL_RUNTIME=h5` and `INSTALL_RESEARCH=true` in `.env`, then populate the
-operator-managed `mds01-eeg-model-assets` volume with the reviewed H5 artifact
-and contract before rebuilding. Set `H5_CONTRACT_SHA256` to the independently
-recorded SHA-256 of that contract; startup rejects a contract whose hash is
-missing or does not match. The backend reads `/opt/eeg-model` read-only;
-model files are not stored in Git or copied into the image.
+The tracked base Compose file defaults to the deterministic development stub.
+The setup-generated local command (`npm run dev`, then `docker compose up
+--build`) selects the exact H5 candidate through the local research overlay.
+The overlay mounts the ignored artifact and reviewed contract read-only and
+pins the expected contract hash; a startup guard requires development mode and
+local accounts. Use `docker compose -f docker-compose.yml up --build` to choose
+the stub explicitly. Do not copy model files into Git/the image.
 The image is built as `linux/amd64` because the normal
 Apple Silicon host environment may not provide the required TensorFlow wheel.
 The adapter loads the model once, validates `(None, 1024, 18)` input and
@@ -152,8 +172,10 @@ The external contract is reviewed for its mounted artifact, including its hash,
 output semantics, threshold, and training preprocessing. If the H5 file or
 contract changes, record a new independent contract hash, rerun the verifier,
 and set `reviewed` to false until the replacement has been reviewed.
-The H5 contract starts as an uncalibrated research score. It must not be
-presented as confidence, accuracy, or a clinical probability. After separate
+The local H5 contract starts as an uncalibrated research score. Public EEG
+responses call it `uncalibrated_model_score` and do not expose a `probability`
+field for that output. It must not be presented as confidence, accuracy, or a
+probability. After separate
 patient-disjoint temperature scaling has been fitted for both privacy
 profiles, the contract can explicitly activate `calibrated_probability`; the
 UI then labels each value as an estimated probability for one four-second
@@ -365,15 +387,22 @@ Video seizure review is an independent owner-filtered workflow. Its implementati
 is `app/services/video_detection_service.py`, `app/video_detection/runtime.py`,
 and `app/video_detection/contract.py`; the asset installation, exact VSViG
 contract, privacy lifecycle, and troubleshooting steps are in
-[`video-detection.md`](video-detection.md). The runtime is
-`encrypt → timestamp validation/approved geometry adaptation → full-frame-blurred
+[`video-detection.md`](video-detection.md). `POST
+/api/video-detection/preflight` creates a temporary encrypted upload, checks safe
+technical metadata, deletes it, and runs no inference. VSViG uses native
+1920×1080 geometry; the local H5 profile enables an experimental
+aspect-preserving transform for smaller input. Other profiles can enable it
+with `VSVIG_ALLOW_LETTERBOX_ADAPTATION=true`. The jobs route
+independently enforces the configured admission policy.
+The detection runtime is
+`encrypt → timestamp validation/geometry adaptation → full-frame-blurred
 model input → shared Lightweight OpenPose keypoints → { VSViG patches → scores;
 full-frame-blurred skeleton overlay } → evidence`
 The visual model does not consume the privacy visualization or audio. The
 original and temporary full-frame-blurred model-input video are deleted after job
-completion or failure. A separate encrypted, owner-scoped, audio-free
-visualization is retained for the job retention period; no source-video endpoint
-exists.
+completion or failure. The audio-free visualization is transient and deleted
+after validation; only encrypted predictions and provenance are retained for
+the job retention period. No source-video or visualization endpoint exists.
 
 ## Video privacy boundary
 

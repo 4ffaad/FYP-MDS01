@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 import logging
+import os
+import re
 import secrets
 import shutil
+import sys
+import tempfile
 import threading
 import time
 # All subprocess calls below use fixed argv arrays and no shell.
@@ -41,15 +46,29 @@ from backend.app.database.repository import (
     count_active_video_jobs_for_owner,
     count_video_jobs,
     get_video_job,
+    get_video_job_by_idempotency_hash,
 )
 from backend.app.services.video_storage_service import VideoStorage
-from backend.app.video_privacy.processor import VideoPrivacyProcessor, VideoProcessorError
+from backend.app.services.case_service import (
+    cleanup_case_profile_if_empty,
+    ensure_case_reference,
+    lock_owner_case_mutations,
+)
+from backend.app.video_privacy.processor import (
+    VideoPrivacyProcessor,
+    VideoProcessorError,
+    preflight_video_subprocess,
+)
 
 
 PROFILE_DETAILS: dict[VideoPrivacyProfile, dict[str, str]] = {
     VideoPrivacyProfile.FACE_REDACTED: {
-        "label": "Face redaction",
+        "label": "Full-frame blur",
         "description": "The full frame is blurred on every frame. Face-detection coverage is a quality signal for review; it does not change the blur extent.",
+    },
+    VideoPrivacyProfile.FACE_REDACTED_POSE_PREVIEW: {
+        "label": "Full-frame blur + body-keypoint preview",
+        "description": "The full frame is blurred before the pinned Lightweight OpenPose body-joint detector runs. OpenCV renders only a privacy-safe preview; no VSViG score or facial Action Units are produced.",
     },
     VideoPrivacyProfile.POSE_ONLY: {
         "label": "Pose-only",
@@ -75,6 +94,14 @@ class VideoPrivacyCapacityError(RuntimeError):
     """Raised before upload storage when privacy capacity is exhausted."""
 
 
+class VideoPrivacyIdempotencyReplay(RuntimeError):
+    """Raised when an authenticated owner retries an existing submission."""
+
+    def __init__(self, job: VideoPrivacyJob) -> None:
+        super().__init__("This idempotency key already belongs to a video privacy job.")
+        self.job = job
+
+
 
 def new_video_job_id() -> str:
     """Create an opaque, non-sequential public job identifier."""
@@ -83,11 +110,13 @@ def new_video_job_id() -> str:
 
 
 def parse_profile(value: str | None) -> VideoPrivacyProfile:
-    """Accept face redaction for new jobs; pose-only remains legacy-readable."""
+    """Accept only reviewed face-redaction profiles; legacy pose-only stays disabled."""
 
     if value == VideoPrivacyProfile.FACE_REDACTED.value:
         return VideoPrivacyProfile.FACE_REDACTED
-    raise ValueError("Face redaction is the only available privacy transform.")
+    if value == VideoPrivacyProfile.FACE_REDACTED_POSE_PREVIEW.value:
+        return VideoPrivacyProfile.FACE_REDACTED_POSE_PREVIEW
+    raise ValueError("Only available profiles are full-frame redaction and redacted pose preview.")
 
 
 def finalize_protected_video(source: Path, visual: Path, output: Path) -> None:
@@ -171,6 +200,143 @@ def finalize_protected_video(source: Path, visual: Path, output: Path) -> None:
                 logging.getLogger(__name__).exception("Protected output cleanup failed")
 
 
+def _pose_runtime_environment() -> dict[str, str]:
+    """Pass only runtime necessities to the model worker, never API secrets."""
+
+    temp_root = tempfile.gettempdir()
+    environment = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "PYTHONPATH": os.environ.get(
+            "PYTHONPATH", str(Path(__file__).resolve().parents[3])
+        ),
+        "HOME": temp_root,
+        "TMPDIR": temp_root,
+        "XDG_CACHE_HOME": os.environ.get(
+            "XDG_CACHE_HOME", str(Path(temp_root) / "xdg-cache")
+        ),
+        "MPLCONFIGDIR": os.environ.get(
+            "MPLCONFIGDIR", str(Path(temp_root) / "matplotlib")
+        ),
+        "OMP_NUM_THREADS": "2",
+        "MKL_NUM_THREADS": "2",
+        "OPENBLAS_NUM_THREADS": "2",
+        "NUMEXPR_NUM_THREADS": "2",
+    }
+    for name in (
+        "LD_LIBRARY_PATH",
+        "VSVIG_ASSET_DIR",
+        "VSVIG_CONTRACT_SHA256",
+        "MDS01_NNPACK_ENABLED",
+    ):
+        value = os.environ.get(name)
+        if value:
+            environment[name] = value
+    return environment
+
+
+def _run_pose_preview_worker(
+    source: Path,
+    visualization: Path,
+    preview: Path,
+    result_path: Path,
+    *,
+    fps: float,
+    width: int,
+    height: int,
+    frame_count: int,
+    duration_seconds: float,
+) -> dict[str, int | bool]:
+    """Run OpenPose only on the full-frame-blurred intermediate."""
+
+    if source.is_symlink() or not source.is_file():
+        raise VideoProcessorError("Blurred pose-preview input is unavailable.")
+    outputs = (visualization, preview, result_path)
+    for path in outputs:
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise VideoProcessorError("Pose-preview output path is invalid.")
+        path.unlink(missing_ok=True)
+
+    command = [
+        sys.executable,
+        "-m",
+        "backend.app.video_detection.runtime",
+        "--pose-preview",
+        str(source),
+        str(result_path),
+        str(visualization),
+        str(preview),
+    ]
+    try:
+        subprocess.run(  # nosec B603
+            command,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=VIDEO_PRIVACY_TIMEOUT_SECONDS,
+            env=_pose_runtime_environment(),
+        )
+        if (
+            result_path.is_symlink()
+            or not result_path.is_file()
+            or result_path.stat().st_size > 64 * 1024
+        ):
+            raise VideoProcessorError("Pose-preview worker returned invalid metadata.")
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise VideoProcessorError("The pose preview could not be produced safely.") from exc
+
+    if not isinstance(payload, dict):
+        raise VideoProcessorError("Pose-preview metadata is invalid.")
+    sampled = payload.get("sampled_frames")
+    detected = payload.get("detected_frames")
+    tracking_stopped = payload.get("tracking_stopped")
+    visual_details = payload.get("visualization")
+    if (
+        type(sampled) is not int
+        or type(detected) is not int
+        or not 0 <= detected <= sampled <= frame_count
+        or type(tracking_stopped) is not bool
+        or not isinstance(visual_details, dict)
+        or visual_details.get("available") is not True
+        or visual_details.get("audio_included") is not False
+        or visual_details.get("pose_sample_count") != detected
+        or visual_details.get("pose_overlay_available") is not (detected > 0)
+        or visual_details.get("width") != width
+        or visual_details.get("height") != height
+        or not isinstance(visual_details.get("frame_count"), int)
+        or visual_details["frame_count"] != frame_count
+        or not isinstance(visual_details.get("fps"), (float, int))
+        or abs(float(visual_details["fps"]) - fps) > 0.01
+        or not isinstance(visual_details.get("duration_seconds"), (float, int))
+        or abs(float(visual_details["duration_seconds"]) - duration_seconds)
+        > max(0.1, 1 / max(fps, 1))
+        or visualization.is_symlink()
+        or not visualization.is_file()
+        or preview.is_symlink()
+        or not preview.is_file()
+        or preview.stat().st_size <= 0
+        or preview.stat().st_size > 2 * 1024 * 1024
+    ):
+        raise VideoProcessorError("Pose-preview output did not meet the safety contract.")
+
+    from backend.app.video_detection.visualization import validate_visualization_artifact
+
+    validate_visualization_artifact(
+        visualization,
+        expected_fps=fps,
+        expected_width=width,
+        expected_height=height,
+        expected_frame_count=frame_count,
+        expected_duration=duration_seconds,
+    )
+    return {
+        "sampled_frames": sampled,
+        "detected_frames": detected,
+        "tracking_stopped": tracking_stopped,
+    }
+
+
 def _safe_content_type(upload: UploadFile) -> str:
     """Return a stable output type without retaining client metadata."""
 
@@ -194,7 +360,10 @@ def _preflight_uploaded_video(storage: VideoStorage, job_id: str, encrypted: Pat
     deadline = time.monotonic() + VIDEO_PREFLIGHT_TIMEOUT_SECONDS
     source = storage.materialize_original(job_id, encrypted, deadline=deadline)
     try:
-        return VideoPrivacyProcessor.preflight(source, deadline=deadline)
+        return preflight_video_subprocess(
+            source,
+            timeout_seconds=deadline - time.monotonic(),
+        )
     finally:
         storage.delete_work_file(source)
 
@@ -204,6 +373,9 @@ def _rollback_admission_job(db: Session, job: VideoPrivacyJob, storage: VideoSto
 
     job_id = job.job_id
     original_path = job.original_path
+    case_id = job.case_id
+    owner_user_id = job.owner_user_id
+    content_fingerprint = job.content_fingerprint
     try:
         storage.delete_job(job_id)
     except Exception:
@@ -214,11 +386,18 @@ def _rollback_admission_job(db: Session, job: VideoPrivacyJob, storage: VideoSto
         job.error_message = "The upload could not be secured and cleanup is pending."
         job.output_usable = False
         job.original_path = original_path
+        job.content_fingerprint = content_fingerprint
         db.add(job)
         db.commit()
         return False
     db.delete(job)
     db.commit()
+    if case_id and owner_user_id is not None:
+        cleanup_case_profile_if_empty(
+            db,
+            case_id=case_id,
+            owner_user_id=owner_user_id,
+        )
     return True
 
 
@@ -228,11 +407,20 @@ async def create_video_job(
     upload: UploadFile,
     profile: VideoPrivacyProfile,
     owner_user_id: int | None = None,
+    case_id: str | None = None,
+    idempotency_key_hash: str | None = None,
 ) -> VideoPrivacyJob:
     """Create metadata and encrypt the source before queueing processing."""
 
+    if case_id is not None:
+        lock_owner_case_mutations(db, owner_user_id)
+    ensure_case_reference(db, case_id, owner_user_id)
     content_type = _safe_content_type(upload)
     with VIDEO_PRIVACY_ADMISSION_LOCK:
+        if idempotency_key_hash is not None and owner_user_id is not None:
+            existing = get_video_job_by_idempotency_hash(db, owner_user_id, idempotency_key_hash)
+            if existing is not None:
+                raise VideoPrivacyIdempotencyReplay(existing)
         if count_active_video_jobs(db) >= VIDEO_PRIVACY_MAX_ACTIVE_JOBS:
             raise VideoPrivacyCapacityError("The video privacy service is at capacity. Try again later.")
         if count_active_video_jobs_for_owner(db, owner_user_id) >= VIDEO_PRIVACY_MAX_ACTIVE_JOBS_PER_OWNER:
@@ -240,7 +428,9 @@ async def create_video_job(
         upload_number = count_video_jobs(db, owner_user_id) + 1
         job = VideoPrivacyJob(
             owner_user_id=owner_user_id,
+            case_id=case_id,
             job_id=new_video_job_id(),
+            idempotency_key_hash=idempotency_key_hash,
             profile=profile,
             display_label=f"Video upload {upload_number:02d}",
             content_type=content_type,
@@ -253,6 +443,11 @@ async def create_video_job(
         db.refresh(job)
     try:
         encrypted = await storage.save_upload(job.job_id, upload)
+        fingerprint = getattr(upload, "content_fingerprint", None)
+        if idempotency_key_hash is not None:
+            if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+                raise ValueError("The uploaded stream could not be fingerprinted completely.")
+            job.content_fingerprint = fingerprint
         job.original_path = str(encrypted)
         # Size is a coarse technical field, not client-provided identity.
         job.file_size_bytes = max(0, encrypted.stat().st_size)
@@ -277,14 +472,57 @@ async def create_video_job(
         await upload.close()
 
 
-def _set_stage(db: Session, job: VideoPrivacyJob, stage: str, status: VideoPrivacyStatus) -> None:
-    job.current_stage = stage
-    job.status = status
-    db.add(job)
+def _privacy_job_lock_statement(job_id: str):
+    """Build the durable row mutex shared by workers and retention sweepers."""
+
+    return (
+        select(VideoPrivacyJob)
+        .where(VideoPrivacyJob.job_id == job_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+def _lock_privacy_job(db: Session, job_id: str) -> VideoPrivacyJob | None:
+    """Lock and refresh the job row before a state or storage transition."""
+
+    return db.exec(_privacy_job_lock_statement(job_id)).first()
+
+
+def _cleanup_non_active_job(storage: VideoStorage, job_id: str, status: VideoPrivacyStatus | None) -> None:
+    """Discard stale worker files without deleting another worker's published result."""
+
+    try:
+        if status in {VideoPrivacyStatus.READY, VideoPrivacyStatus.NEEDS_REVIEW}:
+            storage.cleanup(job_id, keep_retained=True)
+        else:
+            storage.delete_job(job_id)
+    except Exception:
+        LOGGER.warning("Stale privacy worker cleanup is pending.")
+
+
+def _set_stage(
+    db: Session,
+    job: VideoPrivacyJob,
+    stage: str,
+    status: VideoPrivacyStatus,
+    storage: VideoStorage,
+) -> bool:
+    """Advance only a still-active row while holding its database lock."""
+
+    current = _lock_privacy_job(db, job.job_id)
+    if current is None or current.status not in ACTIVE_PRIVACY_STATUSES:
+        db.rollback()
+        _cleanup_non_active_job(storage, job.job_id, current.status if current else None)
+        return False
+    current.current_stage = stage
+    current.status = status
+    db.add(current)
     db.commit()
+    return True
 
 
-def _mark_privacy_job_failed(
+def _fail_locked_privacy_job(
     db: Session,
     job: VideoPrivacyJob,
     storage: VideoStorage,
@@ -292,7 +530,7 @@ def _mark_privacy_job_failed(
     stage: str,
     message: str,
 ) -> bool:
-    """Persist a terminal failure after best-effort private cleanup."""
+    """Persist a terminal failure while the caller owns the job row lock."""
 
     cleanup_succeeded = True
     try:
@@ -311,6 +549,95 @@ def _mark_privacy_job_failed(
     db.add(job)
     db.commit()
     return cleanup_succeeded
+
+
+def _mark_privacy_job_failed(
+    db: Session,
+    job: VideoPrivacyJob,
+    storage: VideoStorage,
+    *,
+    stage: str,
+    message: str,
+) -> bool:
+    """Persist failure only if no other worker or sweeper made the row terminal."""
+
+    current = _lock_privacy_job(db, job.job_id)
+    if current is None or current.status not in ACTIVE_PRIVACY_STATUSES:
+        db.rollback()
+        _cleanup_non_active_job(storage, job.job_id, current.status if current else None)
+        return False
+    return _fail_locked_privacy_job(
+        db,
+        current,
+        storage,
+        stage=stage,
+        message=message,
+    )
+
+
+def _publish_privacy_result(
+    db: Session,
+    job: VideoPrivacyJob,
+    storage: VideoStorage,
+    output: Path,
+    preview: Path,
+    result,
+) -> bool:
+    """Encrypt and publish outputs under the same PostgreSQL row lock as expiry."""
+
+    current = _lock_privacy_job(db, job.job_id)
+    if current is None or current.status not in ACTIVE_PRIVACY_PROCESS_STATUSES:
+        db.rollback()
+        _cleanup_non_active_job(storage, job.job_id, current.status if current else None)
+        return False
+    if current.retention_expires_at and _is_expired(current.retention_expires_at):
+        _fail_locked_privacy_job(
+            db,
+            current,
+            storage,
+            stage="retention-expired",
+            message="Processing exceeded the private retention window.",
+        )
+        return False
+
+    output_path = storage.store_artifact(current.job_id, output, "video.output.mp4")
+    preview_path = storage.store_artifact(current.job_id, preview, "video.preview.jpg")
+    current.output_path = str(output_path)
+    current.preview_path = str(preview_path)
+    current.duration_seconds = result.duration_seconds
+    current.fps = result.fps
+    current.width = result.width
+    current.height = result.height
+    current.pose_detected_frames = result.pose_detected_frames
+    current.pose_sampled_frames = result.pose_sampled_frames
+    current.quality_flags_json = json.dumps(result.quality_flags)
+    current.output_usable = result.usable
+    current.status = VideoPrivacyStatus.NEEDS_REVIEW if result.needs_review else VideoPrivacyStatus.READY
+    current.current_stage = "cleanup"
+    current.completed_at = utc_now()
+    current.error_message = None
+    storage.cleanup(current.job_id, keep_retained=True)
+    current.original_path = None
+    current.original_removed_at = utc_now()
+
+    if current.retention_expires_at and _is_expired(current.retention_expires_at):
+        cleanup_succeeded = True
+        try:
+            storage.delete_job(current.job_id)
+        except Exception:
+            cleanup_succeeded = False
+            LOGGER.warning("Expired privacy publication cleanup is pending.")
+        current.status = VideoPrivacyStatus.FAILED
+        current.current_stage = "retention-expired" if cleanup_succeeded else "cleanup"
+        current.error_message = "Processing exceeded the private retention window."
+        current.output_usable = False
+        if cleanup_succeeded:
+            current.original_path = None
+            current.output_path = None
+            current.preview_path = None
+    db.add(current)
+    db.commit()
+    return current.status in {VideoPrivacyStatus.READY, VideoPrivacyStatus.NEEDS_REVIEW}
 
 
 def process_video_privacy_job(
@@ -346,39 +673,84 @@ def _process_video_privacy_job(
         output: Path | None = None
         preview: Path | None = None
         try:
-            _set_stage(db, job, "preflight", VideoPrivacyStatus.PREFLIGHT)
+            if not _set_stage(db, job, "preflight", VideoPrivacyStatus.PREFLIGHT, storage):
+                return
             if not job.original_path:
                 raise VideoProcessorError("Video source is unavailable.")
             source = storage.materialize_original(job.job_id, Path(job.original_path))
-            _set_stage(db, job, "privacy-transform", VideoPrivacyStatus.PROCESSING)
+            if not _set_stage(db, job, "privacy-transform", VideoPrivacyStatus.PROCESSING, storage):
+                return
             visual = storage.work_path(job.job_id, "video.visual.mp4")
             output = storage.work_path(job.job_id, "video.output.mp4")
             preview = storage.work_path(job.job_id, "video.preview.jpg")
-            result = processor.process(source, visual, preview, job.profile)
-            _set_stage(db, job, "output-validation", VideoPrivacyStatus.VALIDATING)
+            if job.profile == VideoPrivacyProfile.FACE_REDACTED_POSE_PREVIEW:
+                blurred = storage.work_path(job.job_id, "video.blurred.mp4")
+                blurred_preview = storage.work_path(
+                    job.job_id, "video.blurred-preview.jpg"
+                )
+                result = processor.process(
+                    source,
+                    blurred,
+                    blurred_preview,
+                    VideoPrivacyProfile.FACE_REDACTED,
+                    allow_full_blur_fallback=True,
+                )
+                if not result.usable:
+                    raise VideoProcessorError(
+                        "Transformed output did not meet the privacy quality threshold."
+                    )
+                if not _set_stage(
+                    db,
+                    job,
+                    "keypoint-preview",
+                    VideoPrivacyStatus.PROCESSING,
+                    storage,
+                ):
+                    return
+                pose = _run_pose_preview_worker(
+                    blurred,
+                    visual,
+                    preview,
+                    storage.work_path(job.job_id, "pose-preview.json"),
+                    fps=result.fps,
+                    width=result.width,
+                    height=result.height,
+                    frame_count=result.frame_count,
+                    duration_seconds=result.duration_seconds,
+                )
+                quality_flags = list(result.quality_flags)
+                pose_is_partial = pose["detected_frames"] < pose["sampled_frames"]
+                if pose["detected_frames"] == 0:
+                    quality_flags.append("pose_keypoints_not_detected")
+                elif pose_is_partial:
+                    quality_flags.append("pose_keypoints_partial")
+                if pose["tracking_stopped"]:
+                    quality_flags.append("pose_tracking_stopped")
+                result = replace(
+                    result,
+                    pose_detected_frames=pose["detected_frames"],
+                    pose_sampled_frames=pose["sampled_frames"],
+                    quality_flags=quality_flags,
+                    needs_review=(
+                        result.needs_review
+                        or pose_is_partial
+                        or pose["tracking_stopped"]
+                    ),
+                )
+            else:
+                result = processor.process(source, visual, preview, job.profile)
+            if not _set_stage(
+                db,
+                job,
+                "output-validation",
+                VideoPrivacyStatus.VALIDATING,
+                storage,
+            ):
+                return
             if not result.usable:
                 raise VideoProcessorError("Transformed output did not meet the privacy quality threshold.")
             finalize_protected_video(source, visual, output)
-            output_path = storage.store_artifact(job.job_id, output, "video.output.mp4")
-            preview_path = storage.store_artifact(job.job_id, preview, "video.preview.jpg")
-            job.output_path = str(output_path)
-            job.preview_path = str(preview_path)
-            job.duration_seconds = result.duration_seconds
-            job.fps = result.fps
-            job.width = result.width
-            job.height = result.height
-            job.quality_flags_json = json.dumps(result.quality_flags)
-            job.output_usable = result.usable
-            job.status = VideoPrivacyStatus.NEEDS_REVIEW if result.needs_review else VideoPrivacyStatus.READY
-            job.current_stage = "cleanup"
-            job.completed_at = utc_now()
-            job.error_message = None
-            # Remove encrypted input and all work plaintext before publishing
-            # the terminal state to a request that may immediately download.
-            storage.cleanup(job.job_id, keep_retained=True)
-            job.original_removed_at = utc_now()
-            db.add(job)
-            db.commit()
+            _publish_privacy_result(db, job, storage, output, preview, result)
         except asyncio.CancelledError:
             _mark_privacy_job_failed(
                 db,
@@ -401,15 +773,18 @@ def _process_video_privacy_job(
 def sweep_video_privacy_jobs(*, startup: bool = False) -> None:
     """Clean standalone privacy work and expire retained output safely."""
 
-    active_statuses = ACTIVE_PRIVACY_STATUSES
     if not sqlalchemy_inspect(engine).has_table("video_privacy_jobs"):
         return
     with Session(engine) as db:
         storage = VideoStorage()
-        jobs = list(db.exec(select(VideoPrivacyJob)).all())
-        for job in jobs:
-            if startup and job.status in active_statuses:
-                _mark_privacy_job_failed(
+        job_ids = list(db.exec(select(VideoPrivacyJob.job_id)).all())
+        for job_id in job_ids:
+            job = _lock_privacy_job(db, job_id)
+            if job is None:
+                db.rollback()
+                continue
+            if startup and job.status in ACTIVE_PRIVACY_STATUSES:
+                _fail_locked_privacy_job(
                     db,
                     job,
                     storage,
@@ -422,7 +797,7 @@ def sweep_video_privacy_jobs(*, startup: bool = False) -> None:
                 and job.retention_expires_at
                 and _is_expired(job.retention_expires_at)
             ):
-                _mark_privacy_job_failed(
+                _fail_locked_privacy_job(
                     db,
                     job,
                     storage,
@@ -431,18 +806,21 @@ def sweep_video_privacy_jobs(*, startup: bool = False) -> None:
                 )
                 continue
             if job.status in ACTIVE_PRIVACY_PROCESS_STATUSES:
+                db.rollback()
                 continue
             if job.status in {VideoPrivacyStatus.READY, VideoPrivacyStatus.NEEDS_REVIEW}:
                 try:
                     storage.cleanup(job.job_id, keep_retained=True)
                 except Exception:
-                    logging.getLogger(__name__).exception("Privacy work cleanup failed")
-            elif job.status == VideoPrivacyStatus.FAILED:
+                    LOGGER.exception("Privacy work cleanup failed")
+            elif job.status in {VideoPrivacyStatus.FAILED, VideoPrivacyStatus.EXPIRED}:
                 try:
                     storage.cleanup(job.job_id, keep_retained=False)
                 except Exception:
-                    logging.getLogger(__name__).exception("Failed privacy job cleanup failed")
+                    LOGGER.exception("Failed privacy job cleanup failed")
             _expire_if_needed(db, job, storage)
+            if db.in_transaction():
+                db.rollback()
 
 
 async def video_privacy_retention_loop(interval_seconds: int = CLEANUP_INTERVAL_SECONDS) -> None:
@@ -509,31 +887,48 @@ def public_video_job(
         and (job.status == VideoPrivacyStatus.READY or acknowledged)
         and bool(job.retention_expires_at and not _is_expired(job.retention_expires_at))
     )
-    stage_names = ["preflight", "privacy-transform", "output-validation", "cleanup"]
-    completed_index = {
-        VideoPrivacyStatus.QUEUED: 0,
-        VideoPrivacyStatus.PREFLIGHT: 1,
-        VideoPrivacyStatus.PROCESSING: 2,
-        VideoPrivacyStatus.VALIDATING: 3,
-        VideoPrivacyStatus.READY: 4,
-        VideoPrivacyStatus.NEEDS_REVIEW: 4,
-        VideoPrivacyStatus.FAILED: 0,
-        VideoPrivacyStatus.EXPIRED: 4,
-    }[job.status]
+    stage_names = ["preflight", "privacy-transform"]
+    if job.profile == VideoPrivacyProfile.FACE_REDACTED_POSE_PREVIEW:
+        stage_names.append("keypoint-preview")
+    stage_names.extend(["output-validation", "cleanup"])
     terminal = job.status in {VideoPrivacyStatus.READY, VideoPrivacyStatus.NEEDS_REVIEW, VideoPrivacyStatus.EXPIRED}
+    active_index = (
+        stage_names.index(job.current_stage)
+        if job.current_stage in stage_names
+        else -1
+    )
     stages = []
-    for index, stage in enumerate(stage_names, start=1):
+    for index, stage in enumerate(stage_names):
         if terminal:
             stage_status = "complete"
-        elif index < completed_index:
+        elif index < active_index:
             stage_status = "complete"
-        elif index == completed_index:
+        elif index == active_index:
             stage_status = "active"
         else:
             stage_status = "pending"
         stages.append({"id": stage, "status": stage_status})
+    pose_evidence = None
+    if job.profile == VideoPrivacyProfile.FACE_REDACTED_POSE_PREVIEW:
+        detected = job.pose_detected_frames or 0
+        sampled = job.pose_sampled_frames or 0
+        pose_evidence = {
+            "model": "Lightweight OpenPose",
+            "detected_frames": detected,
+            "sampled_frames": sampled,
+            "tracking_stopped": "pose_tracking_stopped" in job.quality_flags(),
+            "status": (
+                "not-detected"
+                if detected == 0
+                else "partial"
+                if detected < sampled
+                else "complete"
+            ),
+            "action_units": "not-configured",
+        }
     return {
         "job_id": job.job_id,
+        "case_id": job.case_id,
         "label": job.display_label,
         "profile": job.profile.value,
         "profile_label": details["label"],
@@ -554,6 +949,7 @@ def public_video_job(
         "fps": job.fps,
         "width": job.width,
         "height": job.height,
+        "pose_evidence": pose_evidence,
         "created_at": job.created_at.isoformat(),
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
         "error": job.error_message,

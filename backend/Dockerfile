@@ -5,6 +5,7 @@ ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV MPLCONFIGDIR=/tmp/matplotlib
+ENV XDG_CACHE_HOME=/tmp/xdg-cache
 
 COPY backend/requirements.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir "pip==26.2.1"
@@ -32,8 +33,8 @@ RUN apt-get update \
 RUN python -c "import cv2; assert cv2.__version__"
 
 RUN groupadd --system mds01 && useradd --system --gid mds01 --home-dir /app --no-create-home mds01
-RUN mkdir -p /tmp/matplotlib /opt/vsvig /opt/eeg-model \
-    && chown mds01:mds01 /tmp/matplotlib /opt/vsvig /opt/eeg-model
+RUN mkdir -p /tmp/matplotlib /tmp/xdg-cache /opt/vsvig /opt/eeg-model \
+    && chown mds01:mds01 /tmp/matplotlib /tmp/xdg-cache /opt/vsvig /opt/eeg-model
 
 COPY --chown=mds01:mds01 backend /app/backend
 

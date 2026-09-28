@@ -56,7 +56,6 @@ services:
       MDS01_STORAGE_KEY: ${MDS01_STORAGE_KEY:?Provide a disposable test storage key}
       MDS01_TEMPLATE_KEY: ${MDS01_TEMPLATE_KEY:?Provide a disposable test template key}
       VIDEO_DETECTION_ENABLED: "true"
-      VSVIG_ALLOW_LETTERBOX_ADAPTATION: "false"
       ENABLE_SIGNAL_PREVIEW: "false"
       MAX_CONCURRENT_ANALYSES: "1"
       MDS01_MAX_ARCHIVE_TOTAL_BYTES: "10485760"

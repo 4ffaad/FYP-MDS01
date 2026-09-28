@@ -11,7 +11,12 @@ from sqlmodel import Session
 from backend.app.core.config import ENABLE_FULL_SIGNAL_PREVIEW, ENABLE_SIGNAL_PREVIEW
 from backend.app.database.models.eeg import EEGRecording, EEGSession
 from backend.app.database.repository import list_predictions
-from backend.app.eeg.model_input import MODEL_CHANNELS, MODEL_SAMPLING_RATE
+from backend.app.eeg.model_input import (
+    MODEL_CHANNELS,
+    MODEL_SAMPLING_RATE,
+    validate_model_time_offsets,
+)
+from backend.app.privacy.methods import SIGNAL_OBFUSCATION, methods_from_profile
 from backend.app.privacy.retention import detected_intervals
 from backend.app.services.storage_service import SessionStorage
 
@@ -31,8 +36,9 @@ def build_signal_preview(
 ) -> dict:
     """Read a bounded retained positive clip and attach model alert intervals.
 
-    Only metadata-scrubbed EDF clips or obfuscated NPZ windows are materialized
-    temporarily. The plaintext file is removed in a ``finally`` block.
+    Metadata-scrubbed EDF clips or transformed model-window NPZ files are
+    materialized temporarily. The reported representation reflects the
+    session's privacy profile, and plaintext is removed in a ``finally`` block.
     """
 
     if not ENABLE_SIGNAL_PREVIEW:
@@ -44,6 +50,16 @@ def build_signal_preview(
     flagged = [item for item in predictions if item.seizure_detected]
     if not flagged:
         raise SignalPreviewUnavailable("No model-positive signal is available for this recording.")
+    try:
+        validate_model_time_offsets(
+            [
+                start_seconds,
+                start_seconds + duration_seconds,
+                *(value for item in flagged for value in (item.start_seconds, item.end_seconds)),
+            ]
+        )
+    except ValueError as exc:
+        raise SignalPreviewUnavailable(str(exc)) from exc
 
     artifact = Path(record.retained_artifact_path)
     if not artifact.exists():
@@ -74,7 +90,11 @@ def build_signal_preview(
                 duration_seconds,
                 max_points,
             )
-            representation = "signal-obfuscated"
+            representation = (
+                "signal-obfuscated"
+                if SIGNAL_OBFUSCATION in methods_from_profile(session.privacy_method)
+                else "metadata-scrubbed"
+            )
         payload.update({
             "record_id": record.record_id,
             "representation": representation,
@@ -144,7 +164,7 @@ def _read_edf_preview(
                 {"label": label, "samples": [round(float(value), 6) for value in channels[index]]}
                 for index, label in enumerate(MODEL_CHANNELS)
             ],
-            "time_seconds": [round(float(value), 6) for value in time_values],
+            "time_seconds": [float(value) for value in time_values],
             "segments": segments,
         }
     finally:
@@ -158,34 +178,36 @@ def _read_npz_preview(
     duration_seconds: float,
     max_points: int,
 ) -> dict:
-    """Read obfuscated model windows while retaining their source timestamps."""
+    """Read retained model windows while preserving their source timestamps."""
 
     end_seconds = start_seconds + duration_seconds
     with np.load(path) as payload:
         windows = payload["model_windows"].astype(np.float32, copy=False)
-        starts = payload["window_start_seconds"].astype(np.float64, copy=False)
+        try:
+            starts = validate_model_time_offsets(payload["window_start_seconds"])
+        except ValueError as exc:
+            raise SignalPreviewUnavailable(str(exc)) from exc
         labels = [str(value) for value in payload.get("channel_labels", MODEL_CHANNELS)]
     selected_windows: list[np.ndarray] = []
     timestamps: list[np.ndarray] = []
     segments: list[dict] = []
-    requested_start = int(round(start_seconds * MODEL_SAMPLING_RATE))
-    emitted_until = requested_start
-    requested_end = int(round(end_seconds * MODEL_SAMPLING_RATE))
+    emitted_until = start_seconds
     for index in np.argsort(starts, kind="stable"):
         window = windows[index]
         window_start = float(starts[index])
-        window_start_sample = int(round(window_start * MODEL_SAMPLING_RATE))
-        window_end_sample = window_start_sample + window.shape[0]
-        begin_sample = max(emitted_until, requested_start, window_start_sample)
-        finish_sample = min(requested_end, window_end_sample)
-        if finish_sample <= begin_sample:
+        window_times = window_start + (
+            np.arange(window.shape[0], dtype=np.float64) / MODEL_SAMPLING_RATE
+        )
+        begin_time = max(emitted_until, start_seconds)
+        begin = int(np.searchsorted(window_times, begin_time, side="left"))
+        finish = int(np.searchsorted(window_times, end_seconds, side="left"))
+        if finish <= begin:
             continue
-        begin = begin_sample - window_start_sample
-        finish = finish_sample - window_start_sample
         selected_windows.append(window[begin:finish])
-        timestamps.append(np.arange(begin_sample, finish_sample, dtype=np.float64) / MODEL_SAMPLING_RATE)
-        segment_start = begin_sample / MODEL_SAMPLING_RATE
-        segment_end = finish_sample / MODEL_SAMPLING_RATE
+        selected_times = window_times[begin:finish]
+        timestamps.append(selected_times)
+        segment_start = float(selected_times[0])
+        segment_end = float(selected_times[-1] + 1 / MODEL_SAMPLING_RATE)
         if segments and segment_start <= segments[-1]["source_end_seconds"]:
             segments[-1]["source_end_seconds"] = max(segments[-1]["source_end_seconds"], segment_end)
         else:
@@ -193,7 +215,7 @@ def _read_npz_preview(
                 "source_start_seconds": segment_start,
                 "source_end_seconds": segment_end,
             })
-        emitted_until = finish_sample
+        emitted_until = segment_end
     if not selected_windows:
         raise SignalPreviewUnavailable("No retained signal overlaps the requested interval.")
     samples = np.concatenate(selected_windows, axis=0).T
@@ -204,7 +226,7 @@ def _read_npz_preview(
             {"label": labels[index] if index < len(labels) else MODEL_CHANNELS[index], "samples": [round(float(value), 6) for value in samples[index]]}
             for index in range(min(samples.shape[0], len(MODEL_CHANNELS)))
         ],
-        "time_seconds": [round(float(value), 6) for value in time_values],
+        "time_seconds": [float(value) for value in time_values],
         "segments": segments,
     }
 

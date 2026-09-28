@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.app.ml.interface import WindowPrediction
+from backend.app.ml.interface import WindowPrediction, public_score_type
 
 
 def build_score_summary(
@@ -54,10 +54,10 @@ def build_score_summary(
         "window_start_seconds": prediction.start_seconds,
         "window_end_seconds": prediction.end_seconds,
         "threshold": threshold,
-        "probability": prediction.probability,
+        "score": prediction.probability,
         "raw_score": prediction.raw_score,
         "calibrated_probability": prediction.calibrated_probability,
-        "score_type": prediction.score_type,
+        "score_type": public_score_type(prediction.score_type),
         "calibration_method": prediction.calibration_method,
         "calibration_version": calibration_version or prediction.calibration_version,
         "calibration_dataset": calibration_dataset or prediction.calibration_dataset,

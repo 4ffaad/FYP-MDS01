@@ -11,6 +11,7 @@ from io import BytesIO
 from unittest.mock import Mock, patch
 
 import numpy as np
+from scipy.signal import resample_poly
 
 from backend.app.eeg.io import (
     detect_eeg_format,
@@ -19,6 +20,7 @@ from backend.app.eeg.io import (
     validate_nicolet,
     validate_legacy_nicolet_e,
 )
+from backend.app.eeg.model_input import prepare_model_windows, preprocess_eeg
 from backend.app.eeg.contracts import MODEL_CHANNELS, MODEL_SAMPLING_RATE
 from backend.app.eeg.legacy_nicolet import (
     LegacyNicoletError,
@@ -28,6 +30,9 @@ from backend.app.eeg.legacy_nicolet import (
     NicoletHeader,
     _EVENT_PACKET_GUID,
     _IndexEntry,
+    coalesce_contiguous_segments,
+    _validate_segment_continuity,
+    _validate_segment_order,
     select_legacy_montage_channels,
     select_model_channels,
 )
@@ -78,6 +83,275 @@ class NicoletFormatTests(unittest.TestCase):
             self.assertEqual(labels, ["FP1-F7", "F7-T7"])
             self.assertEqual(signals.shape, (2, 1024))
             self.assertTrue(np.isfinite(signals).all())
+
+    def test_short_segment_is_skipped_without_losing_valid_segment_time(self) -> None:
+        signals = np.random.default_rng(23).normal(size=(len(MODEL_CHANNELS), 1034))
+        layout = [(0, 10, 0.0), (10, 1024, 10.0)]
+        with patch(
+            "backend.app.eeg.model_input.read_uniform_eeg",
+            return_value=(signals, MODEL_SAMPLING_RATE, list(MODEL_CHANNELS)),
+        ):
+            windows, starts, details = preprocess_eeg("synthetic.e", segments=layout)
+
+        self.assertEqual(windows.shape, (1, 1024, len(MODEL_CHANNELS)))
+        np.testing.assert_array_equal(starts, np.asarray([10.0], dtype=np.float32))
+        self.assertEqual(details["discarded_short_segment_count"], 1)
+        self.assertEqual(details["discarded_short_segment_samples"], 10)
+
+    def test_window_timestamps_keep_two_second_stride_after_years_long_gap(self) -> None:
+        gap_seconds = float(2 * 365 * 24 * 60 * 60)
+        signals = np.random.default_rng(29).normal(size=(len(MODEL_CHANNELS), 4096))
+        windows, starts, _ = prepare_model_windows(
+            signals,
+            MODEL_SAMPLING_RATE,
+            list(MODEL_CHANNELS),
+            segments=[(0, 2048, 0.0), (2048, 2048, gap_seconds)],
+        )
+
+        self.assertEqual(windows.shape, (6, 1024, len(MODEL_CHANNELS)))
+        self.assertEqual(starts.dtype, np.float64)
+        np.testing.assert_array_equal(
+            starts,
+            [0.0, 2.0, 4.0, gap_seconds, gap_seconds + 2.0, gap_seconds + 4.0],
+        )
+
+    def test_model_windows_reject_offsets_without_sample_grid_precision(self) -> None:
+        signals = np.zeros((len(MODEL_CHANNELS), 1024), dtype=np.float32)
+        with self.assertRaisesRegex(ValueError, "timestamp precision"):
+            prepare_model_windows(
+                signals,
+                MODEL_SAMPLING_RATE,
+                list(MODEL_CHANNELS),
+                segments=[(0, 1024, 1e14, 4.0)],
+            )
+
+    def test_nicolet_validation_rejects_offsets_without_sample_grid_precision(self) -> None:
+        segment = NicoletSegment(1e14, 4.0, 1024, 0)
+        with self.assertRaisesRegex(LegacyNicoletError, "timestamp precision"):
+            _validate_segment_order((segment,), MODEL_SAMPLING_RATE, total_samples=1024)
+
+    def test_contiguous_segments_merge_for_cross_boundary_windows(self) -> None:
+        signals = np.random.default_rng(41).normal(size=(len(MODEL_CHANNELS), 2048))
+        layout = [(0, 1024, 0.0, 4.0), (1024, 1024, 4.0, 4.0)]
+
+        windows, starts, _ = prepare_model_windows(
+            signals,
+            MODEL_SAMPLING_RATE,
+            list(MODEL_CHANNELS),
+            segments=layout,
+        )
+
+        self.assertEqual(windows.shape, (3, 1024, len(MODEL_CHANNELS)))
+        np.testing.assert_array_equal(starts, [0.0, 2.0, 4.0])
+
+    def test_contiguous_subwindow_segments_merge_before_filtering(self) -> None:
+        signals = np.random.default_rng(43).normal(size=(len(MODEL_CHANNELS), 1024))
+        layout = [(0, 512, 0.0, 2.0), (512, 512, 2.0, 2.0)]
+
+        with patch(
+            "backend.app.eeg.model_input.read_uniform_eeg",
+            return_value=(signals, MODEL_SAMPLING_RATE, list(MODEL_CHANNELS)),
+        ):
+            windows, starts, details = preprocess_eeg("synthetic.e", segments=layout)
+
+        self.assertEqual(windows.shape, (1, 1024, len(MODEL_CHANNELS)))
+        np.testing.assert_array_equal(starts, [0.0])
+        self.assertEqual(details["discarded_short_segment_count"], 0)
+
+    def test_preprocessing_keeps_exact_durations_through_contiguous_segments(self) -> None:
+        duration = 3.999
+        signals = np.random.default_rng(47).normal(size=(len(MODEL_CHANNELS), 3072))
+        layout = [
+            (index * 1024, 1024, index * duration, duration)
+            for index in range(3)
+        ]
+
+        with patch(
+            "backend.app.eeg.model_input.read_uniform_eeg",
+            return_value=(signals, MODEL_SAMPLING_RATE, list(MODEL_CHANNELS)),
+        ):
+            windows, starts, _ = preprocess_eeg("synthetic.e", segments=layout)
+
+        self.assertEqual(windows.shape, (4, 1024, len(MODEL_CHANNELS)))
+        np.testing.assert_array_equal(starts, [0.0, 2.0, 4.0, 6.0])
+        self.assertLessEqual(float(starts[-1]) + 4.0, 3 * duration)
+
+    def test_model_layout_rejects_cumulative_subsample_overlaps(self) -> None:
+        starts = (0.0, 3.999, 7.998)
+        layout = [(index * 1024, 1024, start) for index, start in enumerate(starts)]
+        signals = np.random.default_rng(31).normal(size=(len(MODEL_CHANNELS), 3 * 1024))
+
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            prepare_model_windows(
+                signals,
+                MODEL_SAMPLING_RATE,
+                list(MODEL_CHANNELS),
+                segments=layout,
+            )
+
+    def test_model_layout_merges_subsample_timestamp_jitter(self) -> None:
+        signals = np.random.default_rng(39).normal(size=(len(MODEL_CHANNELS), 2048))
+        layout = [(0, 1024, 0.0, 4.0), (1024, 1024, 4.0000005, 4.0)]
+
+        windows, starts, _ = prepare_model_windows(
+            signals,
+            MODEL_SAMPLING_RATE,
+            list(MODEL_CHANNELS),
+            segments=layout,
+        )
+
+        self.assertEqual(windows.shape, (3, 1024, len(MODEL_CHANNELS)))
+        np.testing.assert_array_equal(starts, [0.0, 2.0, 4.0])
+
+    def test_model_layout_keeps_gaps_larger_than_half_sample_separate(self) -> None:
+        signals = np.random.default_rng(40).normal(size=(len(MODEL_CHANNELS), 2048))
+        layout = [(0, 1024, 0.0, 4.0), (1024, 1024, 4.005, 4.0)]
+
+        windows, starts, _ = prepare_model_windows(
+            signals,
+            MODEL_SAMPLING_RATE,
+            list(MODEL_CHANNELS),
+            segments=layout,
+        )
+
+        self.assertEqual(windows.shape, (2, 1024, len(MODEL_CHANNELS)))
+        np.testing.assert_array_equal(starts, [0.0, 4.005])
+
+    def test_model_layout_uses_exact_source_duration_after_resampling(self) -> None:
+        source_duration = 4.002
+        layout = [
+            (0, 1025, 0.0, source_duration),
+            (1025, 1025, source_duration, source_duration),
+        ]
+        signals = np.random.default_rng(37).normal(size=(len(MODEL_CHANNELS), 2050))
+
+        windows, starts, _ = prepare_model_windows(
+            signals,
+            MODEL_SAMPLING_RATE,
+            list(MODEL_CHANNELS),
+            segments=layout,
+        )
+
+        self.assertEqual(windows.shape, (3, 1024, len(MODEL_CHANNELS)))
+        np.testing.assert_array_equal(starts, [0.0, 2.0, 4.0])
+
+    def test_legacy_validators_reject_cumulative_subsample_timing_drift(self) -> None:
+        segments = tuple(
+            NicoletSegment(index * 3.999, 4.0, 1024, index * 1024)
+            for index in range(1000)
+        )
+
+        with self.assertRaisesRegex(LegacyNicoletError, "sample grid"):
+            _validate_segment_order(segments, MODEL_SAMPLING_RATE, 1000 * 1024)
+        with self.assertRaisesRegex(LegacyNicoletError, "discontinuous"):
+            _validate_segment_continuity(segments[:3], MODEL_SAMPLING_RATE)
+
+    def test_legacy_rejects_cumulative_sample_grid_drift(self) -> None:
+        duration = 3.999
+        sample_count = round(duration * MODEL_SAMPLING_RATE)
+        segments = tuple(
+            NicoletSegment(
+                index * duration,
+                duration,
+                sample_count,
+                index * sample_count,
+            )
+            for index in range(2)
+        )
+
+        with self.assertRaisesRegex(LegacyNicoletError, "sample grid"):
+            _validate_segment_order(
+                segments,
+                MODEL_SAMPLING_RATE,
+                total_samples=2 * sample_count,
+            )
+
+    def test_flat_legacy_read_rejects_cumulative_sample_grid_drift(self) -> None:
+        duration = 3.999
+        sample_count = round(duration * MODEL_SAMPLING_RATE)
+        segments = tuple(
+            NicoletSegment(index * duration, duration, sample_count, index * sample_count)
+            for index in range(2)
+        )
+        channels = tuple(
+            NicoletChannel(label, MODEL_SAMPLING_RATE, 1.0, index)
+            for index, label in enumerate(MODEL_CHANNELS)
+        )
+        header = NicoletHeader(
+            MODEL_SAMPLING_RATE, channels, segments, 2 * sample_count, ()
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "recording.e"
+            path.write_bytes(b"synthetic source")
+            reader = LegacyNicoletReader(path)
+            reader._header = header
+            with patch.object(
+                reader,
+                "_open_source",
+                side_effect=AssertionError("samples must not be read"),
+            ):
+                with self.assertRaisesRegex(LegacyNicoletError, "sample grid"):
+                    reader.read_data()
+
+    def test_accepted_near_tolerance_timeline_preserves_gap_events_and_bounds_windows(self) -> None:
+        duration = 3.9995
+        sample_count = round(duration * MODEL_SAMPLING_RATE)
+        segments = (
+            NicoletSegment(0.0, duration, sample_count, 0),
+            NicoletSegment(duration - 0.0005, duration, sample_count, sample_count),
+            NicoletSegment(10.0, 4.0, 1024, 2 * sample_count),
+        )
+        total_samples = 2 * sample_count + 1024
+
+        _validate_segment_order(segments, MODEL_SAMPLING_RATE, total_samples)
+        coalesced = coalesce_contiguous_segments(segments, MODEL_SAMPLING_RATE)
+        self.assertEqual(len(coalesced), 2)
+        self.assertAlmostEqual(
+            coalesced[0].duration_seconds,
+            segments[1].start_seconds + segments[1].duration_seconds,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "recording.e"
+            payload = bytearray(240)
+            struct.pack_into("<d", payload, 8, 25569.0)
+            struct.pack_into("<d", payload, 16, 10.25)
+            struct.pack_into("<d", payload, 24, 0.25)
+            packet = _EVENT_PACKET_GUID + struct.pack("<Q", 264) + payload
+            path.write_bytes(packet)
+            reader = LegacyNicoletReader(path)
+            reader._first_segment_start_seconds = 0.0
+            reader._section_entries[12] = (_IndexEntry(12, 0, len(packet)),)
+            events = reader._read_events(
+                BytesIO(packet), {"Events": 12}, segments, MODEL_SAMPLING_RATE
+            )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].onset_seconds, 10.25)
+        self.assertEqual(events[0].duration_seconds, 0.25)
+
+        layout = [
+            (segment.sample_start, segment.sample_count, segment.start_seconds, segment.duration_seconds)
+            for segment in coalesced
+        ]
+        signals = np.zeros((len(MODEL_CHANNELS), total_samples), dtype=np.float32)
+        windows, starts, _ = prepare_model_windows(
+            signals,
+            MODEL_SAMPLING_RATE,
+            list(MODEL_CHANNELS),
+            segments=layout,
+        )
+
+        self.assertEqual(windows.shape, (3, 1024, len(MODEL_CHANNELS)))
+        np.testing.assert_array_equal(starts, [0.0, 2.0, 10.0])
+        for start in starts:
+            segment_end = next(
+                segment.start_seconds + segment.duration_seconds
+                for segment in coalesced
+                if segment.start_seconds <= start < segment.start_seconds + segment.duration_seconds
+            )
+            self.assertLessEqual(float(start) + 4.0, segment_end)
 
     def test_nicolet_requires_matching_head_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -198,7 +472,7 @@ class NicoletFormatTests(unittest.TestCase):
             ):
                 reader._read_ts_channels(BytesIO(first + second), {"TSGUID": 7, "0": 8})
 
-    def test_legacy_nicolet_rejects_segment_gaps_and_overlaps(self) -> None:
+    def test_legacy_nicolet_reader_rejects_gaps_and_overlaps_for_flat_reads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "recording.e"
             path.write_bytes(b"synthetic source")
@@ -231,9 +505,13 @@ class NicoletFormatTests(unittest.TestCase):
                         )
                     segments = reader._read_segments(stream, {}, 500)
                     self.assertAlmostEqual(segments[1].start_seconds, second_start, places=5)
+                    channels = tuple(
+                        NicoletChannel(label, MODEL_SAMPLING_RATE, 1.0, index)
+                        for index, label in enumerate(MODEL_CHANNELS)
+                    )
                     header = NicoletHeader(
                         sampling_rate=MODEL_SAMPLING_RATE,
-                        channels=(),
+                        channels=channels,
                         segments=(
                             NicoletSegment(0.0, 1.0, 256, 0),
                             NicoletSegment(second_start, 1.0, 256, 256),
@@ -252,8 +530,244 @@ class NicoletFormatTests(unittest.TestCase):
                         "backend.app.eeg.io.validate_legacy_nicolet",
                         return_value=header,
                     ):
-                        with self.assertRaisesRegex(ValueError, "unreadable or malformed"):
-                            validate_legacy_nicolet_e(path)
+                        if second_start > 1.0:
+                            metadata = validate_legacy_nicolet_e(path)
+                            self.assertEqual(metadata.duration_seconds, second_start + 1.0)
+                            if metadata.conversion_details is None:
+                                self.fail("Legacy validation omitted the model segment layout.")
+                            self.assertEqual(
+                                metadata.conversion_details["model_segments"],
+                                [
+                                    {"sample_start": 0, "sample_count": 256, "start_seconds": 0.0, "duration_seconds": 1.0},
+                                    {"sample_start": 256, "sample_count": 256, "start_seconds": second_start, "duration_seconds": 1.0},
+                                ],
+                            )
+                        else:
+                            with self.assertRaisesRegex(ValueError, "unreadable or malformed"):
+                                validate_legacy_nicolet_e(path)
+
+    def test_legacy_nicolet_reads_gapped_segments_separately(self) -> None:
+        channels = tuple(
+            NicoletChannel(label, MODEL_SAMPLING_RATE, 1.0, index)
+            for index, label in enumerate(MODEL_CHANNELS)
+        )
+        segments = (
+            NicoletSegment(0.0, 4.0, 1024, 0),
+            NicoletSegment(10.0, 4.0, 1024, 1024),
+        )
+        stream_bytes = bytearray()
+        section_entries = {}
+        for index in range(len(channels)):
+            samples = np.concatenate(
+                (
+                    np.full(1024, index + 1, dtype="<i2"),
+                    np.full(1024, index + 101, dtype="<i2"),
+                )
+            )
+            offset = len(stream_bytes)
+            stream_bytes.extend(samples.tobytes())
+            section_entries[index] = (_IndexEntry(index, offset, samples.nbytes),)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "recording.e"
+            path.write_bytes(b"synthetic source")
+            reader = LegacyNicoletReader(path)
+            reader._header = NicoletHeader(
+                sampling_rate=MODEL_SAMPLING_RATE,
+                channels=channels,
+                segments=segments,
+                total_samples=2048,
+                events=(),
+            )
+            reader._section_entries = section_entries
+            with patch.object(reader, "_open_source", side_effect=lambda: BytesIO(stream_bytes)):
+                segment_signals, sampling_rate, labels = reader.read_data_segments()
+
+        self.assertEqual(sampling_rate, MODEL_SAMPLING_RATE)
+        self.assertEqual(labels, list(MODEL_CHANNELS))
+        self.assertEqual([start for start, _signals in segment_signals], [0.0, 10.0])
+        self.assertTrue(np.all(segment_signals[0][1][0] == 1.0))
+        self.assertTrue(np.all(segment_signals[1][1][0] == 101.0))
+
+    def test_legacy_metadata_rejects_cumulative_subsample_gaps(self) -> None:
+        channels = tuple(
+            NicoletChannel(label, MODEL_SAMPLING_RATE, 1.0, index)
+            for index, label in enumerate(MODEL_CHANNELS)
+        )
+        segments = tuple(
+            NicoletSegment(index * 4.001, 4.0, 1024, index * 1024)
+            for index in range(1000)
+        )
+        header = NicoletHeader(
+            MODEL_SAMPLING_RATE,
+            channels,
+            segments,
+            len(segments) * 1024,
+            (),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "recording.e"
+            path.write_bytes(b"synthetic source")
+            with patch(
+                "backend.app.eeg.io.validate_legacy_nicolet",
+                return_value=header,
+            ):
+                with self.assertRaisesRegex(ValueError, "unreadable or malformed"):
+                    validate_legacy_nicolet_e(path)
+
+    def test_legacy_metadata_coalesces_boundaries_within_half_sample_tolerance(self) -> None:
+        channels = tuple(
+            NicoletChannel(label, MODEL_SAMPLING_RATE, 1.0, index)
+            for index, label in enumerate(MODEL_CHANNELS)
+        )
+
+        for second_start, expected_count in ((1.0, 1), (1.0000005, 1), (1.003, 2)):
+            with self.subTest(second_start=second_start):
+                segments = (
+                    NicoletSegment(0.0, 1.0, 256, 0),
+                    NicoletSegment(second_start, 1.0, 256, 256),
+                )
+                header = NicoletHeader(
+                    MODEL_SAMPLING_RATE, channels, segments, 512, ()
+                )
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "recording.e"
+                    path.write_bytes(b"synthetic source")
+                    with patch(
+                        "backend.app.eeg.io.validate_legacy_nicolet",
+                        return_value=header,
+                    ):
+                        metadata = validate_legacy_nicolet_e(path)
+
+                assert metadata.conversion_details is not None
+                model_segments = metadata.conversion_details["model_segments"]
+                if not isinstance(model_segments, list):
+                    self.fail("Legacy validation omitted the model segment layout.")
+                self.assertEqual(
+                    len(model_segments),
+                    expected_count,
+                )
+                self.assertEqual(
+                    metadata.conversion_details["has_time_gaps"],
+                    expected_count == 2,
+                )
+
+    def test_legacy_500_hz_gapped_segments_resample_independently(self) -> None:
+        source_labels = [
+            "Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4", "O1", "O2",
+            "F7", "F8", "T3", "T4", "T5", "T6", "Fz", "Cz", "Pz",
+        ]
+        channels = tuple(
+            NicoletChannel(label, 500, 1.0, index)
+            for index, label in enumerate(source_labels)
+        )
+        segments = (
+            NicoletSegment(0.0, 4.0, 2000, 0),
+            NicoletSegment(10.0, 4.0, 2000, 2000),
+        )
+        header = NicoletHeader(500, channels, segments, 4000, ())
+        stream_bytes = bytearray()
+        section_entries = {}
+        source_samples: dict[NicoletChannel, tuple[np.ndarray, np.ndarray]] = {}
+        for index, channel in enumerate(channels):
+            first = np.full(2000, index + 1, dtype="<i2")
+            second = np.full(2000, 100 - index, dtype="<i2")
+            offset = len(stream_bytes)
+            stream_bytes.extend(np.concatenate((first, second)).tobytes())
+            section_entries[index] = (_IndexEntry(index, offset, 8000),)
+            source_samples[channel] = (first.astype(np.float32), second.astype(np.float32))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "recording.e"
+            path.write_bytes(b"synthetic source")
+            reader = LegacyNicoletReader(path)
+            reader._header = header
+            reader._section_entries = section_entries
+            with patch.object(reader, "_open_source", side_effect=lambda: BytesIO(stream_bytes)):
+                actual_segments, sampling_rate, labels = reader.read_data_segments()
+
+        montage = select_legacy_montage_channels(header)
+        expected = []
+        for segment_index in range(2):
+            referential = np.stack(
+                [
+                    source_samples[left][segment_index]
+                    - source_samples[right][segment_index]
+                    for _model_label, left, right in montage
+                ],
+                axis=0,
+            )
+            expected.append(
+                resample_poly(
+                    referential,
+                    128,
+                    250,
+                    axis=1,
+                    window=("kaiser", 5.0),
+                )
+            )
+
+        self.assertEqual(sampling_rate, MODEL_SAMPLING_RATE)
+        self.assertEqual(labels, list(MODEL_CHANNELS))
+        self.assertEqual([start for start, _signals in actual_segments], [0.0, 10.0])
+        for index in range(2):
+            np.testing.assert_allclose(actual_segments[index][1], expected[index])
+
+    def test_legacy_500_hz_contiguous_segments_resample_as_one_run(self) -> None:
+        source_labels = [
+            "Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4", "O1", "O2",
+            "F7", "F8", "T3", "T4", "T5", "T6", "Fz", "Cz", "Pz",
+        ]
+        channels = tuple(
+            NicoletChannel(label, 500, 1.0, index)
+            for index, label in enumerate(source_labels)
+        )
+        segments = (
+            NicoletSegment(0.0, 4.0, 2000, 0),
+            NicoletSegment(4.0, 4.0, 2000, 2000),
+        )
+        header = NicoletHeader(500, channels, segments, 4000, ())
+        stream_bytes = bytearray()
+        section_entries = {}
+        source_samples: dict[NicoletChannel, np.ndarray] = {}
+        for index, channel in enumerate(channels):
+            first = np.full(2000, index + 1, dtype="<i2")
+            second = np.full(2000, 100 - index, dtype="<i2")
+            offset = len(stream_bytes)
+            stream_bytes.extend(np.concatenate((first, second)).tobytes())
+            section_entries[index] = (_IndexEntry(index, offset, 8000),)
+            source_samples[channel] = np.concatenate(
+                (first.astype(np.float32), second.astype(np.float32))
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "recording.e"
+            path.write_bytes(b"synthetic source")
+            reader = LegacyNicoletReader(path)
+            reader._header = header
+            reader._section_entries = section_entries
+            with patch.object(reader, "_open_source", side_effect=lambda: BytesIO(stream_bytes)):
+                actual_segments, sampling_rate, labels = reader.read_data_segments()
+
+        montage = select_legacy_montage_channels(header)
+        referential = np.stack(
+            [source_samples[left] - source_samples[right] for _label, left, right in montage],
+            axis=0,
+        )
+        expected = resample_poly(
+            referential,
+            128,
+            250,
+            axis=1,
+            window=("kaiser", 5.0),
+        )
+
+        self.assertEqual(sampling_rate, MODEL_SAMPLING_RATE)
+        self.assertEqual(labels, list(MODEL_CHANNELS))
+        self.assertEqual(len(actual_segments), 1)
+        self.assertEqual(actual_segments[0][0], 0.0)
+        np.testing.assert_allclose(actual_segments[0][1], expected)
 
     def test_legacy_nicolet_rejects_overflowing_serial_start_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -303,7 +817,15 @@ class NicoletFormatTests(unittest.TestCase):
             struct.pack_into("<d", payload, 8, 25569.0)
             struct.pack_into("<d", payload, 16, 2.25)
             struct.pack_into("<d", payload, 24, 0.5)
-            packet = _EVENT_PACKET_GUID + struct.pack("<Q", 264) + payload
+            canary_text = "SYNTHETIC_EVENT_CANARY"
+            encoded_text = canary_text.encode("utf-16-le")
+            struct.pack_into("<Q", payload, 104, len(canary_text))
+            packet = (
+                _EVENT_PACKET_GUID
+                + struct.pack("<Q", 264 + len(encoded_text))
+                + payload
+                + encoded_text
+            )
             path.write_bytes(packet)
             reader = LegacyNicoletReader(path)
             reader._first_segment_start_seconds = 0.0
@@ -320,6 +842,9 @@ class NicoletFormatTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].onset_seconds, 2.25)
         self.assertEqual(events[0].duration_seconds, 0.5)
+        self.assertTrue(events[0].text_present)
+        self.assertNotIn(canary_text, repr(events[0]))
+        self.assertNotIn("25569", repr(events[0]))
 
     def test_legacy_nicolet_rejects_overflowing_event_serial_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -568,7 +1093,7 @@ class NicoletFormatTests(unittest.TestCase):
                     NicoletChannel(label, 500, 1.0, section_id)
                     for section_id, label in enumerate(source_labels)
                 ),
-                segments=(),
+                segments=(NicoletSegment(0.0, 4 / 500, 4, 0),),
                 total_samples=4,
                 events=(),
             )
@@ -588,14 +1113,26 @@ class NicoletFormatTests(unittest.TestCase):
     def test_legacy_nicolet_deidentification_writes_the_model_contract(self) -> None:
         signals = np.zeros((len(MODEL_CHANNELS), 2048), dtype=np.float64)
         with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "recording.e"
+            source.write_bytes(b"SYNTHETIC_PATIENT_CANARY\x00SYNTHETIC_EVENT_TEXT")
             output = Path(directory) / "scrubbed.edf"
             with patch(
-                "backend.app.eeg.io.read_uniform_legacy_eeg",
-                return_value=(signals, MODEL_SAMPLING_RATE, list(MODEL_CHANNELS)),
+                "backend.app.eeg.io.read_uniform_legacy_eeg_segments",
+                return_value=(
+                    [(0.0, signals)],
+                    MODEL_SAMPLING_RATE,
+                    list(MODEL_CHANNELS),
+                ),
             ):
-                deidentify_legacy_nicolet(Path(directory) / "recording.e", output, "REC-TEST")
+                deidentify_legacy_nicolet(source, output, "SYNTHETIC_RECORD_CANARY")
 
             self.assertTrue(inspect_metadata(str(output))["is_deidentified"])
+            encoded_output = output.read_bytes()
+            self.assertNotIn(b"SYNTHETIC_PATIENT_CANARY", encoded_output)
+            self.assertNotIn(b"SYNTHETIC_EVENT_TEXT", encoded_output)
+            self.assertNotIn(b"SYNTHETIC_RECORD_CANARY", encoded_output)
+            metadata = inspect_metadata(str(output))
+            self.assertFalse(metadata["potential_identifiers_present"]["recording_datetime"])
 
     def test_legacy_nicolet_malformed_file_has_a_generic_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -647,7 +1184,7 @@ class NicoletFormatTests(unittest.TestCase):
     def test_nicolet_deidentifies_to_verified_scrubbed_edf(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = self._write_nicolet(root)
+            source = self._write_nicolet(root, channels=list(MODEL_CHANNELS))
             output = root / "scrubbed" / "recording.edf"
 
             deidentify_nicolet(source, output, "REC-SYNTHETIC")
@@ -657,9 +1194,24 @@ class NicoletFormatTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertTrue(metadata["is_deidentified"])
             self.assertEqual(sampling_rate, 256)
-            self.assertEqual(labels, ["FP1-F7", "F7-T7"])
-            self.assertEqual(signals.shape, (2, 1024))
+            self.assertEqual(labels, list(MODEL_CHANNELS))
+            self.assertEqual(signals.shape, (len(MODEL_CHANNELS), 1024))
             self.assertTrue(np.isfinite(signals).all())
+
+    def test_nicolet_deidentification_drops_unreviewed_channel_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self._write_nicolet(
+                root,
+                channels=[*MODEL_CHANNELS, "CANARY_PATIENT"],
+            )
+            output = root / "scrubbed" / "recording.edf"
+
+            deidentify_nicolet(source, output, "REC-SYNTHETIC")
+
+            labels = read_uniform_eeg(output)[2]
+            self.assertEqual(labels, list(MODEL_CHANNELS))
+            self.assertNotIn("CANARY_PATIENT", output.read_bytes().decode("latin-1"))
 
 
 if __name__ == "__main__":

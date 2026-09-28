@@ -21,6 +21,10 @@ export default defineConfig({
         process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000",
       NEXT_PUBLIC_USE_API_STUB: process.env.NEXT_PUBLIC_USE_API_STUB ?? "true",
       NEXT_PUBLIC_AUTH_MODE: process.env.NEXT_PUBLIC_AUTH_MODE ?? "stub",
+      NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW:
+        process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW ?? "false",
+      NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW:
+        process.env.NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW ?? "false",
     },
     url: "http://127.0.0.1:3001",
     reuseExistingServer: false,

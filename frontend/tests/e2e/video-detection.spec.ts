@@ -10,8 +10,8 @@ const job = {
   created_at: new Date().toISOString(),
   retention_expires_at: new Date(Date.now() + 3600000).toISOString(),
   video_available: false,
-  visualization_available: true,
-  visualization_url: "/api/video-detection/jobs/VID-synthetic/visualization",
+  visualization_available: false,
+  visualization_url: null,
   error: null,
 };
 const result = {
@@ -71,26 +71,21 @@ const result = {
   privacy: {
     method: "face-detection-and-full-frame-blur",
     model_input: "full-frame-blurred video",
-    model_input_adaptation: "letterbox",
-    source_resolution: [640, 480],
+    model_input_adaptation: "none",
+    source_resolution: [1920, 1080],
     model_resolution: [1920, 1080],
     source_timestamp_offset_seconds: 0.118,
-    face_detection_coverage: 1,
+    face_detection_coverage: 0.8,
     quality_flags: ["intermittent_detection"],
     review_required: true,
-  },
-  visualization: {
-    available: true,
-    media_type: "video/mp4",
-    audio_included: false,
-    privacy_method: "full-frame-blur-and-skeleton-overlay",
-    overlay: { skeleton: true, model_score: false, event_markers: false },
-    frontend_overlay: { model_score: true, event_markers: true },
   },
   recording_probability_available: false,
 };
 
+let mediaAssetRequests: string[] = [];
+
 test.beforeEach(async ({ page }) => {
+  mediaAssetRequests = [];
   await page.route("**/api/video-detection/**", async (route) => {
     const url = route.request().url();
     if (route.request().method() === "OPTIONS")
@@ -99,22 +94,15 @@ test.beforeEach(async ({ page }) => {
         headers: {
           "Access-Control-Allow-Origin": "http://127.0.0.1:3001",
           "Access-Control-Allow-Credentials": "true",
-          "Access-Control-Allow-Headers": "content-type,accept",
+          "Access-Control-Allow-Headers":
+            "content-type,accept,x-case-id,x-video-format,idempotency-key",
           "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
         },
       });
-    if (url.endsWith("/video")) return route.abort();
-    if (url.endsWith("/visualization"))
-      return route.fulfill({
-        status: 200,
-        body: Buffer.from("protected video fixture"),
-        headers: {
-          "Content-Type": "video/mp4",
-          "Cache-Control": "no-store",
-          "Access-Control-Allow-Origin": "http://127.0.0.1:3001",
-          "Access-Control-Allow-Credentials": "true",
-        },
-      });
+    if (url.endsWith("/video") || url.endsWith("/visualization")) {
+      mediaAssetRequests.push(new URL(url).pathname);
+      return route.fulfill({ status: 404, body: "No retained video artifact" });
+    }
     return route.fulfill({
       json: url.endsWith("/predictions")
         ? result
@@ -133,6 +121,12 @@ test("uploads and reviews window supports without confidence percentages", async
   page,
 }) => {
   await page.goto("/video-detection");
+  await expect(
+    page.getByText(
+      "Detection exposes no preview or playback; its privacy-safe validation visualization is transient and deleted. A separate video-privacy workflow may retain its own protected preview.",
+      { exact: false },
+    ),
+  ).toBeVisible();
   await page.getByLabel("Video", { exact: true }).setInputFiles({
     name: "synthetic.mp4",
     mimeType: "video/mp4",
@@ -143,6 +137,12 @@ test("uploads and reviews window supports without confidence percentages", async
     .click();
   await expect(page).toHaveURL(/video-detection\/VID-synthetic/);
   await expect(
+    page.getByText(
+      "Detection retains encrypted predictions and safe provenance only; no video preview or playback is available.",
+      { exact: false },
+    ),
+  ).toBeVisible();
+  await expect(
     page.getByRole("heading", { name: "VSViG score over time" }),
   ).toBeVisible();
   await expect(
@@ -152,12 +152,21 @@ test("uploads and reviews window supports without confidence percentages", async
     page.getByRole("heading", { name: "Privacy quality needs review" }),
   ).toBeVisible();
   await expect(
-    page.getByText("Face detection was intermittent across the clip.", {
-      exact: true,
-    }),
+    page.getByText(
+      "The detector reported exactly one face in only some frames.",
+      {
+        exact: true,
+      },
+    ),
   ).toBeVisible();
-  const timeline = page.getByRole("group", {
-    name: "VSViG model scores over video time",
+  await expect(
+    page.getByText(
+      "OpenCV Haar reported exactly one face in 80% of frames. Full-frame blur was applied to every frame, independent of detection. This coverage signal does not guarantee anonymity.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  const timeline = page.getByRole("region", {
+    name: "VSViG score over time",
   });
   await expect(timeline).toBeVisible();
   await expect(timeline.getByRole("button")).toHaveCount(2);
@@ -165,17 +174,21 @@ test("uploads and reviews window supports without confidence percentages", async
     page.getByText(/configured research threshold 0.50/),
   ).toBeVisible();
   await expect(
-    page.getByText("Protected review workspace", { exact: true }),
+    page.getByText("Model evidence and event timeline", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("Protected artifact retention ends", { exact: false }),
+    page.getByText("Encrypted prediction retention ends", { exact: false }),
   ).toBeVisible();
-  await expect(page.locator("video")).toHaveCount(1);
+  await expect(page.locator("video")).toHaveCount(0);
   await expect(
     page.getByRole("progressbar", { name: "Video review completion" }),
   ).toHaveAttribute("aria-valuenow", "100");
   await expect(page.locator("main")).not.toContainText(/confidence/i);
-  // Raw video remains unpublished; only the protected visualization is playable.
+  // Video and derived video artifacts are never served to the browser.
+  await expect(
+    page.getByText(/No video artifact is retained or served\./),
+  ).toBeVisible();
+  expect(mediaAssetRequests).toEqual([]);
   await expect(page.getByRole("button", { name: "Event 1" })).toBeVisible();
   await page.getByText("All window scores", { exact: true }).click();
   await expect(
@@ -184,39 +197,45 @@ test("uploads and reviews window supports without confidence percentages", async
   await page.getByText("Model and processing details", { exact: true }).click();
   await expect(
     page.getByText("Source timestamp offset", { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText("+0.118 s", { exact: true })).toBeVisible();
+  ).toHaveCount(0);
+  await expect(page.getByText("+0.118 s", { exact: true })).toHaveCount(0);
 });
 
-test("retries a transient protected visualization failure", async ({
+test("zero face coverage is described as no frame with exactly one detection", async ({
   page,
 }) => {
-  let attempts = 0;
   await page.route(
-    "**/api/video-detection/jobs/VID-synthetic/visualization",
-    async (route) => {
-      attempts += 1;
-      if (attempts === 1) {
-        return route.fulfill({ status: 503, body: "temporary failure" });
-      }
-      return route.fulfill({
-        status: 200,
-        body: Buffer.from("protected video fixture"),
-        headers: { "Content-Type": "video/mp4" },
-      });
-    },
+    "**/api/video-detection/jobs/VID-synthetic/predictions",
+    (route) =>
+      route.fulfill({
+        json: {
+          ...result,
+          privacy: {
+            ...result.privacy,
+            face_detection_coverage: 0,
+            quality_flags: ["no_detection"],
+            review_required: true,
+          },
+        },
+      }),
   );
 
   await page.goto("/video-detection/VID-synthetic");
+
   await expect(
-    page.getByRole("button", { name: "Retry protected video" }),
+    page.getByText(
+      "The detector did not report exactly one face in any frame.",
+      {
+        exact: true,
+      },
+    ),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Retry protected video" }).click();
-  await expect(page.locator("video")).toHaveCount(1);
   await expect(
-    page.getByRole("button", { name: "Retry protected video" }),
-  ).toHaveCount(0);
-  expect(attempts).toBe(2);
+    page.getByText(
+      "OpenCV Haar reported exactly one face in 0% of frames. Full-frame blur was applied to every frame, independent of detection. This coverage signal does not guarantee anonymity.",
+      { exact: true },
+    ),
+  ).toBeVisible();
 });
 
 test("retries a transient ready-result failure without a reload", async ({
@@ -430,7 +449,7 @@ test("expired job removes playback and scores", async ({ page }) => {
   await page.goto("/video-detection/VID-synthetic");
   await expect(
     page.getByText(
-      "The retention period ended. Source video, the temporary model input, and retained review artifacts have been removed.",
+      "The retention period ended. Encrypted prediction data, source video, and the temporary model input have been removed.",
     ),
   ).toBeVisible();
   await expect(page.locator("video")).toHaveCount(0);

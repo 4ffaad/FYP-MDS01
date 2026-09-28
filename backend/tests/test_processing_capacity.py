@@ -33,6 +33,24 @@ class ProcessingCapacityTests(unittest.TestCase):
 
     def test_upload_is_rejected_before_session_creation_when_capacity_is_full(self) -> None:
         from backend.app.api.sessions import upload_session
+        from starlette.requests import Request
+
+        body_read = False
+
+        async def receive() -> dict:
+            nonlocal body_read
+            body_read = True
+            return {"type": "http.request", "body": b"zip", "more_body": False}
+
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/sessions/upload",
+                "headers": [(b"content-type", b"application/octet-stream")],
+            },
+            receive,
+        )
 
         with (
             patch("backend.app.api.sessions.processing_capacity.reserve", return_value=False),
@@ -40,25 +58,18 @@ class ProcessingCapacityTests(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as raised:
                 import asyncio
-                import io
-                from fastapi import UploadFile
-
-                asyncio.run(
-                    upload_session(
-                        BackgroundTasks(),
-                        UploadFile(filename="session.zip", file=io.BytesIO(b"zip")),
-                        "metadata-scrub",
-                    )
-                )
+                asyncio.run(upload_session(BackgroundTasks(), request))
 
         self.assertEqual(raised.exception.status_code, 503)
         create_session.assert_not_called()
+        self.assertFalse(body_read)
 
     def test_draft_finalize_releases_capacity_if_cleanup_fails_before_promotion(self) -> None:
         from backend.app.api.uploads import finalize_staged_upload
         from backend.app.services.storage_service import StorageError
 
         with (
+            patch("backend.app.api.uploads.get_session_by_upload_draft_id", return_value=None),
             patch("backend.app.api.uploads.processing_capacity.reserve", return_value=True),
             patch("backend.app.api.uploads.processing_capacity.release") as release,
             patch("backend.app.api.uploads.SessionStorage"),
@@ -81,6 +92,7 @@ class ProcessingCapacityTests(unittest.TestCase):
         from backend.app.services.storage_service import StorageError
 
         with (
+            patch("backend.app.api.uploads.get_session_by_upload_draft_id", return_value=None),
             patch("backend.app.api.uploads.processing_capacity.reserve", return_value=True),
             patch("backend.app.api.uploads.processing_capacity.release") as release,
             patch("backend.app.api.uploads.SessionStorage"),
@@ -96,6 +108,73 @@ class ProcessingCapacityTests(unittest.TestCase):
                 )
 
         self.assertEqual(raised.exception.status_code, 503)
+        release.assert_called_once_with()
+
+    def test_finalization_replay_returns_existing_session_without_queueing_again(self) -> None:
+        from backend.app.api.uploads import finalize_staged_upload
+        from backend.app.database.models.eeg import AnalysisStatus, EEGSession
+
+        session = EEGSession(
+            session_id="SES-REPLAY",
+            case_id="CASE-REPLAY",
+            original_path="/private/sessions/SES-REPLAY/archive.zip.enc",
+            status=AnalysisStatus.QUEUED,
+        )
+        tasks = BackgroundTasks()
+        with (
+            patch(
+                "backend.app.api.uploads.get_session_by_upload_draft_id",
+                return_value=session,
+            ),
+            patch("backend.app.api.uploads.processing_capacity.reserve") as reserve,
+        ):
+            response = finalize_staged_upload(
+                "UPL-REPLAY",
+                tasks,
+                db=MagicMock(),
+                current_user=None,
+            )
+
+        self.assertEqual(response["session_id"], session.session_id)
+        self.assertEqual(response["case_id"], session.case_id)
+        self.assertEqual(tasks.tasks, [])
+        reserve.assert_not_called()
+
+    def test_concurrent_finalization_replay_releases_reservation_without_requeue(self) -> None:
+        from backend.app.api.uploads import finalize_staged_upload
+        from backend.app.database.models.eeg import AnalysisStatus, EEGSession
+        from backend.app.services.session_service import DraftFinalizationResult
+
+        session = EEGSession(
+            session_id="SES-REPLAY-RACE",
+            case_id="CASE-REPLAY-RACE",
+            original_path="/private/sessions/SES-REPLAY-RACE/archive.zip.enc",
+            status=AnalysisStatus.QUEUED,
+        )
+        tasks = BackgroundTasks()
+        with (
+            patch(
+                "backend.app.api.uploads.get_session_by_upload_draft_id",
+                return_value=None,
+            ),
+            patch("backend.app.api.uploads.processing_capacity.reserve", return_value=True),
+            patch("backend.app.api.uploads.processing_capacity.release") as release,
+            patch("backend.app.api.uploads.SessionStorage"),
+            patch("backend.app.api.uploads.cleanup_expired_drafts"),
+            patch(
+                "backend.app.api.uploads.finalize_upload_draft",
+                return_value=DraftFinalizationResult(session, created=False),
+            ),
+        ):
+            response = finalize_staged_upload(
+                "UPL-REPLAY-RACE",
+                tasks,
+                db=MagicMock(),
+                current_user=None,
+            )
+
+        self.assertEqual(response["session_id"], session.session_id)
+        self.assertEqual(tasks.tasks, [])
         release.assert_called_once_with()
 
 

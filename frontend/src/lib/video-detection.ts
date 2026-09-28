@@ -1,4 +1,5 @@
-import { getBlob, getJson, uploadJson } from "./api";
+import { getJson, uploadBinary } from "./api";
+import { prepareVideoUploadFile } from "./safe-upload";
 
 export interface DetectionJob {
   job_id: string;
@@ -11,8 +12,6 @@ export interface DetectionJob {
   created_at: string;
   retention_expires_at: string;
   video_available: boolean;
-  visualization_available: boolean;
-  visualization_url: string | null;
   error: string | null;
 }
 
@@ -25,6 +24,7 @@ export interface DetectionResult {
     model_version: string;
     weights_hash: string;
     preprocessing_version: string;
+    contract_version?: string;
     threshold: number;
     sample_fps: number;
     window_frames: number;
@@ -83,53 +83,63 @@ export interface DetectionResult {
     model_input: "full-frame-blurred video";
     pose_model_input?: string;
     model_input_adaptation?: "none" | "letterbox";
+    adaptation_experimental?: boolean;
     source_resolution?: [number, number];
     model_resolution?: [number, number];
-    source_timestamp_offset_seconds?: number;
+    model_input_padding_ltrb?: [number, number, number, number];
     face_detection_coverage: number;
     quality_flags: string[];
     review_required: boolean;
     audio_policy?: string;
-    visualization?: {
-      retained: string;
-      audio_included: false;
-      method: string;
-    };
   };
-  visualization?: {
-    available: boolean;
-    media_type: "video/mp4";
-    audio_included: false;
-    privacy_method: string;
-    overlay: {
-      skeleton: boolean;
-      model_score: boolean;
-      event_markers: boolean;
-    };
-    frontend_overlay?: {
-      model_score: boolean;
-      event_markers: boolean;
-    };
-    frame_count?: number;
-    fps?: number;
-    width?: number;
-    height?: number;
-    duration_seconds?: number;
-  };
+}
+
+export interface VideoPreflightResult {
+  accepted: boolean;
+  width: number | null;
+  height: number | null;
+  required_width: 1920;
+  required_height: 1080;
+  adaptation?: "none" | "letterbox";
+  experimental?: boolean;
+  fps?: number;
+  duration_seconds?: number;
+  message: string;
+}
+
+export function preflightDetection(
+  file: File,
+  progress: (value: number) => void,
+  signal?: AbortSignal,
+) {
+  const safeName = prepareVideoUploadFile(file);
+  const extension = safeName.name.split(".").pop() ?? "";
+  return uploadBinary<VideoPreflightResult>(
+    "/api/video-detection/preflight",
+    safeName,
+    progress,
+    signal,
+    { "X-Video-Format": extension },
+  );
 }
 
 export async function uploadDetection(
   file: File,
   progress: (value: number) => void,
   caseId?: string,
+  signal?: AbortSignal,
 ) {
-  const data = new FormData();
-  data.append("video", file);
-  if (caseId) data.append("case_id", caseId);
-  return uploadJson<{ job: DetectionJob }>(
+  const safeName = prepareVideoUploadFile(file);
+  const extension = safeName.name.split(".").pop() ?? "";
+  return uploadBinary<{ job: DetectionJob }>(
     "/api/video-detection/jobs",
-    data,
+    safeName,
     progress,
+    signal,
+    {
+      "X-Video-Format": extension,
+      ...(caseId ? { "X-Case-ID": caseId } : {}),
+    },
   );
 }
 
@@ -143,11 +153,5 @@ export const getDetection = (id: string, signal?: AbortSignal) =>
 export const getDetectionResults = (id: string, signal?: AbortSignal) =>
   getJson<DetectionResult>(
     `/api/video-detection/jobs/${encodeURIComponent(id)}/predictions`,
-    signal,
-  );
-
-export const getDetectionVisualization = (id: string, signal?: AbortSignal) =>
-  getBlob(
-    `/api/video-detection/jobs/${encodeURIComponent(id)}/visualization`,
     signal,
   );

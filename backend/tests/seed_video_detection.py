@@ -1,12 +1,11 @@
-"""Disposable Docker E2E fixture. No model predictions or patient media are used."""
+"""Disposable video-review fixture with encrypted scores only."""
 
 from datetime import timedelta
 import json
 import os
-from pathlib import Path
 import secrets
-import subprocess
 import sys
+
 from sqlmodel import Session, select
 
 from backend.app.database.db import engine
@@ -22,16 +21,44 @@ def seed(email: str) -> str:
         raise RuntimeError("Synthetic fixture requires APP_ENV=test")
     with Session(engine) as db:
         user = db.exec(select(User).where(User.email == email)).one()
-        job = VideoDetectionJob(owner_user_id=user.id, job_id="VID-" + secrets.token_hex(16).upper(), status="ready", current_stage="complete", duration_seconds=4, fps=30, retention_expires_at=utc_now() + timedelta(minutes=5))
+        if user.id is None:
+            raise RuntimeError("Synthetic test account has no database ID")
+        job = VideoDetectionJob(
+            owner_user_id=user.id,
+            job_id="VID-" + secrets.token_hex(16).upper(),
+            status="ready",
+            current_stage="complete",
+            duration_seconds=4,
+            fps=30,
+            retention_expires_at=utc_now() + timedelta(minutes=5),
+        )
         storage = VideoStorage()
-        video = storage.work_path(job.job_id, "synthetic.mp4")
-        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=4", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(video)], check=True)
-        job.visualization_path = str(storage.store_artifact(job.job_id, video, "video.visualization.mp4"))
         output = storage.work_path(job.job_id, "predictions.json")
-        metadata = {"model_name": "Synthetic test fixture", "model_version": "fixture-only", "weights_hash": "none", "preprocessing_version": "fixture-only", "threshold": 0.5, "sample_fps": 15, "window_frames": 30, "stride_frames": 15, "calibrated": False}
-        output.write_text(json.dumps(validate_predictions([{"start_time": 0, "end_time": 2, "raw_score": 0.2}, {"start_time": 1, "end_time": 3, "raw_score": 0.8}], 4, metadata)))
-        job.predictions_path = str(storage.store_artifact(job.job_id, output, "predictions.json"))
-        db.add(job); db.commit()
+        metadata = {
+            "model_name": "Synthetic test fixture",
+            "model_version": "fixture-only",
+            "weights_hash": "none",
+            "preprocessing_version": "fixture-only",
+            "threshold": 0.5,
+            "sample_fps": 15,
+            "window_frames": 30,
+            "stride_frames": 15,
+            "calibrated": False,
+        }
+        predictions = validate_predictions(
+            [
+                {"start_time": 0, "end_time": 2, "raw_score": 0.2},
+                {"start_time": 1, "end_time": 3, "raw_score": 0.8},
+            ],
+            4,
+            metadata,
+        )
+        output.write_text(json.dumps(predictions, allow_nan=False))
+        job.predictions_path = str(
+            storage.store_artifact(job.job_id, output, "predictions.json")
+        )
+        db.add(job)
+        db.commit()
         return job.job_id
 
 

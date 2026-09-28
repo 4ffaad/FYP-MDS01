@@ -1,0 +1,10 @@
+{
+  "name": "mds01-local-demo",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs"
+  }
+}

@@ -30,7 +30,9 @@ def get_upload_draft(
     """Find one staged upload by its opaque draft identifier."""
 
     statement = select(UploadDraft).where(UploadDraft.draft_id == draft_id)
-    if owner_user_id is not None:
+    if owner_user_id is None:
+        statement = statement.where(UploadDraft.owner_user_id == None)  # noqa: E711
+    else:
         statement = statement.where(UploadDraft.owner_user_id == owner_user_id)
     if for_update:
         statement = statement.with_for_update()
@@ -63,12 +65,32 @@ def get_video_job(db: Session, job_id: str, owner_user_id: int | None = None) ->
     return db.exec(statement).first()
 
 
-def list_video_jobs(db: Session, owner_user_id: int | None = None) -> list[VideoPrivacyJob]:
+def get_video_job_by_idempotency_hash(
+    db: Session,
+    owner_user_id: int,
+    idempotency_key_hash: str,
+) -> VideoPrivacyJob | None:
+    """Find an idempotent replay without crossing owner boundaries."""
+
+    statement = select(VideoPrivacyJob).where(
+        VideoPrivacyJob.owner_user_id == owner_user_id,
+        VideoPrivacyJob.idempotency_key_hash == idempotency_key_hash,
+    )
+    return db.exec(statement).first()
+
+
+def list_video_jobs(
+    db: Session,
+    owner_user_id: int | None = None,
+    case_id: str | None = None,
+) -> list[VideoPrivacyJob]:
     """Return video jobs in newest-first order."""
 
     statement = select(VideoPrivacyJob).order_by(VideoPrivacyJob.created_at.desc())
     if owner_user_id is not None:
         statement = statement.where(VideoPrivacyJob.owner_user_id == owner_user_id)
+    if case_id is not None:
+        statement = statement.where(VideoPrivacyJob.case_id == case_id)
     return list(db.exec(statement).all())
 
 
@@ -131,6 +153,21 @@ def get_session_by_public_id(db: Session, session_id: str, owner_user_id: int | 
 
     statement = select(EEGSession).where(EEGSession.session_id == session_id)
     if owner_user_id is not None:
+        statement = statement.where(EEGSession.owner_user_id == owner_user_id)
+    return db.exec(statement).first()
+
+
+def get_session_by_upload_draft_id(
+    db: Session,
+    draft_id: str,
+    owner_user_id: int | None,
+) -> EEGSession | None:
+    """Find the session finalized from one draft, scoped to its exact owner."""
+
+    statement = select(EEGSession).where(EEGSession.upload_draft_id == draft_id)
+    if owner_user_id is None:
+        statement = statement.where(EEGSession.owner_user_id == None)  # noqa: E711
+    else:
         statement = statement.where(EEGSession.owner_user_id == owner_user_id)
     return db.exec(statement).first()
 
@@ -206,6 +243,7 @@ def list_predictions_for_processing(db: Session, recording_db_id: int) -> list[P
         select(Prediction)
         .where(Prediction.recording_db_id == recording_db_id)
         .order_by(Prediction.window_index)
+        .with_for_update()
     )
     return list(db.exec(statement).all())
 

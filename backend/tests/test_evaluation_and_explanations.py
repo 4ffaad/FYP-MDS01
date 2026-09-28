@@ -16,6 +16,7 @@ from backend.app.research.evaluation import EvaluationRecording
 from backend.app.research.evaluation import _safe_reason, build_metrics_report, split_subjects
 from backend.app.research.calibration import fit_temperature, temperature_scale
 from backend.app.services.processing_service import _shap_background_for_profile
+from backend.app.services.explanation_service import build_score_summary
 from backend.scripts.create_shap_background import (
     _choose_background,
     _collect_candidates,
@@ -230,3 +231,24 @@ class EvaluationAndExplanationTests(unittest.TestCase):
         self.assertNotEqual(metadata_path, obfuscated_path)
         self.assertIn("metadata", metadata_path.name)
         self.assertIn("obfuscated", obfuscated_path.name)
+
+    def test_uncalibrated_explanation_uses_score_language(self) -> None:
+        payload = build_score_summary(
+            record_id="REC-SYNTHETIC",
+            prediction=WindowPrediction(
+                0,
+                0.0,
+                4.0,
+                0.7,
+                True,
+                score_type="uncalibrated_probability",
+                raw_score=0.7,
+            ),
+            model_name="synthetic-model",
+            model_version="test",
+        )
+
+        self.assertEqual(payload["score"], 0.7)
+        self.assertEqual(payload["score_type"], "uncalibrated_model_score")
+        self.assertNotIn("probability", payload)
+        self.assertFalse(payload["is_clinical"])

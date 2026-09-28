@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pyedflib
 
+from backend.app.eeg.contracts import EEGInputContractError
+from backend.app.eeg.edf_io import reject_discontinuous_edf, validated_edf_sampling_rate
 from backend.app.eeg.io import validate_legacy_nicolet_e, validate_nicolet
 
 
@@ -70,16 +72,17 @@ def validate_edf(path: Path) -> dict:
 
     reader = None
     try:
+        reject_discontinuous_edf(path)
         reader = pyedflib.EdfReader(str(path))
         labels = reader.getSignalLabels()
         frequencies = reader.getSampleFrequencies()
         sample_counts = reader.getNSamples()
         if not labels or not len(frequencies) or not len(sample_counts):
             raise ValidationError("EDF file does not contain EEG signal data.")
-        if len(set(frequencies.tolist())) != 1 or len(set(sample_counts.tolist())) != 1:
-            raise ValidationError("EDF channels must use one sampling rate and sample count.")
-        sampling_rate = int(frequencies[0])
-        if sampling_rate <= 0 or int(sample_counts[0]) <= 0:
+        sampling_rate = validated_edf_sampling_rate(frequencies)
+        if len(set(sample_counts.tolist())) != 1:
+            raise ValidationError("EDF channels must use one sample count.")
+        if int(sample_counts[0]) <= 0:
             raise ValidationError("EDF sampling information is invalid.")
         return {
             "duration_seconds": float(reader.getFileDuration()),
@@ -89,6 +92,8 @@ def validate_edf(path: Path) -> dict:
         }
     except ValidationError:
         raise
+    except EEGInputContractError as exc:
+        raise ValidationError(str(exc)) from exc
     except Exception as exc:
         raise ValidationError("EDF file is unreadable or malformed.") from exc
     finally:

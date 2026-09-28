@@ -6,14 +6,11 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from backend.app.core.config import MAX_UPLOAD_BYTES, MAX_VIDEO_UPLOAD_BYTES
+from backend.app.core.stream_upload import RequestBodyTooLarge
 
 
 REQUEST_BODY_OVERHEAD_BYTES = 1024 * 1024
 _AUTH_BODY_LIMIT_BYTES = 1024 * 1024
-
-
-class _RequestBodyTooLarge(Exception):
-    """Raised when a streamed request exceeds its route-specific limit."""
 
 
 class RequestBodyLimitMiddleware:
@@ -32,8 +29,12 @@ class RequestBodyLimitMiddleware:
         path = scope.get("path", "")
         if path in {"/api/sessions/upload", "/api/uploads/drafts"}:
             return MAX_UPLOAD_BYTES + REQUEST_BODY_OVERHEAD_BYTES
-        if path in {"/api/video-detection/jobs", "/api/video-privacy/jobs"}:
-            return MAX_VIDEO_UPLOAD_BYTES + REQUEST_BODY_OVERHEAD_BYTES
+        if path in {
+            "/api/video-detection/jobs",
+            "/api/video-detection/preflight",
+            "/api/video-privacy/jobs",
+        }:
+            return MAX_VIDEO_UPLOAD_BYTES
         if path in {"/api/auth/register", "/api/auth/login"}:
             return _AUTH_BODY_LIMIT_BYTES
         return None
@@ -75,12 +76,12 @@ class RequestBodyLimitMiddleware:
             if message.get("type") == "http.request":
                 received += len(message.get("body", b""))
                 if received > limit:
-                    raise _RequestBodyTooLarge
+                    raise RequestBodyTooLarge
             return message
 
         try:
             await self.app(scope, limited_receive, send)
-        except _RequestBodyTooLarge:
+        except RequestBodyTooLarge:
             await JSONResponse(
                 {"detail": "Request body exceeds the configured upload limit."},
                 status_code=413,

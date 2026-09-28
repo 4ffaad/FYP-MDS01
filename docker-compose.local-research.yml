@@ -1,0 +1,32 @@
+services:
+  backend:
+    profiles:
+      - local-research
+    build:
+      args:
+        INSTALL_RESEARCH: "true"
+    environment:
+      APP_ENV: development
+      AUTH_MODE: local-accounts
+      MODEL_RUNTIME: h5
+      MDS01_LOCAL_RESEARCH_PROFILE: "true"
+      H5_MODEL_PATH: /opt/eeg-model/best_seizure_model.h5
+      H5_CONTRACT_PATH: /opt/eeg-model/model-contract.json
+      H5_CONTRACT_SHA256: 0ef14f28af0232fc5521015534813b750e733bd3749a19323e2f8b85ed7d4b34
+      VSVIG_ALLOW_LETTERBOX_ADAPTATION: ${VSVIG_ALLOW_LETTERBOX_ADAPTATION:-true}
+    volumes:
+      - type: volume
+        source: local_h5_mountpoints
+        target: /opt/eeg-model
+        read_only: true
+      - type: bind
+        source: ./backend/model/best_seizure_model.h5
+        target: /opt/eeg-model/best_seizure_model.h5
+        read_only: true
+      - type: bind
+        source: ./backend/model/model-contract.json
+        target: /opt/eeg-model/model-contract.json
+        read_only: true
+
+volumes:
+  local_h5_mountpoints:

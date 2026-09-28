@@ -1,7 +1,33 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
-import { startDemo, waitForHttp } from "./demo.mjs";
+import { parseDemoOptions, startDemo, waitForHttp } from "./demo.mjs";
+
+test("the local demo defaults to H5 and keeps the development stub opt-in", () => {
+  assert.deepEqual(parseDemoOptions([]), { researchH5: true });
+  assert.deepEqual(parseDemoOptions(["--research-h5"]), { researchH5: true });
+  assert.deepEqual(parseDemoOptions(["--development-stub"]), {
+    researchH5: false,
+  });
+  assert.throws(
+    () => parseDemoOptions(["--research-h5", "--development-stub"]),
+    /cannot be combined/,
+  );
+});
+
+test("the default H5 launcher fails closed before setup if its local assets are absent", async () => {
+  const commands = [];
+  await assert.rejects(
+    startDemo({
+      root: "/project",
+      run: (...args) => commands.push(args),
+      hasResearchH5Assets: () => false,
+      initializeConfig: () => [],
+    }),
+    /exact ignored model artifact and reviewed contract/,
+  );
+  assert.deepEqual(commands, []);
+});
 
 test("demo setup prepares config, installs missing frontend packages, starts Docker, and waits before UI", async () => {
   const events = [];
@@ -9,6 +35,7 @@ test("demo setup prepares config, installs missing frontend packages, starts Doc
   await startDemo({
     root: "/project",
     platform: "linux",
+    researchH5: false,
     run: (command, args, options) => {
       events.push(["run", command, args, options.cwd]);
     },
@@ -33,7 +60,12 @@ test("demo setup prepares config, installs missing frontend packages, starts Doc
       ["run", "docker", ["compose", "version"], "/project"],
       ["setup"],
       ["run", "npm", ["ci"], "/project/frontend"],
-      ["run", "docker", ["compose", "up", "-d", "--build"], "/project"],
+      [
+        "run",
+        "docker",
+        ["compose", "-f", "docker-compose.yml", "up", "-d", "--build"],
+        "/project",
+      ],
       ["backend-ready"],
       ["frontend-start", "/project/frontend"],
       ["frontend-ready", true],
@@ -41,11 +73,96 @@ test("demo setup prepares config, installs missing frontend packages, starts Doc
   );
 });
 
+test("development stub overrides inherited MODEL_RUNTIME only for the Compose child", async () => {
+  const inheritedRuntime = process.env.MODEL_RUNTIME;
+  let composeOptions;
+  process.env.MODEL_RUNTIME = "h5";
+  try {
+    await startDemo({
+      root: "/project",
+      platform: "linux",
+      researchH5: false,
+      run: (command, args, options) => {
+        if (command === "docker" && args.includes("up")) {
+          composeOptions = options;
+        }
+      },
+      initializeConfig: () => [],
+      hasFrontendDependencies: () => true,
+      waitForBackend: async () => {},
+      launchFrontend: () => ({ exitCode: null }),
+      waitForFrontend: async () => {},
+      logger: () => {},
+    });
+
+    assert.equal(composeOptions?.env?.MODEL_RUNTIME, "stub");
+    assert.equal(process.env.MODEL_RUNTIME, "h5");
+  } finally {
+    if (inheritedRuntime === undefined) {
+      delete process.env.MODEL_RUNTIME;
+    } else {
+      process.env.MODEL_RUNTIME = inheritedRuntime;
+    }
+  }
+});
+
+test("the default H5 candidate runs through the local research overlay", async () => {
+  const commands = [];
+  const messages = [];
+  await startDemo({
+    root: "/project",
+    platform: "linux",
+    run: (command, args) => commands.push([command, args]),
+    initializeConfig: () => [],
+    hasResearchH5Assets: () => true,
+    hasFrontendDependencies: () => true,
+    waitForBackend: async () => {},
+    launchFrontend: () => ({ exitCode: null }),
+    waitForFrontend: async () => {},
+    logger: (message) => messages.push(message),
+  });
+
+  assert.deepEqual(commands[1], [
+    "docker",
+    [
+      "compose",
+      "--profile",
+      "local-research",
+      "-f",
+      "docker-compose.yml",
+      "-f",
+      "docker-compose.local-research.yml",
+      "up",
+      "-d",
+      "--build",
+    ],
+  ]);
+  assert.ok(
+    messages.some((message) => /uncalibrated and non-diagnostic/.test(message)),
+  );
+});
+
+test("the H5 research launcher fails closed when the exact local assets are absent", async () => {
+  const commands = [];
+  await assert.rejects(
+    startDemo({
+      root: "/project",
+      researchH5: true,
+      run: (...args) => commands.push(args),
+      hasResearchH5Assets: () => false,
+      initializeConfig: () => [],
+    }),
+    /exact ignored model artifact and reviewed contract/,
+  );
+  assert.deepEqual(commands, []);
+});
+
 test("demo setup does not reinstall frontend dependencies already present", async () => {
   const commands = [];
   await startDemo({
     root: "/project",
     platform: "linux",
+    researchH5: false,
     run: (command, args) => commands.push([command, args]),
     initializeConfig: () => [],
     hasFrontendDependencies: () => true,
@@ -67,9 +184,10 @@ test("demo startup stops on Docker failure instead of leaving a frontend-only de
     startDemo({
       root: "/project",
       platform: "linux",
+      researchH5: false,
       run: (command, args) => {
         events.push([command, args]);
-        if (args[0] === "compose" && args[1] === "up") {
+        if (args[0] === "compose" && args.includes("up")) {
           throw new Error("compose failed");
         }
       },
@@ -122,6 +240,7 @@ test("demo process preserves a nonzero frontend exit status", async () => {
     await startDemo({
       root: "/project",
       platform: "linux",
+      researchH5: false,
       run: () => {},
       initializeConfig: () => [],
       hasFrontendDependencies: () => true,

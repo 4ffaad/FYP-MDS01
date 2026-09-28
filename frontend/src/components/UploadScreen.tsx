@@ -226,6 +226,27 @@ export function UploadScreen() {
             </p>
           </div>
 
+          <div className="panel mt-7 flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+            <div>
+              <p className="eyebrow">Local research/demo workflow</p>
+              <p className="mt-2 text-sm font-bold text-ink">
+                Have one patient folder with a report, EEG, and video
+                candidates?
+              </p>
+              <p className="mt-1 text-xs leading-5 text-ink-muted">
+                Review the two approved identity fields and configure both
+                modalities together. Video/EEG timing is never inferred.
+              </p>
+            </div>
+            <Link
+              href="/patient-intake"
+              className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-ink px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-ink/90"
+            >
+              Open one-patient intake
+              <Icon name="arrow" className="size-4" />
+            </Link>
+          </div>
+
           <div className="mt-10 grid gap-5 lg:grid-cols-2">
             <ModalityPicker
               id="eeg-file"
@@ -249,7 +270,7 @@ export function UploadScreen() {
               id="video-file"
               title="Video"
               eyebrow="Optional"
-              description="An AVI, MP4, MOV, or WebM clip. The pinned contract requires 1920×1080 by default; explicitly approved smaller inputs are letterboxed before full-frame-blurred frames feed both models."
+              description="An AVI, MP4, MOV, or WebM clip. Native 1920×1080 is the default; smaller inputs need the operator-enabled experimental letterbox option."
               accept=".avi,.mp4,.mov,.webm,video/x-msvideo,video/mp4,video/quicktime,video/webm"
               icon="video"
               busy={step === "staging"}
@@ -572,10 +593,10 @@ function AdditionalPicker({
         Optional
       </span>
       <span id={`${id}-help`} className="sr-only">
-        Optional video upload. AVI, MP4, MOV, and WebM are accepted. The pinned
-        contract requires 1920×1080 by default; approved smaller inputs are
-        letterboxed. The protected visual path excludes audio from model input
-        and retained outputs.
+        Optional video upload. AVI, MP4, MOV, and WebM are accepted. Video
+        detection uses native 1920×1080 by default; smaller inputs need the
+        operator-enabled experimental letterbox option. The protected visual
+        path excludes audio from model input and retained outputs.
       </span>
       <input
         ref={inputRef}

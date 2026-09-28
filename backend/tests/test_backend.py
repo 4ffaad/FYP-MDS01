@@ -23,7 +23,7 @@ from fastapi import BackgroundTasks, UploadFile
 from fastapi import HTTPException
 from sqlalchemy import String
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from backend.app.main import app
 from backend.app.database.models.eeg import (
@@ -51,7 +51,7 @@ from backend.app.database.repository import (
 )
 from backend.app.eeg.edf_io import read_uniform_edf
 from backend.app.eeg.preprocessing import EEGPreprocessor
-from backend.app.eeg.model_input import MODEL_CHANNELS, prepare_model_windows
+from backend.app.eeg.model_input import MODEL_CHANNELS, prepare_model_windows, preprocess_eeg
 from backend.app.ml.stub_inference import StubInferenceService
 from backend.app.ml.interface import WindowPrediction, score_crossed_threshold
 from backend.app.privacy.deidentify import deidentify_edf, generate_record_id, inspect_metadata, scrub_signal_header
@@ -74,6 +74,33 @@ from backend.app.services.validation_service import ValidationError, validate_ed
 class BackendTests(unittest.TestCase):
     storage_key = b"s" * 32
 
+    def _raw_upload_request(self, body: bytes = b"zip", headers: dict[str, str] | None = None):
+        from starlette.requests import Request
+
+        request_headers = {"content-type": "application/octet-stream", **(headers or {})}
+        scope = {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/sessions/upload",
+            "raw_path": b"/api/sessions/upload",
+            "query_string": b"",
+            "headers": [(key.lower().encode(), value.encode()) for key, value in request_headers.items()],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+        }
+        consumed = False
+
+        async def receive():
+            nonlocal consumed
+            if consumed:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            consumed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        return Request(scope, receive)
+
     def _store_archive(self, storage: SessionStorage, session_id: str, archive: Path) -> Path:
         """Store a local ZIP through the same encrypted upload path as the API."""
 
@@ -87,6 +114,7 @@ class BackendTests(unittest.TestCase):
         sample_count: int = 512,
         physical_min: float = -1000,
         physical_max: float = 1000,
+        dimension: str = "uV",
     ) -> np.ndarray:
         samples = np.asarray(
             [np.arange(sample_count, dtype=np.int32) - sample_count // 2 + index for index in range(len(labels))]
@@ -94,7 +122,7 @@ class BackendTests(unittest.TestCase):
         headers = [
             {
                 "label": label,
-                "dimension": "uV",
+                "dimension": dimension,
                 "sample_frequency": 256,
                 "physical_min": physical_min,
                 "physical_max": physical_max,
@@ -130,8 +158,12 @@ class BackendTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, output = root / "source.edf", root / "anonymous.edf"
-            original = self._create_source_edf(source)
+            original = self._create_source_edf(source, MODEL_CHANNELS)
             anonymous_id = generate_record_id()
+            source_metadata = inspect_metadata(str(source))
+            self.assertTrue(source_metadata["potential_identifiers_present"]["sex"])
+            self.assertTrue(source_metadata["potential_identifiers_present"]["recording_datetime"])
+            self.assertNotIn("Jane Doe", str(source_metadata))
             with warnings.catch_warnings(record=True) as captured:
                 warnings.simplefilter("always")
                 deidentify_edf(source, output, anonymous_id)
@@ -142,15 +174,17 @@ class BackendTests(unittest.TestCase):
             self.assertTrue(output.exists())
             reader = pyedflib.EdfReader(str(output))
             try:
-                copied = np.asarray([reader.readSignal(i, digital=True) for i in range(2)])
+                copied = np.asarray([reader.readSignal(i, digital=True) for i in range(len(MODEL_CHANNELS))])
                 self.assertTrue(np.array_equal(copied, original))
-                self.assertEqual(reader.getSignalLabels(), ["FP1-F7", "F7-T7"])
-                self.assertEqual(reader.getSampleFrequencies().tolist(), [256.0, 256.0])
+                self.assertEqual(reader.getSignalLabels(), list(MODEL_CHANNELS))
+                self.assertEqual(reader.getSampleFrequencies().tolist(), [256.0] * len(MODEL_CHANNELS))
                 self.assertIn(reader.getPatientName(), {"", "X"})
                 self.assertEqual(reader.getPatientCode(), "")
                 self.assertEqual(reader.getTechnician(), "")
                 self.assertEqual(reader.getEquipment(), "")
                 self.assertEqual(reader.getBirthdate(), "")
+                self.assertIn(reader.getSex(), {"", "X"})
+                self.assertEqual(reader.getStartdatetime(), datetime(1970, 1, 1))
                 onsets, durations, descriptions = reader.readAnnotations()
                 self.assertEqual(onsets.tolist(), [1.0])
                 self.assertEqual(durations.tolist(), [2.0])
@@ -159,8 +193,67 @@ class BackendTests(unittest.TestCase):
                 reader.close()
 
             metadata = inspect_metadata(output)
-            self.assertEqual(metadata["technical"]["number_of_channels"], 2)
+            self.assertEqual(metadata["technical"]["number_of_channels"], len(MODEL_CHANNELS))
             self.assertFalse(any(metadata["potential_identifiers_present"].values()))
+
+    def test_deidentification_drops_unreviewed_channel_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source.edf", root / "anonymous.edf"
+            labels = (*MODEL_CHANNELS, "CANARY_PATIENT")
+            original = self._create_source_edf(source, labels)
+            source_metadata = inspect_metadata(source)
+            self.assertTrue(source_metadata["potential_identifiers_present"]["non_model_channel_labels"])
+            self.assertEqual(source_metadata["technical"]["channel_labels"][-1], "<redacted>")
+            self.assertNotIn("CANARY_PATIENT", str(source_metadata))
+
+            deidentify_edf(source, output, "REC-CANARY")
+
+            reader = pyedflib.EdfReader(str(output))
+            try:
+                self.assertEqual(reader.getSignalLabels(), list(MODEL_CHANNELS))
+                copied = np.asarray(
+                    [reader.readSignal(i, digital=True) for i in range(len(MODEL_CHANNELS))]
+                )
+            finally:
+                reader.close()
+            np.testing.assert_array_equal(copied, original[:-1])
+            self.assertNotIn("CANARY_PATIENT", output.read_bytes().decode("latin-1"))
+
+    def test_deidentification_removes_unreviewed_signal_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source.edf", root / "anonymous.edf"
+            original = self._create_source_edf(
+                source,
+                MODEL_CHANNELS,
+                dimension="CANARY_PATIENT",
+            )
+
+            deidentify_edf(source, output, "REC-CANARY")
+
+            reader = pyedflib.EdfReader(str(output))
+            try:
+                headers = reader.getSignalHeaders()
+                copied = np.asarray(
+                    [reader.readSignal(i, digital=True) for i in range(len(MODEL_CHANNELS))]
+                )
+            finally:
+                reader.close()
+            np.testing.assert_array_equal(copied, original)
+            self.assertTrue(all(header["dimension"] == "" for header in headers))
+            self.assertNotIn("CANARY_PATIENT", output.read_bytes().decode("latin-1"))
+
+    def test_deidentification_rejects_recordings_without_full_model_montage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source.edf", root / "anonymous.edf"
+            self._create_source_edf(source)
+
+            with self.assertRaisesRegex(ValueError, "reviewed 18-channel montage"):
+                deidentify_edf(source, output, "REC-INCOMPLETE")
+
+            self.assertFalse(output.exists())
 
     def test_scrubbed_edf_is_warning_free_and_model_preprocessing_compatible(self) -> None:
         """Scrubbing keeps digital samples and the model tensor within tolerance."""
@@ -285,6 +378,61 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(windows[0, 0, 0], signals[0, 0])
         self.assertEqual(windows[1, 0, 17], signals[17, 512])
 
+    def test_model_windows_do_not_cross_discontinuous_segments(self) -> None:
+        first = np.ones((len(MODEL_CHANNELS), 1536), dtype=np.float32)
+        second = np.full((len(MODEL_CHANNELS), 1536), 2.0, dtype=np.float32)
+        signals = np.concatenate((first, second), axis=1)
+        segments = [(0, 1536, 0.0), (1536, 1536, 60.0)]
+
+        windows, starts, discarded = prepare_model_windows(
+            signals,
+            256,
+            list(MODEL_CHANNELS),
+            segments=segments,
+        )
+
+        self.assertEqual(windows.shape, (4, 1024, len(MODEL_CHANNELS)))
+        self.assertEqual(starts.tolist(), [0.0, 2.0, 60.0, 62.0])
+        self.assertEqual(discarded, 0)
+        self.assertTrue(np.all(windows[:2] == 1.0))
+        self.assertTrue(np.all(windows[2:] == 2.0))
+
+    def test_segmented_preprocessing_filters_each_segment_independently(self) -> None:
+        signals = np.tile(
+            np.sin(np.arange(2048, dtype=np.float64) / 20),
+            (len(MODEL_CHANNELS), 1),
+        )
+        segments = [(0, 1024, 0.0), (1024, 1024, 20.0)]
+
+        with (
+            patch(
+                "backend.app.eeg.model_input.read_uniform_eeg",
+                return_value=(signals, 256, list(MODEL_CHANNELS)),
+            ),
+            patch.object(
+                EEGPreprocessor,
+                "bandpass_filter",
+                autospec=True,
+                side_effect=lambda _self, data, order=4: data,
+            ) as bandpass,
+            patch.object(
+                EEGPreprocessor,
+                "notch_filter",
+                autospec=True,
+                side_effect=lambda _self, data, Q=30: data,
+            ) as notch,
+        ):
+            windows, starts, details = preprocess_eeg(
+                "synthetic.edf",
+                segments=segments,
+            )
+
+        self.assertEqual(windows.shape, (2, 1024, len(MODEL_CHANNELS)))
+        self.assertEqual(starts.tolist(), [0.0, 20.0])
+        self.assertEqual(details["model_segment_count"], 2)
+        self.assertEqual([call.args[1].shape for call in bandpass.call_args_list], [(18, 1024)] * 2)
+        self.assertEqual([call.args[1].shape for call in notch.call_args_list], [(18, 1024)] * 2)
+
     def test_model_windows_reject_ambiguous_channel_sets(self) -> None:
         """The model must not silently select duplicate or extra EDF channels."""
         duplicate_labels = list(MODEL_CHANNELS[:-1]) + [MODEL_CHANNELS[0], MODEL_CHANNELS[-1]]
@@ -381,6 +529,129 @@ class BackendTests(unittest.TestCase):
                     with self.assertRaisesRegex(H5ModelError, "independent hash"):
                         H5InferenceService(Path(directory) / "model.h5", contract_path)
 
+    def test_h5_runtime_rejects_contract_without_explicit_channel_order(self) -> None:
+        from backend.app.ml import h5_inference
+        from backend.app.ml.h5_inference import H5InferenceService, H5ModelError
+
+        with tempfile.TemporaryDirectory() as directory:
+            contract_path = Path(directory) / "model-contract.json"
+            contract_path.write_text(
+                '{"reviewed":true,"input_shape":[1024,18],"input_dtype":"float32"}',
+                encoding="utf-8",
+            )
+            with (
+                patch.object(h5_inference, "H5_CONTRACT_SHA256", "a" * 64),
+                patch.object(h5_inference, "_sha256_file", return_value="a" * 64),
+                patch.dict(sys.modules, {"tensorflow": types.ModuleType("tensorflow")}),
+                self.assertRaisesRegex(H5ModelError, "channel order"),
+            ):
+                H5InferenceService(Path(directory) / "model.h5", contract_path)
+
+    def _load_h5_service_for_contract_test(
+        self,
+        contract: dict,
+        *,
+        input_shape: tuple = (None, 1024, 18),
+        output_shape: tuple = (None, 1),
+    ):
+        from backend.app.ml import h5_inference
+        from backend.app.ml.h5_inference import H5InferenceService
+
+        model = MagicMock()
+        model.input_shape = input_shape
+        model.output_shape = output_shape
+        model.inputs = [types.SimpleNamespace(dtype="float32")]
+        model.outputs = [types.SimpleNamespace(dtype="float32")]
+        model.layers = [
+            types.SimpleNamespace(
+                activation=types.SimpleNamespace(__name__="sigmoid")
+            )
+        ]
+        tensorflow = types.ModuleType("tensorflow")
+        setattr(
+            tensorflow,
+            "keras",
+            types.SimpleNamespace(
+                models=types.SimpleNamespace(load_model=MagicMock(return_value=model))
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            contract_path = root / "model-contract.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            with (
+                patch.object(h5_inference, "H5_CONTRACT_SHA256", "c" * 64),
+                patch.object(h5_inference, "_sha256_file", return_value="c" * 64),
+                patch.object(h5_inference, "h5_custom_objects", return_value={}),
+                patch.dict(sys.modules, {"tensorflow": tensorflow}),
+            ):
+                return H5InferenceService(root / "model.h5", contract_path)
+
+    def _valid_h5_contract_for_test(self) -> dict:
+        return {
+            "reviewed": True,
+            "input_shape": [1024, 18],
+            "input_dtype": "float32",
+            "channel_order": list(MODEL_CHANNELS),
+            "sampling_rate": 256,
+            "window_seconds": 4,
+            "window_stride_seconds": 2,
+            "output_semantics": "seizure-probability",
+            "output_shape": [1],
+            "output_dtype": "float32",
+            "last_layer_activation": "sigmoid",
+            "artifact_sha256": "c" * 64,
+            "training_preprocessing": "synthetic test fixture",
+            "threshold": 0.5,
+            "score_type": "uncalibrated_probability",
+        }
+
+    def test_h5_runtime_rejects_missing_reviewed_input_contract_fields(self) -> None:
+        from backend.app.ml.h5_inference import H5ModelError
+
+        for field in (
+            "input_dtype",
+            "sampling_rate",
+            "window_seconds",
+            "window_stride_seconds",
+        ):
+            contract = self._valid_h5_contract_for_test()
+            contract.pop(field)
+            with self.subTest(field=field), self.assertRaises(H5ModelError):
+                self._load_h5_service_for_contract_test(contract)
+
+    def test_h5_runtime_rejects_fixed_model_batch_dimensions(self) -> None:
+        from backend.app.ml.h5_inference import H5ModelError
+
+        with self.assertRaises(H5ModelError):
+            self._load_h5_service_for_contract_test(
+                self._valid_h5_contract_for_test(),
+                input_shape=(1, 1024, 18),
+                output_shape=(1, 1),
+            )
+
+    def test_h5_runtime_rejects_incorrect_contract_field_types(self) -> None:
+        from backend.app.ml.h5_inference import H5ModelError
+
+        invalid_fields = {
+            "input_dtype": ["float32"],
+            "sampling_rate": 256.0,
+            "window_seconds": 4.0,
+            "window_stride_seconds": "2",
+        }
+        for field, value in invalid_fields.items():
+            contract = self._valid_h5_contract_for_test()
+            contract[field] = value
+            with self.subTest(field=field), self.assertRaises(H5ModelError):
+                self._load_h5_service_for_contract_test(contract)
+
+    def test_h5_runtime_accepts_reviewed_dynamic_batch_contract(self) -> None:
+        service = self._load_h5_service_for_contract_test(
+            self._valid_h5_contract_for_test()
+        )
+
+        self.assertEqual(service.threshold, 0.5)
+
     def test_storage_rejects_archive_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             storage = SessionStorage(Path(directory) / "sessions")
@@ -444,7 +715,8 @@ class BackendTests(unittest.TestCase):
                 self.assertNotIn(payload, encrypted_path.read_bytes())
                 self.assertIsNotNone(get_upload_draft(db, draft.draft_id))
 
-                session = finalize_upload_draft(db, storage, draft.draft_id, "metadata-scrub")
+                finalization = finalize_upload_draft(db, storage, draft.draft_id, "metadata-scrub")
+                session = finalization.session
 
                 self.assertTrue(Path(session.original_path).exists())
                 self.assertIsNone(get_upload_draft(db, draft.draft_id))
@@ -499,6 +771,40 @@ class BackendTests(unittest.TestCase):
                     db.delete(draft)
                 db.commit()
 
+    def test_finalization_retry_returns_the_same_owner_scoped_session(self) -> None:
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with tempfile.TemporaryDirectory() as directory, Session(engine) as db:
+            storage = SessionStorage(Path(directory) / "sessions", self.storage_key)
+            draft = asyncio.run(
+                create_upload_draft(
+                    db,
+                    storage,
+                    UploadFile(filename="recordings.zip", file=io.BytesIO(b"synthetic")),
+                    datetime.now(timezone.utc) + timedelta(minutes=30),
+                    owner_user_id=42,
+                )
+            )
+
+            first = finalize_upload_draft(
+                db, storage, draft.draft_id, owner_user_id=42
+            )
+            retry = finalize_upload_draft(
+                db, storage, draft.draft_id, owner_user_id=42
+            )
+
+            self.assertTrue(first.created)
+            self.assertFalse(retry.created)
+            self.assertEqual(retry.session.session_id, first.session.session_id)
+            self.assertEqual(retry.session.case_id, first.session.case_id)
+            self.assertEqual(len(db.exec(select(EEGSession)).all()), 1)
+            self.assertTrue(Path(first.session.original_path).exists())
+            with self.assertRaisesRegex(ValueError, "not found"):
+                finalize_upload_draft(
+                    db, storage, draft.draft_id, owner_user_id=99
+                )
+
     def test_case_reference_is_owner_scoped_and_opaque(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
         self.addCleanup(engine.dispose)
@@ -527,7 +833,11 @@ class BackendTests(unittest.TestCase):
             write_obfuscated_npz(source, windows, starts, np.asarray([0], dtype=np.int64))
             encrypted = storage.store_encrypted_artifact("SES-SIGNAL", source, "REC-SIGNAL.npz")
             with Session(engine) as db:
-                session = EEGSession(session_id="SES-SIGNAL", status=AnalysisStatus.COMPLETED)
+                session = EEGSession(
+                    session_id="SES-SIGNAL",
+                    status=AnalysisStatus.COMPLETED,
+                    privacy_method="metadata-scrub+signal-obfuscation",
+                )
                 db.add(session)
                 db.commit()
                 db.refresh(session)
@@ -800,7 +1110,7 @@ Seizure End Time: 3036 seconds
     def test_upload_schedules_background_pipeline_without_rq_job_id(self) -> None:
         from backend.app.api.sessions import upload_session
 
-        archive = UploadFile(filename="session.zip", file=io.BytesIO(b"zip"))
+        request = self._raw_upload_request()
         session = EEGSession(
             session_id="SES-BACKGROUND",
             original_filename="session.zip",
@@ -815,16 +1125,14 @@ Seizure End Time: 3036 seconds
             patch("backend.app.api.sessions.processing_capacity.reserve", return_value=True),
             patch("backend.app.api.sessions.processing_capacity.run_reserved") as process,
         ):
-            payload = asyncio.run(upload_session(tasks, archive, "metadata-scrub"))
+            payload = asyncio.run(upload_session(tasks, request))
 
         self.assertEqual(payload, {"session_id": "SES-BACKGROUND", "status": "queued"})
         self.assertNotIn("job_id", payload)
-        create.assert_awaited_once_with(
-            ANY,
-            ANY,
-            archive,
-            "metadata-scrub",
-        )
+        create.assert_awaited_once_with(ANY, ANY, ANY, "metadata-scrub")
+        assert create.await_args is not None
+        self.assertIsInstance(create.await_args.args[2], UploadFile)
+        self.assertEqual(create.await_args.args[2].filename, "recordings.zip")
         self.assertEqual(len(tasks.tasks), 1)
         self.assertIs(tasks.tasks[0].func, process)
         self.assertEqual(tasks.tasks[0].args, ("SES-BACKGROUND",))
@@ -834,13 +1142,19 @@ Seizure End Time: 3036 seconds
 
         with self.assertRaises(HTTPException) as raised:
             asyncio.run(
-                upload_session(BackgroundTasks(), UploadFile(filename="session.zip", file=io.BytesIO(b"zip")), "differential-privacy")
+                upload_session(
+                    BackgroundTasks(),
+                    self._raw_upload_request(headers={"x-privacy-method": "differential-privacy"}),
+                )
             )
         self.assertEqual(raised.exception.status_code, 400)
 
         with self.assertRaises(HTTPException) as raised:
             asyncio.run(
-                upload_session(BackgroundTasks(), UploadFile(filename="session.zip", file=io.BytesIO(b"zip")), "cancellable-psd-template")
+                upload_session(
+                    BackgroundTasks(),
+                    self._raw_upload_request(headers={"x-privacy-method": "cancellable-psd-template"}),
+                )
             )
         self.assertEqual(raised.exception.status_code, 400)
 
@@ -1015,7 +1329,64 @@ Seizure End Time: 3036 seconds
         self.assertEqual(payload["model"]["privacy_method"], "metadata-scrub+signal-obfuscation")
         self.assertEqual(payload["model"]["calibration_version"], "temperature-scaling-v1")
         self.assertFalse(payload["summary"]["recording_probability_available"])
+        self.assertEqual(payload["predictions"][0]["score"], 0.8)
+        self.assertNotIn("probability", payload["predictions"][0])
         self.assertEqual(payload["predictions"][0]["calibrated_probability"], 0.8)
+
+    def test_uncalibrated_h5_api_uses_score_language_only(self) -> None:
+        from backend.app.api.recordings import get_prediction, public_explanation_payload
+
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as db:
+            session = EEGSession(
+                session_id="SES-UNCALIBRATED",
+                privacy_method="metadata-scrub",
+                status=AnalysisStatus.COMPLETED,
+            )
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+            assert session.id is not None
+            record = EEGRecording(
+                record_id="REC-UNCALIBRATED",
+                session_db_id=session.id,
+                sequence_index=1,
+                original_filename="",
+                status=RecordingStatus.INFERRED,
+            )
+            db.add(record)
+            db.commit()
+            db.refresh(record)
+            assert record.id is not None
+            db.add(
+                Prediction(
+                    recording_db_id=record.id,
+                    window_index=0,
+                    model_name="SeizureDetector",
+                    model_version="h5-demo",
+                    threshold=0.5,
+                    probability=0.7,
+                    raw_score=0.7,
+                    score_type="uncalibrated_probability",
+                    seizure_detected=True,
+                    start_seconds=0,
+                    end_seconds=4,
+                )
+            )
+            db.commit()
+            payload = get_prediction(record.record_id, db)
+
+        self.assertEqual(payload["model"]["score_type"], "uncalibrated_model_score")
+        self.assertEqual(payload["predictions"][0]["score_type"], "uncalibrated_model_score")
+        self.assertEqual(payload["predictions"][0]["score"], 0.7)
+        self.assertNotIn("probability", payload["predictions"][0])
+        self.assertNotIn("probability", payload["summary"])
+        sanitized = public_explanation_payload(
+            {"score_type": "uncalibrated_probability", "probability": 0.7}
+        )
+        self.assertEqual(sanitized, {"score_type": "uncalibrated_model_score", "score": 0.7})
 
     def test_repositories_query_sessions_recordings_and_predictions(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})

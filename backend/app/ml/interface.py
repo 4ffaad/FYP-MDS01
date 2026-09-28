@@ -8,6 +8,12 @@ from typing import Protocol
 import numpy as np
 
 
+def public_score_type(score_type: str | None) -> str | None:
+    """Avoid presenting the local uncalibrated H5 output as a probability."""
+
+    return "uncalibrated_model_score" if score_type == "uncalibrated_probability" else score_type
+
+
 def score_crossed_threshold(score: float, threshold: float) -> bool:
     """Return whether a model score meets the inclusive alert threshold.
 

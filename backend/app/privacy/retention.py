@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pyedflib
 
-from backend.app.eeg.model_input import MODEL_CHANNELS
+from backend.app.eeg.model_input import MODEL_CHANNELS, validate_model_time_offsets
 from backend.app.core.config import SIGNAL_RETENTION_CONTEXT_SECONDS
 from backend.app.ml.interface import WindowPrediction
 from backend.app.privacy.deidentify import scrub_signal_header
@@ -119,20 +119,21 @@ def select_window_indices(
     return np.asarray(selected, dtype=np.int64)
 
 
-def write_obfuscated_npz(
+def write_model_window_npz(
     output_path: str | Path,
     windows: np.ndarray,
     window_starts: np.ndarray,
     indexes: np.ndarray,
 ) -> Path:
-    """Write only model-positive obfuscated windows to a temporary NPZ file.
+    """Write selected, already-transformed model windows to a temporary NPZ.
 
     Parameters
     ----------
     output_path : str or pathlib.Path
         Temporary output path owned by the processing service.
     windows : numpy.ndarray
-        Obfuscated model windows with shape ``(N, 1024, 18)``.
+        Model windows after any configured privacy transformation, with shape
+        ``(N, 1024, 18)``.
     window_starts : numpy.ndarray
         Start time for each input window.
     indexes : numpy.ndarray
@@ -144,14 +145,26 @@ def write_obfuscated_npz(
         Written temporary artifact path.
     """
 
+    validated_starts = validate_model_time_offsets(window_starts)
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         destination,
         model_windows=windows[indexes].astype(np.float32, copy=False),
-        window_start_seconds=window_starts[indexes].astype(np.float32, copy=False),
+        window_start_seconds=validated_starts[indexes],
     )
     return destination
+
+
+def write_obfuscated_npz(
+    output_path: str | Path,
+    windows: np.ndarray,
+    window_starts: np.ndarray,
+    indexes: np.ndarray,
+) -> Path:
+    """Backward-compatible alias for retaining obfuscated model windows."""
+
+    return write_model_window_npz(output_path, windows, window_starts, indexes)
 
 
 def write_scrubbed_edf_clip(
