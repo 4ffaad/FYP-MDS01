@@ -121,6 +121,14 @@ class EEGInputContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "256 Hz"):
                 read_uniform_nicolet(source)
 
+    def test_unsupported_extension_is_reported_without_exposing_the_path(self) -> None:
+        source = Path("/private/patient-folder/recording.eeg")
+
+        with self.assertRaisesRegex(ValidationError, r"extension '\.eeg'") as error:
+            validate_eeg(source)
+
+        self.assertNotIn(str(source), str(error.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

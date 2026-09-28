@@ -980,6 +980,7 @@ export async function getSessions(signal?: AbortSignal): Promise<Session[]> {
 type BackendCaseSummary = {
   case_id: string;
   patient_name?: string | null;
+  patient_name_verification_status?: CaseSummary["patientNameVerificationStatus"];
   report_summary?: string | null;
   modalities: Array<"eeg" | "video">;
   analysis_count: number;
@@ -996,6 +997,7 @@ export async function getCases(signal?: AbortSignal): Promise<CaseSummary[]> {
     return sessions.map((session) => ({
       caseId: session.caseId ?? `CASE-${session.sessionId.slice(-8)}`,
       patientName: null,
+      patientNameVerificationStatus: null,
       reportSummary: null,
       modalities: ["eeg"],
       analysisCount: 1,
@@ -1017,6 +1019,8 @@ export async function getCases(signal?: AbortSignal): Promise<CaseSummary[]> {
     return cases.map((item) => ({
       caseId: item.case_id,
       patientName: item.patient_name ?? null,
+      patientNameVerificationStatus:
+        item.patient_name_verification_status ?? null,
       reportSummary: item.report_summary ?? null,
       modalities: item.modalities,
       analysisCount: item.analysis_count,
@@ -1041,6 +1045,7 @@ export async function getCase(
   const response = await getJson<{
     case_id: string;
     patient_name?: string | null;
+    patient_name_verification_status?: CaseDetail["patientNameVerificationStatus"];
     analyses: Array<{
       id: string;
       modality: "eeg" | "video";
@@ -1052,6 +1057,8 @@ export async function getCase(
   return {
     caseId: response.case_id,
     patientName: response.patient_name ?? null,
+    patientNameVerificationStatus:
+      response.patient_name_verification_status ?? null,
     analyses: response.analyses.map((analysis) => ({
       id: analysis.id,
       modality: analysis.modality,
@@ -1059,6 +1066,32 @@ export async function getCase(
       createdAt: analysis.created_at,
       reviewReady: analysis.review_ready,
     })),
+  };
+}
+
+type BackendPatientProfile = {
+  name: string;
+  hospital_id: string;
+  age: string;
+  findings: string;
+  details?: PatientProfileDetail[];
+  reviewed: boolean;
+  verification_status: "reviewed" | "auto_extracted";
+  reviewed_at: string | null;
+};
+
+function patientProfileFromBackend(
+  profile: BackendPatientProfile,
+): PatientProfile {
+  return {
+    name: profile.name,
+    hospitalId: profile.hospital_id,
+    age: profile.age,
+    findings: profile.findings,
+    details: profile.details ?? [],
+    reviewed: profile.reviewed,
+    verificationStatus: profile.verification_status,
+    reviewedAt: profile.reviewed_at,
   };
 }
 
@@ -1073,17 +1106,7 @@ export async function savePatientProfile(
       503,
     );
   }
-  const response = await putJson<{
-    profile: {
-      name: string;
-      hospital_id: string;
-      age: string;
-      findings: string;
-      details: PatientProfileDetail[];
-      reviewed: true;
-      reviewed_at: string;
-    };
-  }>(
+  const response = await putJson<{ profile: BackendPatientProfile }>(
     `/api/cases/${encodeURIComponent(caseId)}/patient-profile`,
     {
       details,
@@ -1091,15 +1114,26 @@ export async function savePatientProfile(
     },
     signal,
   );
-  return {
-    name: response.profile.name,
-    hospitalId: response.profile.hospital_id,
-    age: response.profile.age,
-    findings: response.profile.findings,
-    details: response.profile.details,
-    reviewed: response.profile.reviewed,
-    reviewedAt: response.profile.reviewed_at,
-  };
+  return patientProfileFromBackend(response.profile);
+}
+
+export async function saveExtractedPatientProfile(
+  caseId: string,
+  details: PatientProfileDetail[],
+  signal?: AbortSignal,
+): Promise<PatientProfile> {
+  if (USE_STUB) {
+    throw new ApiError(
+      "Patient identity cannot be saved in UI stub mode. Use the authenticated local backend.",
+      503,
+    );
+  }
+  const response = await putJson<{ profile: BackendPatientProfile }>(
+    `/api/cases/${encodeURIComponent(caseId)}/patient-profile/extracted`,
+    { details },
+    signal,
+  );
+  return patientProfileFromBackend(response.profile);
 }
 
 export async function getCaseSourceReportPdf(
@@ -1160,27 +1194,9 @@ export async function getPatientProfile(
 ): Promise<PatientProfile | null> {
   if (USE_STUB) return null;
   const response = await getJson<{
-    profile: {
-      name: string;
-      hospital_id: string;
-      age: string;
-      findings: string;
-      details?: PatientProfileDetail[];
-      reviewed: true;
-      reviewed_at: string;
-    } | null;
+    profile: BackendPatientProfile | null;
   }>(`/api/cases/${encodeURIComponent(caseId)}/patient-profile`, signal);
-  return response.profile
-    ? {
-        name: response.profile.name,
-        hospitalId: response.profile.hospital_id,
-        age: response.profile.age,
-        findings: response.profile.findings,
-        details: response.profile.details ?? [],
-        reviewed: response.profile.reviewed,
-        reviewedAt: response.profile.reviewed_at,
-      }
-    : null;
+  return response.profile ? patientProfileFromBackend(response.profile) : null;
 }
 
 export async function deletePatientProfile(caseId: string): Promise<void> {

@@ -19,8 +19,10 @@ from backend.app.services.case_service import (
 )
 from backend.app.services.case_profile_service import (
     PatientProfileCryptoError,
+    ReviewedPatientProfileConflict,
     delete_patient_profile,
     load_patient_profile,
+    save_extracted_patient_profile,
     save_patient_profile,
 )
 from backend.app.services.case_source_report_service import (
@@ -51,16 +53,16 @@ def _is_valid_age(value: str) -> bool:
     return match is not None and float(match.group("value")) <= 150
 
 
-def _reviewed_details(value: object) -> list[dict[str, str]]:
-    """Validate a bounded list of doctor-reviewed patient/report fields."""
+def _validated_details(value: object) -> list[dict[str, str]]:
+    """Validate a bounded list of patient/report fields before encryption."""
 
     if not isinstance(value, list) or not value or len(value) > _MAX_PROFILE_DETAIL_COUNT:
-        raise ValueError("Invalid reviewed details.")
+        raise ValueError("Invalid patient details.")
     details: list[dict[str, str]] = []
     total_chars = 0
     for entry in value:
         if not isinstance(entry, dict) or set(entry) != {"label", "value"}:
-            raise ValueError("Invalid reviewed detail.")
+            raise ValueError("Invalid patient detail.")
         label = entry["label"]
         detail_value = entry["value"]
         if (
@@ -73,7 +75,7 @@ def _reviewed_details(value: object) -> list[dict[str, str]]:
             or any(ord(character) < 32 and character not in "\t\r\n" for character in label)
             or any(ord(character) < 32 and character not in "\t\r\n" for character in detail_value)
         ):
-            raise ValueError("Invalid reviewed detail.")
+            raise ValueError("Invalid patient detail.")
         normalized = {"label": label.strip(), "value": detail_value.strip()}
         if re.search(r"\bage\b", normalized["label"], re.IGNORECASE) and not _is_valid_age(
             normalized["value"]
@@ -81,7 +83,7 @@ def _reviewed_details(value: object) -> list[dict[str, str]]:
             raise ValueError("Age must be a numeric age, not a date of birth.")
         total_chars += len(normalized["label"]) + len(normalized["value"])
         if total_chars > _MAX_PROFILE_DETAIL_CHARS:
-            raise ValueError("Reviewed details exceed the size limit.")
+            raise ValueError("Patient details exceed the size limit.")
         details.append(normalized)
     return details
 
@@ -178,8 +180,71 @@ def get_patient_profile(
     return {
         "profile": {
             **identity,
-            "reviewed": True,
-            "reviewed_at": row.reviewed_at.isoformat(),
+            "reviewed": row.verification_status == "reviewed",
+            "verification_status": row.verification_status,
+            "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
+        }
+    }
+
+
+@router.put("/{case_id}/patient-profile/extracted")
+async def put_extracted_patient_profile(
+    case_id: str,
+    request: Request,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> dict:
+    """Encrypt owner-submitted extraction fields while keeping review status explicit."""
+
+    owner = _profile_owner(current_user)
+    _require_owned_case(db, case_id, owner)
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > _MAX_PROFILE_BODY_BYTES:
+                raise HTTPException(413, "Patient details exceed the size limit.")
+        except ValueError as exc:
+            raise HTTPException(400, "Invalid request size.") from exc
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > _MAX_PROFILE_BODY_BYTES:
+            raise HTTPException(413, "Patient details exceed the size limit.")
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(422, "Submit valid extracted patient details.") from exc
+    if not isinstance(payload, dict) or set(payload) != {"details"}:
+        raise HTTPException(422, "Submit only extracted patient details.")
+    try:
+        details = _validated_details(payload["details"])
+    except ValueError as exc:
+        raise HTTPException(422, "Extracted patient details are invalid.") from exc
+
+    lock_owner_case_mutations(db, owner)
+    _require_owned_case(db, case_id, owner)
+    try:
+        row = save_extracted_patient_profile(
+            db,
+            case_id=case_id,
+            owner_user_id=owner,
+            details=details,
+        )
+        loaded = load_patient_profile(db, case_id=case_id, owner_user_id=owner)
+    except ReviewedPatientProfileConflict as exc:
+        raise HTTPException(409, "A reviewed patient profile cannot be replaced by extraction.") from exc
+    except PatientProfileCryptoError as exc:
+        raise HTTPException(503, "Patient profile encryption is unavailable; no identity was saved.") from exc
+    if loaded is None:
+        raise HTTPException(503, "Extracted patient details are unavailable.")
+    identity, row = loaded
+    identity.setdefault("details", [])
+    return {
+        "profile": {
+            **identity,
+            "reviewed": False,
+            "verification_status": row.verification_status,
+            "reviewed_at": None,
         }
     }
 
@@ -223,7 +288,7 @@ async def put_patient_profile(
     legacy_accepted = (legacy_required, legacy_required | {"age", "findings"})
     if set(payload) == detail_payload:
         try:
-            details = _reviewed_details(payload["details"])
+            details = _validated_details(payload["details"])
         except ValueError as exc:
             raise HTTPException(422, "Review each patient detail before saving.") from exc
         name = hospital_id = age = findings = ""
@@ -277,6 +342,7 @@ async def put_patient_profile(
             "findings": findings,
             "details": details,
             "reviewed": True,
+            "verification_status": row.verification_status,
             "reviewed_at": row.reviewed_at.isoformat(),
         }
     }

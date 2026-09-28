@@ -1,19 +1,20 @@
 "use client";
 
 import { ChangeEvent, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { MotionConfig, motion } from "motion/react";
 import {
   ApiError,
   API_STUB_ENABLED,
   deleteUploadDraft,
   finalizeUploadDraft,
+  getSession,
   pollRetryDelay,
   PRIVACY_METHODS,
-  savePatientProfile,
+  saveExtractedPatientProfile,
   stageUpload,
   shouldRetryRequest,
 } from "@/lib/api";
+import type { Session } from "@/lib/types";
 
 import {
   buildEegArchive,
@@ -21,14 +22,14 @@ import {
   type PatientFolderSelection,
 } from "@/lib/patient-folder";
 import { Icon } from "./Icon";
-import { LoadingOrb } from "./LoadingOrb";
-import {
-  PatientDetailsEditor,
-  type PatientDetailDraft,
-} from "./PatientDetailsEditor";
+
+import { type PatientDetailDraft } from "./PatientDetailsEditor";
 import { PatientFolderMediaStep } from "./PatientFolderMediaStep";
+import {
+  PatientProcessingProgress,
+  type VideoPipelineProgressEntry,
+} from "./PatientProcessingProgress";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import { getDetection, uploadDetection } from "@/lib/video-detection";
 
 const REPORT_ENDPOINT = "/api/patient-report";
@@ -139,6 +140,20 @@ function videoUploadIssue(
   }
   if (error instanceof ApiError) {
     switch (error.status) {
+      case 401:
+        return {
+          message:
+            "Your sign-in expired. Sign in again before retrying; this clip was not accepted.",
+          retryable: false,
+          disposition: "not-accepted",
+        };
+      case 403:
+        return {
+          message:
+            "The signed-in account cannot access this patient case. Reopen the case from Patient History; no video result was produced.",
+          retryable: false,
+          disposition: "not-accepted",
+        };
       case 409:
         return {
           message:
@@ -167,6 +182,13 @@ function videoUploadIssue(
           retryable: false,
           disposition: "not-accepted",
         };
+      case 429:
+        return {
+          message:
+            "The video queue is busy. This clip was not queued; wait for the active video job before retrying.",
+          retryable: true,
+          disposition: "not-accepted",
+        };
       case 503:
         return {
           message: "Video detection is unavailable in this runtime.",
@@ -192,25 +214,42 @@ function videoUploadIssue(
   };
 }
 
+function videoJobFailureMessage(
+  status: "failed" | "expired",
+  message: string | null,
+): string {
+  if (status === "expired") return "Video job expired. No result is available.";
+  const unavailableMessage =
+    "Video processing failed; no result was produced. The reason is not available here.";
+  if (!message) return unavailableMessage;
+  const normalized = message.toLocaleLowerCase("en-US");
+  if (
+    normalized.includes("face-redacted safely") ||
+    normalized.includes("privacy")
+  ) {
+    return "The privacy transform could not be validated, so VSViG did not run and no video score was produced. This can mean face-detection coverage fell below the privacy gate or the protected output failed validation.";
+  }
+  return unavailableMessage;
+}
+
 /** One-folder intake that keeps EEG and video policy visible side by side. */
 export function PatientFolderScreen() {
-  const router = useRouter();
   const folderInput = useRef<HTMLInputElement>(null);
   const selectionGeneration = useRef(0);
   const reportAbortController = useRef<AbortController | null>(null);
   const workflowAbortController = useRef<AbortController | null>(null);
+  const videoProgressRef = useRef<VideoPipelineProgressEntry[]>([]);
   const mounted = useRef(false);
-  const detailsStepRef = useRef<HTMLDivElement>(null);
-  const previousIntakeStep = useRef<"media" | "details">("media");
   const [selection, setSelection] = useState<PatientFolderSelection | null>(
     null,
   );
-  const [intakeStep, setIntakeStep] = useState<"media" | "details">("media");
+  const [intakeStep, setIntakeStep] = useState<"media" | "processing">("media");
   const [patientDetails, setPatientDetails] = useState<PatientDetailDraft[]>(
     [],
   );
   const [reportTruncated, setReportTruncated] = useState(false);
   const [reportMessage, setReportMessage] = useState<string | null>(null);
+  const [reportReading, setReportReading] = useState(false);
   const [signalObfuscation, setSignalObfuscation] = useState(false);
   const [videoDetectionErrors, setVideoDetectionErrors] = useState<
     Record<number, VideoUploadIssue>
@@ -218,9 +257,14 @@ export function PatientFolderScreen() {
   const [videoDetectionJobIds, setVideoDetectionJobIds] = useState<
     Record<number, string>
   >({});
+  const [videoProgress, setVideoProgress] = useState<
+    VideoPipelineProgressEntry[]
+  >([]);
+  const [eegSession, setEegSession] = useState<Session | null>(null);
+  const [processingFinished, setProcessingFinished] = useState(false);
 
   const [step, setStep] = useState("Select one patient folder");
-  const [progress, setProgress] = useState(0);
+  const [eegUploadPercent, setEegUploadPercent] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draftId, setDraftId] = useState<string | null>(null);
@@ -240,20 +284,12 @@ export function PatientFolderScreen() {
   }, []);
 
   useEffect(() => {
-    if (previousIntakeStep.current !== intakeStep && intakeStep === "details") {
-      const target = detailsStepRef.current;
-      if (target) {
-        target.scrollIntoView({
-          behavior: window.matchMedia("(prefers-reduced-motion: reduce)")
-            .matches
-            ? "auto"
-            : "smooth",
-          block: "start",
-        });
-        target.focus({ preventScroll: true });
-      }
+    if (intakeStep === "processing") {
+      const heading = document.getElementById("patient-processing-heading");
+      if (!heading) return;
+      heading.focus({ preventScroll: true });
+      heading.scrollIntoView({ block: "start" });
     }
-    previousIntakeStep.current = intakeStep;
   }, [intakeStep]);
 
   const onFolderInput = (element: HTMLInputElement | null) => {
@@ -277,13 +313,19 @@ export function PatientFolderScreen() {
     setPatientDetails([]);
     setReportTruncated(false);
     setReportMessage(null);
+    setReportReading(false);
     setVideoDetectionErrors({});
     setVideoDetectionJobIds({});
+    setVideoProgress([]);
+    videoProgressRef.current = [];
+    setEegSession(null);
+    setProcessingFinished(false);
 
-    setProgress(0);
+    setEegUploadPercent(null);
     setError(null);
 
     if (!nextSelection.report) return;
+    setReportReading(true);
     setReportMessage("Reading the report on this device…");
     const controller = new AbortController();
     reportAbortController.current = controller;
@@ -329,7 +371,6 @@ export function PatientFolderScreen() {
         (payload.draft.details ?? []).map((detail) => ({
           ...detail,
           id: `report-${detailId.current++}`,
-          included: false,
         })),
       );
       setReportTruncated(payload.draft.truncated ?? false);
@@ -349,56 +390,15 @@ export function PatientFolderScreen() {
     } finally {
       if (reportAbortController.current === controller) {
         reportAbortController.current = null;
+        setReportReading(false);
       }
     }
-  }
-
-  function togglePatientDetail(id: string, included: boolean) {
-    setPatientDetails((current) =>
-      current.map((detail) =>
-        detail.id === id ? { ...detail, included } : detail,
-      ),
-    );
-  }
-
-  function changePatientDetail(
-    id: string,
-    key: "label" | "value",
-    value: string,
-  ) {
-    setPatientDetails((current) =>
-      current.map((detail) =>
-        detail.id === id ? { ...detail, [key]: value } : detail,
-      ),
-    );
-  }
-
-  function addManualPatientDetail() {
-    setPatientDetails((current) => [
-      ...current,
-      {
-        id: `manual-${detailId.current++}`,
-        label: "",
-        value: "",
-        included: false,
-        manual: true,
-      },
-    ]);
-  }
-
-  function removeManualPatientDetail(id: string) {
-    setPatientDetails((current) =>
-      current.filter((detail) => detail.id !== id),
-    );
   }
 
   async function submitReview(retryVideoIndexes?: number[]) {
     const selectedEegBundles = selection?.eegCandidates ?? [];
     const selectedDetails = patientDetails
-      .filter(
-        (detail) =>
-          detail.included && detail.label.trim() && detail.value.trim(),
-      )
+      .filter((detail) => detail.label.trim() && detail.value.trim())
       .map(({ label, value }) => ({
         label: label.trim(),
         value: value.trim(),
@@ -411,10 +411,12 @@ export function PatientFolderScreen() {
       setError("Select one or more EEG recordings and one report folder.");
       return;
     }
-    if (!identityReady) {
-      setError("Add at least one report detail before creating the case.");
+
+    if (reportReading) {
+      setError("Wait for local report extraction to finish before processing.");
       return;
     }
+
     if (API_STUB_ENABLED) {
       setError("Connect the local API to create a patient review.");
       return;
@@ -424,6 +426,56 @@ export function PatientFolderScreen() {
     const signal = controller.signal;
     setBusy(true);
     setError(null);
+    setIntakeStep("processing");
+    setProcessingFinished(false);
+    const initialVideoProgress = retryVideoIndexes
+      ? videoProgress.map((item) =>
+          retryVideoIndexes.includes(item.index)
+            ? {
+                ...item,
+                status: "queued" as const,
+                uploadPercent: 0,
+                stage: null,
+                error: null,
+              }
+            : item,
+        )
+      : selection.videos.map((_, index) => {
+          const existing = videoProgress.find((item) => item.index === index);
+          if (videoDetectionErrors[index] && !videoDetectionJobIds[index]) {
+            return (
+              existing ?? {
+                index,
+                status:
+                  videoDetectionErrors[index].disposition ===
+                  "status-unconfirmed"
+                    ? ("unconfirmed" as const)
+                    : ("not-submitted" as const),
+                uploadPercent: 0,
+                stage: null,
+                error: videoDetectionErrors[index].message,
+              }
+            );
+          }
+          return {
+            index,
+            status: "queued" as const,
+            uploadPercent: 0,
+            stage: null,
+            error: null,
+          };
+        });
+    videoProgressRef.current = initialVideoProgress;
+    setVideoProgress(initialVideoProgress);
+    const updateVideoProgress = (
+      index: number,
+      update: Partial<VideoPipelineProgressEntry>,
+    ) => {
+      videoProgressRef.current = videoProgressRef.current.map((item) =>
+        item.index === index ? { ...item, ...update } : item,
+      );
+      if (mounted.current) setVideoProgress(videoProgressRef.current);
+    };
     let pendingDraftId = draftId;
     let activeSessionId = sessionId;
     let activeCaseId = caseId;
@@ -433,17 +485,14 @@ export function PatientFolderScreen() {
       if (!activeSessionId) {
         if (!pendingDraftId) {
           setStep(`Preparing ${selectedEegBundles.length} EEG recordings`);
-          const archive = await buildEegArchive(selectedEegBundles, (value) => {
-            if (mounted.current && !signal.aborted)
-              setProgress(Math.round(value * 0.15));
-          });
+          const archive = await buildEegArchive(selectedEegBundles);
           throwIfAborted(signal);
           setStep("Encrypting the EEG upload");
           const draft = await stageUpload(
             archive,
             (value) => {
               if (mounted.current && !signal.aborted)
-                setProgress(15 + Math.round(value * 0.65));
+                setEegUploadPercent(value);
             },
             signal,
           );
@@ -478,18 +527,52 @@ export function PatientFolderScreen() {
           throw new Error(
             "The backend did not return an opaque case reference.",
           );
-        setStep("Saving the reviewed patient details");
-        await savePatientProfile(activeCaseId!, selectedDetails, signal);
+        setStep("Saving all extracted patient details");
+        if (selectedDetails.length > 0) {
+          await saveExtractedPatientProfile(
+            activeCaseId,
+            selectedDetails,
+            signal,
+          );
+        }
         throwIfAborted(signal);
         setProfileSaved(true);
       }
 
+      if (!activeSessionId)
+        throw new Error("The EEG session reference is unavailable.");
+      setStep("Processing EEG recordings");
+      const completedSession = await waitForJob(
+        () => getSession(activeSessionId!, signal),
+        ["completed", "completed_with_errors", "failed"],
+        (currentSession) => {
+          if (mounted.current && !signal.aborted) {
+            setEegSession(currentSession);
+            const { completedRecordings, failedRecordings, totalRecordings } =
+              currentSession.progress;
+            setStep(
+              `EEG processing: ${completedRecordings} of ${totalRecordings} recordings complete${failedRecordings ? `; ${failedRecordings} failed` : ""}`,
+            );
+          }
+        },
+        signal,
+      );
+      setEegSession(completedSession);
+
       if (selection.videos.length > 0) {
         const indexes =
-          retryVideoIndexes ?? selection.videos.map((_, index) => index);
+          retryVideoIndexes ??
+          selection.videos
+            .map((_, index) => index)
+            .filter((index) => Boolean(videoIds[index]) || !videoIssues[index]);
         for (const [position, index] of indexes.entries()) {
           const videoFile = selection.videos[index];
           let jobId = videoIds[index];
+          updateVideoProgress(index, {
+            status: jobId ? "processing" : "uploading",
+            uploadPercent: 0,
+            error: null,
+          });
           delete videoIssues[index];
           setVideoDetectionErrors({ ...videoIssues });
           try {
@@ -501,53 +584,103 @@ export function PatientFolderScreen() {
                 videoFile,
                 (value) => {
                   if (mounted.current && !signal.aborted) {
-                    setProgress(
-                      Math.round(
-                        ((position + value / 100) / indexes.length) * 100,
-                      ),
-                    );
+                    updateVideoProgress(index, {
+                      status: "uploading",
+                      uploadPercent: value,
+                    });
                   }
                 },
                 activeCaseId!,
                 signal,
               );
-              throwIfAborted(signal);
               jobId = job.job_id;
               videoIds = { ...videoIds, [index]: jobId };
               setVideoDetectionJobIds(videoIds);
+              updateVideoProgress(index, {
+                status: "processing",
+                stage: job.current_stage,
+                error: null,
+              });
+              throwIfAborted(signal);
             }
             setStep(
               `Processing video analysis ${position + 1} of ${indexes.length}`,
             );
-            const completedJob = await waitForJob(
+            await waitForJob(
               () =>
                 getDetection(jobId!, signal).then((response) => response.job),
               ["ready", "failed", "expired"],
               (job) => {
                 const status = jobStatusLabel(job.status);
+                updateVideoProgress(index, {
+                  status:
+                    job.status === "ready"
+                      ? "complete"
+                      : job.status === "expired"
+                        ? "expired"
+                        : job.status === "failed"
+                          ? "failed"
+                          : "processing",
+                  stage: job.current_stage,
+                  error:
+                    job.status === "failed" || job.status === "expired"
+                      ? videoJobFailureMessage(job.status, job.error)
+                      : null,
+                });
                 setStep(
                   `Video analysis ${position + 1} of ${indexes.length}: ${status}`,
                 );
               },
               signal,
             );
-            setProgress(Math.round(((position + 1) / indexes.length) * 100));
           } catch (videoError) {
-            if (signal.aborted || !mounted.current || isAbortError(videoError))
+            if (signal.aborted || isAbortError(videoError)) {
+              if (mounted.current) {
+                videoIssues[index] = videoUploadIssue(
+                  videoError,
+                  Boolean(jobId),
+                );
+                updateVideoProgress(index, {
+                  status: "unconfirmed",
+                  error: videoIssues[index].message,
+                });
+                setVideoDetectionErrors({ ...videoIssues });
+                setStep(
+                  "Video status is unconfirmed. Check Patient History before retrying.",
+                );
+              }
               throw videoError;
+            }
+            if (!mounted.current) throw videoError;
             videoIssues[index] = videoUploadIssue(videoError, Boolean(jobId));
+            updateVideoProgress(index, {
+              status:
+                videoIssues[index].disposition === "status-unconfirmed"
+                  ? "unconfirmed"
+                  : "not-submitted",
+              error: videoIssues[index].message,
+            });
             setVideoDetectionErrors({ ...videoIssues });
             if (
               !(videoError instanceof ApiError) ||
               ![413, 415, 422].includes(videoError.status)
             ) {
+              const blockedClipIssue = videoIssues[index];
+              const retryBlockedClips =
+                blockedClipIssue.retryable &&
+                blockedClipIssue.disposition === "not-accepted";
               for (const remainingIndex of indexes.slice(position + 1)) {
                 videoIssues[remainingIndex] = {
-                  message:
-                    "This clip was not submitted because the previous video job could not be confirmed.",
-                  retryable: false,
+                  message: retryBlockedClips
+                    ? "This clip was not submitted. It will be included in the next retry."
+                    : "This clip was not submitted because the previous video job could not be confirmed.",
+                  retryable: retryBlockedClips,
                   disposition: "not-accepted",
                 };
+                updateVideoProgress(remainingIndex, {
+                  status: retryBlockedClips ? "queued" : "not-submitted",
+                  error: videoIssues[remainingIndex].message,
+                });
               }
               setVideoDetectionErrors({ ...videoIssues });
               break;
@@ -558,20 +691,37 @@ export function PatientFolderScreen() {
           const failedVideoCount = Object.keys(videoIssues).length;
           const label =
             failedVideoCount === 1 ? "video clip needs" : "video clips need";
-          setError(
-            `${failedVideoCount} ${label} attention. ${Object.values(videoIssues)[0]?.message ?? "No video result was produced."}`,
-          );
-          return;
+          setError(`${failedVideoCount} ${label} attention.`);
         }
       }
 
       if (!mounted.current || signal.aborted) return;
-      setStep("Opening the patient case");
-      router.push(`/cases/${encodeURIComponent(activeCaseId!)}`);
+      const videoOutcomesConfirmed = videoProgressRef.current.every((item) =>
+        ["complete", "failed", "expired", "not-submitted"].includes(
+          item.status,
+        ),
+      );
+      const hasUnconfirmedOutcome = Object.values(videoIssues).some(
+        (issue) => issue.disposition === "status-unconfirmed",
+      );
+      const hasRetryableOutcome = Object.values(videoIssues).some(
+        (issue) => issue.retryable,
+      );
+      setProcessingFinished(videoOutcomesConfirmed);
+      if (!videoOutcomesConfirmed) {
+        setStep(
+          hasUnconfirmedOutcome
+            ? "A video status is unconfirmed. Check Patient History before retrying."
+            : hasRetryableOutcome
+              ? "Some video clips were not submitted. Retry eligible uploads to continue."
+              : "Video processing remains pending. Recheck processing status to continue.",
+        );
+      }
     } catch (submitError) {
       if (!mounted.current) return;
       if (pendingDraftId && !activeSessionId) setDraftId(pendingDraftId);
       if (signal.aborted || isAbortError(submitError)) {
+        setStep("Intake canceled; accepted work may continue.");
         setError(
           "Intake canceled. Upload and status checks stopped on this device. Work already accepted by the service may continue; check patient history later.",
         );
@@ -591,40 +741,42 @@ export function PatientFolderScreen() {
         workflowAbortController.current = null;
       if (mounted.current) {
         setBusy(false);
-        setProgress(0);
       }
     }
   }
 
-  const includedPatientDetails = patientDetails.filter(
-    (detail) => detail.included && detail.label.trim() && detail.value.trim(),
-  );
-  const identityReady = includedPatientDetails.length > 0;
   const selectedEegBundles = selection?.eegCandidates ?? [];
   const canContinue = Boolean(
     selection &&
       selection.errors.length === 0 &&
       selectedEegBundles.length > 0 &&
-      reportMessage !== "Reading the report on this device…" &&
-      !busy,
-  );
-  const canSubmit = Boolean(
-    selection &&
-      selection.errors.length === 0 &&
-      selectedEegBundles.length > 0 &&
-      identityReady &&
-      intakeStep === "details" &&
+      !reportReading &&
       !API_STUB_ENABLED &&
+      !sessionId &&
       !busy,
   );
   const videoAttentionCount = Object.keys(videoDetectionErrors).length;
-  const videoRejectedCount = Object.values(videoDetectionErrors).filter(
-    (issue) => issue.disposition === "not-accepted",
-  ).length;
-  const videoUnconfirmedCount = videoAttentionCount - videoRejectedCount;
   const retryableVideoIndexes = Object.entries(videoDetectionErrors)
     .filter(([, issue]) => issue.retryable)
     .map(([index]) => Number(index));
+  const hasUnconfirmedVideoOutcome = Object.values(videoDetectionErrors).some(
+    (issue) => issue.disposition === "status-unconfirmed",
+  );
+  const hasKnownVideoJobs = Object.keys(videoDetectionJobIds).length > 0;
+  const hasSafeQueuedVideos = videoProgress.some(
+    (item) => item.status === "queued" && !videoDetectionErrors[item.index],
+  );
+  const hasPendingEegSession =
+    Boolean(sessionId) &&
+    (!eegSession ||
+      !["completed", "completed_with_errors", "failed"].includes(
+        eegSession.status,
+      ));
+  const canRecheckProcessing =
+    hasKnownVideoJobs ||
+    hasSafeQueuedVideos ||
+    hasPendingEegSession ||
+    (!sessionId && !hasUnconfirmedVideoOutcome);
 
   return (
     <MotionConfig reducedMotion="user">
@@ -658,31 +810,17 @@ export function PatientFolderScreen() {
                   !selection || intakeStep === "media" ? "step" : undefined
                 }
               >
-                01&nbsp; Media
+                01&nbsp; Media &amp; privacy
               </li>
               <li
                 className={
-                  selection && intakeStep === "details" && !sessionId
+                  intakeStep === "processing"
                     ? "rounded-full bg-teal-soft px-3 py-1 text-teal-dark"
                     : "px-3 py-1 text-ink-faint"
                 }
-                aria-current={
-                  selection && intakeStep === "details" && !sessionId
-                    ? "step"
-                    : undefined
-                }
+                aria-current={intakeStep === "processing" ? "step" : undefined}
               >
-                02&nbsp; Patient details
-              </li>
-              <li
-                className={
-                  sessionId
-                    ? "rounded-full bg-teal-soft px-3 py-1 text-teal-dark"
-                    : "px-3 py-1 text-ink-faint"
-                }
-                aria-current={sessionId ? "step" : undefined}
-              >
-                03&nbsp; Processing
+                02&nbsp; Processing
               </li>
             </ol>
           </header>
@@ -751,162 +889,79 @@ export function PatientFolderScreen() {
             </section>
           )}
 
-          {selection && (
-            <>
-              {intakeStep === "media" ? (
+          {selection &&
+            (intakeStep === "media" ? (
+              <>
                 <PatientFolderMediaStep
                   eegCount={selectedEegBundles.length}
                   videoCount={selection.videos.length}
                   signalObfuscation={signalObfuscation}
                   signalDescription={PRIVACY_METHODS[1].description}
+                  patientDetails={patientDetails}
+                  reportTruncated={reportTruncated}
+                  reportMessage={reportMessage}
+                  reportReading={reportReading}
                   canContinue={canContinue}
                   onSignalObfuscationChange={setSignalObfuscation}
-                  onContinue={() => {
-                    setError(null);
-                    setIntakeStep("details");
-                  }}
+                  onContinue={() => void submitReview()}
                 />
-              ) : (
-                <div
-                  id="patient-details-step"
-                  ref={detailsStepRef}
-                  className="mt-6 max-w-3xl scroll-mt-24 space-y-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal"
-                  tabIndex={-1}
-                >
-                  {reportMessage === "Reading the report on this device…" ? (
-                    <LoadingOrb
-                      className="px-1"
-                      label={reportMessage}
-                      state="searching"
-                      size={20}
-                    />
-                  ) : reportMessage ? (
-                    <p className="px-1 text-xs text-ink-muted" role="status">
-                      {reportMessage}
-                    </p>
-                  ) : null}
-                  <PatientDetailsEditor
-                    fields={patientDetails}
-                    truncated={reportTruncated}
-                    readOnly={busy || Boolean(sessionId)}
-                    onToggle={togglePatientDetail}
-                    onChange={changePatientDetail}
-                    onAddManualField={addManualPatientDetail}
-                    onRemoveManualField={removeManualPatientDetail}
-                  />
-                </div>
-              )}
-
-              {error && (
-                <div
-                  className="mt-5 rounded-xl border border-red/30 bg-red-soft px-4 py-3 text-sm text-red"
-                  role="alert"
-                >
-                  {error}
-                </div>
-              )}
-              {intakeStep === "details" && (
-                <>
-                  <div className="mt-6 flex flex-col gap-3 border-t border-rule pt-5 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="text-xs leading-5 text-ink-muted">
-                      {sessionId
-                        ? videoAttentionCount > 0
-                          ? `EEG session created. ${videoAttentionCount} video clips need attention.`
-                          : "EEG session created. Continue to finish this patient review."
-                        : `${selectedEegBundles.length} EEG recordings and ${selection.videos.length} video clips will be processed together.`}
-                      {API_STUB_ENABLED && (
-                        <span className="mt-1 block">
-                          Connect the local API to create a review.
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap items-center justify-end gap-3">
-                      <Button
-                        type="button"
-                        size="lg"
-                        variant="outline"
-                        disabled={busy || Boolean(sessionId)}
-                        onClick={() => {
-                          setError(null);
-                          setIntakeStep("media");
-                        }}
-                      >
-                        Back to media and privacy
-                      </Button>
-                      {(!videoAttentionCount ||
-                        retryableVideoIndexes.length > 0) && (
-                        <Button
-                          type="button"
-                          size="lg"
-                          onClick={() =>
-                            void submitReview(
-                              videoAttentionCount
-                                ? retryableVideoIndexes
-                                : undefined,
-                            )
-                          }
-                          disabled={!canSubmit}
-                        >
-                          {!busy ? (
-                            <Icon name="arrow" className="size-4" />
-                          ) : null}
-                          {busy
-                            ? "Processing…"
-                            : videoAttentionCount
-                              ? "Retry eligible video uploads"
-                              : sessionId
-                                ? "Continue review"
-                                : "Create patient review"}
-                        </Button>
-                      )}
-                      {!busy &&
-                        sessionId &&
-                        caseId &&
-                        videoAttentionCount > 0 && (
-                          <Button
-                            type="button"
-                            size="lg"
-                            variant="outline"
-                            onClick={() =>
-                              router.push(
-                                `/cases/${encodeURIComponent(caseId)}?video_rejected_count=${videoRejectedCount}&video_unconfirmed_count=${videoUnconfirmedCount}`,
-                              )
-                            }
-                          >
-                            Continue to case with video warning
-                          </Button>
-                        )}
-                    </div>
+                {API_STUB_ENABLED && (
+                  <p className="mt-3 text-xs text-ink-muted" role="status">
+                    Connect the local API to create a patient review.
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <PatientProcessingProgress
+                  session={eegSession}
+                  eegCount={selectedEegBundles.length}
+                  uploadPercent={eegUploadPercent}
+                  step={step}
+                  videos={videoProgress}
+                  videoCount={selection.videos.length}
+                  busy={busy}
+                  finished={processingFinished}
+                  caseId={caseId}
+                  error={error}
+                />
+                {busy ? (
+                  <div className="mt-4 flex justify-end border-t border-rule pt-4">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => workflowAbortController.current?.abort()}
+                    >
+                      Cancel intake
+                    </Button>
                   </div>
-                  {busy && (
-                    <div className="mt-4 space-y-3 border-t border-rule pt-4">
-                      <LoadingOrb label={step} state="working" size={32} />
-                      <Progress
-                        value={progress}
-                        className="h-1.5"
-                        aria-label="Creating patient review"
-                      />
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <p className="max-w-xl text-xs leading-5 text-ink-muted">
-                          Cancel stops uploads and status checks on this device.
-                          A job already accepted by the service may continue.
-                        </p>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={() =>
-                            workflowAbortController.current?.abort()
-                          }
-                        >
-                          Cancel intake
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </>
-          )}
+                ) : null}
+                {!busy &&
+                (error || videoAttentionCount > 0) &&
+                (!processingFinished || retryableVideoIndexes.length > 0) &&
+                (canRecheckProcessing || retryableVideoIndexes.length > 0) ? (
+                  <div className="mt-4 flex justify-end border-t border-rule pt-4">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() =>
+                        void submitReview(
+                          retryableVideoIndexes.length > 0
+                            ? retryableVideoIndexes
+                            : undefined,
+                        )
+                      }
+                    >
+                      {retryableVideoIndexes.length > 0
+                        ? "Retry eligible video uploads"
+                        : hasUnconfirmedVideoOutcome
+                          ? "Continue safe processing"
+                          : "Recheck processing status"}
+                    </Button>
+                  </div>
+                ) : null}
+              </>
+            ))}
         </motion.main>
       </div>
     </MotionConfig>

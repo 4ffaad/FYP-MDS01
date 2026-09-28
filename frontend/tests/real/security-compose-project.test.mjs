@@ -5,6 +5,7 @@ const require = createRequire(import.meta.url);
 const {
   createSecurityComposeProjectName,
   requireSecurityComposeProjectName,
+  resolveSecurityComposeProjectName,
 } = require("./security-compose-project.cjs");
 
 test("security Compose projects are unique, validated run identifiers", () => {
@@ -33,7 +34,32 @@ test("security Compose project generation skips existing output namespaces", () 
 });
 
 test("fixed and caller-chosen Compose project names are rejected", () => {
-  for (const value of [undefined, "mds01-security", "other-project", "mds01-security-123"]) {
-    assert.throws(() => requireSecurityComposeProjectName(value), /generated per-run/);
+  for (const value of [
+    undefined,
+    "mds01-security",
+    "other-project",
+    "mds01-security-123",
+  ]) {
+    assert.throws(
+      () => requireSecurityComposeProjectName(value),
+      /generated per-run/,
+    );
   }
+});
+
+test("security Compose project resolution reuses the parent run namespace", () => {
+  assert.equal(typeof resolveSecurityComposeProjectName, "function");
+  const inherited = `mds01-security-${"c".repeat(32)}`;
+
+  assert.equal(resolveSecurityComposeProjectName(inherited), inherited);
+  assert.equal(
+    resolveSecurityComposeProjectName(undefined, {
+      token: () => "d".repeat(32),
+    }),
+    `mds01-security-${"d".repeat(32)}`,
+  );
+  assert.throws(
+    () => resolveSecurityComposeProjectName("untrusted-project"),
+    /generated per-run/,
+  );
 });

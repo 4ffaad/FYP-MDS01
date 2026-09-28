@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { highestScoringAttribution } from "../../src/lib/research-attribution";
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -7,6 +8,15 @@ test.beforeEach(async ({ page }) => {
     window.localStorage.clear();
     window.sessionStorage.setItem(key, "true");
   });
+});
+
+test("research evidence selects the highest-scoring window independent of order", () => {
+  const lower = { windowIndex: 8, score: 0.62 };
+  const higher = { windowIndex: 3, score: 0.91 };
+
+  expect(highestScoringAttribution([lower, higher])).toBe(higher);
+  expect(highestScoringAttribution([higher, lower])).toBe(higher);
+  expect(highestScoringAttribution([])).toBeNull();
 });
 
 async function seedCompletedStubSession(page: Page, sessionId: string) {
@@ -138,7 +148,7 @@ test("VEEG analysis shows an empty state and no private fields", async ({
   });
 });
 
-test("completed analysis opens a result with a score timeline and explanation notice", async ({
+test("completed analysis explains the model decision, score, threshold, and limitations", async ({
   page,
 }) => {
   await seedCompletedStubSession(page, "MDS-STUB-RESULT");
@@ -166,6 +176,24 @@ test("completed analysis opens a result with a score timeline and explanation no
   );
   if (signalPreviewEnabled) {
     await expect(signalNotice).toHaveCount(0);
+    const viewer = page.getByRole("region", { name: "VEEG waveform review" });
+    await viewer.getByRole("button", { name: /Next/ }).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[aria-label="Loading VEEG review window"]') !==
+        null,
+      undefined,
+      { polling: 10 },
+    );
+    await expect(
+      viewer.getByRole("img", { name: /Display-normalized 18-channel VEEG/ }),
+    ).toHaveCount(0);
+    await expect(
+      viewer.getByRole("status", { name: "Loading VEEG review window" }),
+    ).toBeVisible();
+    await expect(
+      viewer.getByRole("img", { name: /Display-normalized 18-channel VEEG/ }),
+    ).toHaveCount(1);
   } else {
     await expect(signalNotice).toBeVisible();
   }
@@ -213,6 +241,17 @@ test("completed analysis opens a result with a score timeline and explanation no
     page.getByRole("navigation", { name: "Recordings in this session" }),
   ).toBeVisible();
   await expect(page.getByText("Development output only")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Model decision & score" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Peak window score", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      /uncalibrated score, not a confidence estimate or probability/i,
+    ),
+  ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Source EEG event markers" }),
   ).toBeVisible();

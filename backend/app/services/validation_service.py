@@ -8,7 +8,11 @@ import pyedflib
 
 from backend.app.eeg.contracts import EEGInputContractError
 from backend.app.eeg.edf_io import reject_discontinuous_edf, validated_edf_sampling_rate
-from backend.app.eeg.io import validate_legacy_nicolet_e, validate_nicolet
+from backend.app.eeg.io import (
+    unsupported_eeg_format_message,
+    validate_legacy_nicolet_e,
+    validate_nicolet,
+)
 
 
 class ValidationError(ValueError):
@@ -47,7 +51,7 @@ def validate_eeg(path: Path) -> dict:
             "channel_labels": metadata.channel_labels,
             "conversion_details": metadata.conversion_details,
         }
-    raise ValidationError("Unsupported EEG format. Use EDF/EDF+, Nicolet .data with .head, or legacy Nicolet .e.")
+    raise ValidationError(unsupported_eeg_format_message(path))
 
 
 def validate_edf(path: Path) -> dict:

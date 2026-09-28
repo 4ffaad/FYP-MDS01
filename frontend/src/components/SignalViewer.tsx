@@ -205,11 +205,17 @@ export function SignalViewer({
       </div>
 
       <div className="px-4 py-5 sm:px-7 sm:py-7">
-        {loading && !preview ? (
+        {loading ? (
           <div
-            className="h-[39rem] animate-pulse rounded-lg bg-surface-soft"
+            className="grid h-[39rem] place-items-center rounded-lg bg-surface-soft"
+            role="status"
             aria-label="Loading VEEG review window"
-          />
+          >
+            <span className="inline-flex items-center gap-2 text-sm text-ink-muted">
+              <Icon name="spinner" className="size-4 animate-spin" />
+              Loading the selected signal window…
+            </span>
+          </div>
         ) : unavailable ? (
           <div
             className="rounded-lg border border-amber/30 bg-amber-soft px-4 py-4 text-sm text-amber"
@@ -220,15 +226,6 @@ export function SignalViewer({
         ) : preview ? (
           <SignalCanvas preview={preview} />
         ) : null}
-        {loading && preview && (
-          <p
-            className="mt-3 inline-flex items-center gap-2 text-xs text-ink-muted"
-            role="status"
-          >
-            <Icon name="spinner" className="size-3.5 animate-spin" />
-            Loading the selected window…
-          </p>
-        )}
 
         <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-ink-muted">
           <span className="inline-flex items-center gap-2">

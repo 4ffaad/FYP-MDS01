@@ -5,13 +5,15 @@ import { resolve } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 
 const require = createRequire(resolve(process.cwd(), "package.json"));
-const { createSecurityComposeProjectName } = require(
-  "./tests/real/security-compose-project.cjs",
-) as {
-  createSecurityComposeProjectName: (options: {
-    exists: (projectName: string) => boolean;
-  }) => string;
-};
+const { resolveSecurityComposeProjectName } =
+  require("./tests/real/security-compose-project.cjs") as {
+    resolveSecurityComposeProjectName: (
+      value: string | undefined,
+      options?: {
+        exists: (projectName: string) => boolean;
+      },
+    ) => string;
+  };
 
 function findFreeLoopbackPort(): string {
   return execFileSync(
@@ -25,10 +27,13 @@ function findFreeLoopbackPort(): string {
 }
 
 const securityPort = process.env.MDS01_SECURITY_PORT ?? findFreeLoopbackPort();
-const securityProject = createSecurityComposeProjectName({
-  exists: (projectName) =>
-    existsSync(resolve(__dirname, "test-results", projectName)),
-});
+const securityProject = resolveSecurityComposeProjectName(
+  process.env.MDS01_SECURITY_COMPOSE_PROJECT,
+  {
+    exists: (projectName) =>
+      existsSync(resolve(__dirname, "test-results", projectName)),
+  },
+);
 const securityOutputDir = `test-results/${securityProject}`;
 const securityApiBaseUrl = `http://127.0.0.1:${securityPort}`;
 process.env.MDS01_SECURITY_PORT = securityPort;

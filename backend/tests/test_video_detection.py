@@ -189,6 +189,20 @@ class VideoDetectionTests(unittest.TestCase):
                         "seizure_detected": True,
                         "threshold": 0.5,
                         "private_source_path": "/synthetic/private/window-source.mp4",
+                        "model_evidence": {
+                            "method": "patch-occlusion",
+                            "note": "Synthetic non-clinical sensitivity evidence.",
+                            "patches": [
+                                {
+                                    "patch_index": index,
+                                    "component": f"patch-{index}",
+                                    "score_change": index / 100,
+                                    "private_source_path": "/synthetic/private/patch.mp4",
+                                }
+                                for index in range(15)
+                            ],
+                            "private_source_path": "/synthetic/private/evidence.mp4",
+                        },
                     }
                 ],
                 "privacy": {
@@ -219,6 +233,14 @@ class VideoDetectionTests(unittest.TestCase):
         )
         self.assertEqual(public_result["privacy"]["face_detection_coverage"], 1.0)
         self.assertEqual(public_result["predictions"][0]["score"], 0.8)
+        evidence = public_result["predictions"][0]["model_evidence"]
+        self.assertEqual(evidence["method"], "patch-occlusion")
+        self.assertEqual(evidence["note"], "Synthetic non-clinical sensitivity evidence.")
+        self.assertEqual(len(evidence["patches"]), 15)
+        self.assertEqual(
+            evidence["patches"][0],
+            {"patch_index": 0, "component": "patch-0", "score_change": 0.0},
+        )
 
     def test_demo_admin_can_read_other_users_video_detection_jobs(self):
         job_id = self.seed()

@@ -27,6 +27,10 @@ test("synthetic VEEG upload is analyzed without exposing owner-only report detai
   await expect(
     page.getByRole("heading", { name: "Patient details", exact: true }),
   ).toBeVisible({ timeout: 20_000 });
+  await page
+    .getByRole("region", { name: "Patient details" })
+    .getByText("View extracted details", { exact: true })
+    .click();
   await expect(page.getByText(SYNTHETIC_DETAIL)).toBeVisible();
   const finalizedResponse = page.waitForResponse((response) => {
     const pathname = new URL(response.url()).pathname;
@@ -35,16 +39,20 @@ test("synthetic VEEG upload is analyzed without exposing owner-only report detai
       /\/api\/uploads\/drafts\/[^/]+\/finalize$/.test(pathname)
     );
   });
-  await page.getByRole("button", { name: "Create patient review" }).click();
+  await page.getByRole("button", { name: "Start processing" }).click();
   const finalized = await finalizedResponse;
   expect(finalized.ok()).toBeTruthy();
-  const { sessionId, caseId } = (await finalized.json()) as {
-    sessionId: string;
-    caseId: string;
-  };
+  const { session_id: sessionId, case_id: caseId } =
+    (await finalized.json()) as {
+      session_id: string;
+      case_id: string;
+    };
   expect(sessionId).toMatch(/^SES-/);
   expect(caseId).toMatch(/^CASE-/);
-  await expect(page).toHaveURL(new RegExp(`/cases/${caseId}$`));
+  await expect(page).toHaveURL(/\/upload$/);
+  await expect(
+    page.getByRole("region", { name: "Patient processing progress" }),
+  ).toBeVisible();
 
   await expect
     .poll(

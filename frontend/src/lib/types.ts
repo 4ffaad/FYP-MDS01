@@ -78,9 +78,12 @@ export interface Recording {
   privacyMethods?: PrivacyMethod[];
 }
 
+export type PatientNameVerificationStatus = "reviewed" | "auto_extracted";
+
 export interface CaseSummary {
   caseId: string;
   patientName?: string | null;
+  patientNameVerificationStatus?: PatientNameVerificationStatus | null;
   reportSummary?: string | null;
   modalities: Array<"eeg" | "video">;
   analysisCount: number;
@@ -102,6 +105,7 @@ export interface CaseAnalysis {
 export interface CaseDetail {
   caseId: string;
   patientName?: string | null;
+  patientNameVerificationStatus?: PatientNameVerificationStatus | null;
   analyses: CaseAnalysis[];
 }
 
@@ -116,8 +120,9 @@ export interface PatientProfile {
   age: string;
   findings: string;
   details?: PatientProfileDetail[];
-  reviewed: true;
-  reviewedAt: string;
+  reviewed: boolean;
+  verificationStatus: "reviewed" | "auto_extracted";
+  reviewedAt: string | null;
 }
 
 export type SessionStatus =

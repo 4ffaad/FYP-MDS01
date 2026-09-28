@@ -32,6 +32,9 @@ from backend.app.eeg.legacy_nicolet import (
 _MAX_NICOLET_SIGNAL_VALUES = int(
     os.getenv("MDS01_MAX_NICOLET_SIGNAL_VALUES", "20000000")
 )
+_SAFE_DIAGNOSTIC_EXTENSIONS = frozenset(
+    {".bdf", ".cnt", ".edf+", ".eeg", ".fif", ".set", ".vhdr", ".vmrk"}
+)
 if _MAX_NICOLET_SIGNAL_VALUES <= 0:
     raise RuntimeError("MDS01_MAX_NICOLET_SIGNAL_VALUES must be positive.")
 
@@ -63,6 +66,17 @@ def _require_nicolet_file_without_symlinks(path: Path, *, label: str) -> Path:
     return candidate
 
 
+def unsupported_eeg_format_message(path: str | Path) -> str:
+    """Describe an unsupported extension without exposing the source path."""
+
+    suffix = Path(path).suffix.lower()
+    valid_suffix = suffix if suffix in _SAFE_DIAGNOSTIC_EXTENSIONS else "(unknown)"
+    return (
+        f"Unsupported EEG format (extension '{valid_suffix}'). Use EDF/EDF+, "
+        "Nicolet .data with .head, or legacy Nicolet .e."
+    )
+
+
 def detect_eeg_format(path: str | Path) -> str:
     """Return the supported format for one private EEG primary file.
 
@@ -84,7 +98,7 @@ def detect_eeg_format(path: str | Path) -> str:
         return "nicolet"
     if suffix == ".e":
         return "nicolet-e"
-    raise ValueError("Unsupported EEG format. Use EDF/EDF+, Nicolet .data with .head, or legacy Nicolet .e.")
+    raise ValueError(unsupported_eeg_format_message(candidate))
 
 
 def _read_nicolet(path: Path, *, preload: bool):

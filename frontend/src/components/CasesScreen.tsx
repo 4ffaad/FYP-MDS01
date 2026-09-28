@@ -165,6 +165,11 @@ function CaseRow({ item }: { item: CaseSummary }) {
             <h3 className="text-lg font-semibold tracking-tight text-ink">
               {item.patientName?.trim() || "Patient review"}
             </h3>
+            {item.patientNameVerificationStatus === "auto_extracted" && (
+              <span className="rounded-full bg-amber-soft/60 px-2.5 py-1 text-[0.65rem] font-semibold text-ink-muted">
+                Name auto-extracted · not verified
+              </span>
+            )}
             <Status status={item.status} />
           </div>
           <p className="mt-2 line-clamp-2 max-w-4xl text-sm leading-6 text-ink-muted">

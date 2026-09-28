@@ -7,8 +7,9 @@ import { Icon } from "./Icon";
 export type WorkspaceCaseSummary = Pick<
   CaseSummary,
   | "caseId"
+  | "patientName"
+  | "patientNameVerificationStatus"
   | "modalities"
-  | "analysisCount"
   | "latestCreatedAt"
   | "status"
   | "flaggedIntervalCount"
@@ -20,7 +21,7 @@ interface RecentPatientHistoryProps {
   error: string | null;
 }
 
-/** De-identified case shortcuts for the owner's workspace landing page. */
+/** Owner-scoped patient-name shortcuts for the workspace landing page. */
 export function RecentPatientHistory({
   items,
   loading,
@@ -41,7 +42,7 @@ export function RecentPatientHistory({
             Recent patient history
           </h2>
           <p className="mt-1 text-xs leading-5 text-ink-muted">
-            De-identified shortcuts to EEG and video evidence.
+            Owner-scoped names and recent EEG/video review status.
           </p>
         </div>
         <Link
@@ -78,26 +79,29 @@ export function RecentPatientHistory({
         </div>
       ) : (
         <ol className="divide-y divide-rule">
-          {items.map((item, index) => (
+          {items.map((item) => (
             <li key={item.caseId}>
               <Link
                 href={`/cases/${encodeURIComponent(item.caseId)}`}
                 className="group block px-5 py-4 transition-colors hover:bg-surface-soft/70 focus-visible:bg-surface-soft sm:px-6"
               >
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold text-ink group-hover:text-teal-dark">
-                    Review {String(index + 1).padStart(2, "0")}
+                    {item.patientName?.trim() || "Patient name unavailable"}
                   </span>
-                  <span className="rounded-full bg-surface-soft px-2.5 py-1 text-[0.65rem] font-bold uppercase tracking-wide text-ink-muted">
+                  {item.patientNameVerificationStatus === "auto_extracted" && (
+                    <span className="rounded-full bg-amber-soft/60 px-2.5 py-1 text-[0.65rem] font-semibold text-ink-muted">
+                      Name auto-extracted · not verified
+                    </span>
+                  )}
+                  <span className="ml-auto rounded-full bg-surface-soft px-2.5 py-1 text-[0.65rem] font-bold uppercase tracking-wide text-ink-muted">
                     {item.status.replace("_", " ")}
                   </span>
                 </div>
                 <p className="mt-2 text-xs text-ink-muted">
                   {item.modalities
                     .map((modality) => modality.toUpperCase())
-                    .join(" + ")}{" "}
-                  · {item.analysisCount}{" "}
-                  {item.analysisCount === 1 ? "analysis" : "analyses"}
+                    .join(" + ")}
                 </p>
                 <p className="mt-1 text-xs text-ink-faint">
                   Updated {formatDate(item.latestCreatedAt)}

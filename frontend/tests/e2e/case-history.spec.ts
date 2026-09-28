@@ -84,7 +84,7 @@ test("patient history shows a retry state instead of empty state when loading fa
   expect(attempts).toBeGreaterThan(failedAttemptCount);
 });
 
-test("case history shows the patient name without rendering the opaque case ID", async ({
+test("case history hides unverified names from default summaries", async ({
   page,
 }) => {
   requireBackendProjection();
@@ -93,8 +93,9 @@ test("case history shows the patient name without rendering the opaque case ID",
       json: [
         {
           case_id: CASE_ID,
-          patient_name: "Synthetic Case Patient",
-          report_summary: "Synthetic report preview only.",
+          patient_name: null,
+          patient_name_verification_status: null,
+          report_summary: null,
           modalities: ["eeg", "video"],
           analysis_count: 3,
           latest_created_at: REVIEWED_AT,
@@ -109,57 +110,106 @@ test("case history shows the patient name without rendering the opaque case ID",
   await page.goto("/cases");
 
   await expect(
-    page.getByRole("heading", { name: "Synthetic Case Patient" }),
+    page.getByRole("heading", { name: "Patient review" }),
   ).toBeVisible();
+  await expect(page.getByText("Synthetic Case Patient")).toHaveCount(0);
   await expect(page.getByText(CASE_ID, { exact: true })).toHaveCount(0);
   await expect(
-    page.getByRole("link", { name: /Synthetic Case Patient/ }),
+    page.getByRole("link", { name: /Patient review/ }),
   ).toHaveAttribute("href", `/cases/${CASE_ID}`);
-  await expect(page.getByText("Synthetic report preview only.")).toBeVisible();
+  await expect(page.getByText("Synthetic report preview only.")).toHaveCount(0);
 });
 
 test("case detail groups report sections and keeps contact identifiers out of the summary", async ({
   page,
 }) => {
   requireBackendProjection();
-  await page.route(`**/api/cases/${CASE_ID}/patient-profile`, (route) =>
-    route.fulfill({
+  type ProfileReviewPayload = {
+    details: Array<{ label: string; value: string }>;
+    review_confirmed: boolean;
+  };
+  const profileReviewPayloads: ProfileReviewPayload[] = [];
+  const extractedProfileFields = [
+    { label: "Patient Name", value: "Synthetic Case Patient" },
+    { label: "Test Type", value: "Routine EEG" },
+    { label: "Technical summary", value: "Synthetic technical summary." },
+    { label: "Event description", value: "Synthetic observed event." },
+    { label: "Conclusion", value: "Synthetic conclusion." },
+    { label: "Address", value: "42 Synthetic Street" },
+    { label: "Contact phone", value: "555-0100" },
+    { label: "Medical Record Number", value: "SYNTHETIC-MRN-1" },
+    { label: "Date & Time", value: "13/1/2026 6:46:30 AM" },
+    { label: "Field label 20", value: "Synthetic safe extra detail" },
+    {
+      label: "Field label 21",
+      value: "Unit 42, Jalan Synthetic; 012-3456789",
+    },
+  ];
+  await page.route(`**/api/cases/${CASE_ID}/patient-profile`, async (route) => {
+    if (route.request().method() === "PUT") {
+      const reviewPayload = route
+        .request()
+        .postDataJSON() as ProfileReviewPayload;
+      profileReviewPayloads.push(reviewPayload);
+      return route.fulfill({
+        json: {
+          profile: {
+            name: "",
+            hospital_id: "",
+            age: "",
+            findings: "",
+            details: reviewPayload.details,
+            reviewed: true,
+            verification_status: "reviewed",
+            reviewed_at: REVIEWED_AT,
+          },
+        },
+      });
+    }
+    return route.fulfill({
       json: {
         profile: {
           name: "",
           hospital_id: "",
           age: "",
           findings: "",
-          details: [
-            { label: "Patient Name", value: "Synthetic Case Patient" },
-            { label: "Test Type", value: "Routine EEG" },
-            {
-              label: "Technical summary",
-              value: "Synthetic technical summary.",
-            },
-            { label: "Event description", value: "Synthetic observed event." },
-            { label: "Conclusion", value: "Synthetic conclusion." },
-            { label: "Address", value: "42 Synthetic Street" },
-            { label: "Contact phone", value: "555-0100" },
-            { label: "Medical Record Number", value: "SYNTHETIC-MRN-1" },
-            { label: "Date & Time", value: "13/1/2026 6:46:30 AM" },
-            { label: "Field label 20", value: "Synthetic safe extra detail" },
-            {
-              label: "Field label 21",
-              value: "Unit 42, Jalan Synthetic; 012-3456789",
-            },
-          ],
-          reviewed: true,
-          reviewed_at: REVIEWED_AT,
+          details: extractedProfileFields,
+          reviewed: false,
+          verification_status: "auto_extracted",
+          reviewed_at: null,
         },
       },
+    });
+  });
+  await page.route("**/api/cases", (route) =>
+    route.fulfill({
+      json: [
+        {
+          case_id: CASE_ID,
+          patient_name: profileReviewPayloads[0]?.review_confirmed
+            ? "Synthetic Case Patient"
+            : null,
+          patient_name_verification_status: profileReviewPayloads[0]
+            ?.review_confirmed
+            ? "reviewed"
+            : null,
+          report_summary: null,
+          modalities: ["eeg"],
+          analysis_count: 1,
+          latest_created_at: REVIEWED_AT,
+          status: "needs_review",
+          flagged_interval_count: 0,
+          explanation_ready: true,
+        },
+      ],
     }),
   );
   await page.route(`**/api/cases/${CASE_ID}`, (route) =>
     route.fulfill({
       json: {
         case_id: CASE_ID,
-        patient_name: "Synthetic Case Patient",
+        patient_name: null,
+        patient_name_verification_status: null,
         analyses: [
           {
             id: "SES-SYNTHETIC",
@@ -196,7 +246,16 @@ test("case detail groups report sections and keeps contact identifiers out of th
   await page.goto(`/cases/${CASE_ID}`);
 
   await expect(
+    page.getByRole("heading", { name: "Patient review" }),
+  ).toBeVisible();
+  await expect(
     page.getByRole("heading", { name: "Synthetic Case Patient" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Synthetic Case Patient", { exact: true }),
+  ).toBeHidden();
+  await expect(
+    page.getByText("Name auto-extracted · not verified", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText(CASE_ID, { exact: true })).toHaveCount(0);
   await expect(
@@ -204,22 +263,65 @@ test("case detail groups report sections and keeps contact identifiers out of th
   ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Technical summary" }),
-  ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Events" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Conclusion" })).toBeVisible();
-  await expect(page.getByText("Synthetic technical summary.")).toBeVisible();
-  await expect(page.getByText("Synthetic observed event.")).toBeVisible();
-  await expect(page.getByText("Synthetic conclusion.").first()).toBeVisible();
-  await expect(page.getByText("42 Synthetic Street")).toHaveCount(0);
-  await expect(page.getByText("555-0100")).toHaveCount(0);
-  await expect(page.getByText("SYNTHETIC-MRN-1")).toHaveCount(0);
-  await expect(page.getByText("Synthetic safe extra detail")).not.toBeVisible();
-  await expect(
-    page.getByText("Unit 42, Jalan Synthetic; 012-3456789"),
   ).toHaveCount(0);
-  await page.getByText(/Other report details/).click();
-  await expect(page.getByText("Synthetic safe extra detail")).toBeVisible();
-  await expect(page.getByText("13/1/2026 6:46:30 AM")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Events", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Conclusion", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Synthetic technical summary.", { exact: true }),
+  ).toBeHidden();
+  await expect(
+    page.getByText("Synthetic observed event.", { exact: true }),
+  ).toBeHidden();
+  await expect(
+    page.getByText("Synthetic conclusion.", { exact: true }),
+  ).toBeHidden();
+  const extractedDetails = page
+    .locator("details")
+    .filter({ hasText: "All extracted report details" });
+  await expect(extractedDetails).toHaveCount(1);
+  await expect(extractedDetails).not.toHaveAttribute("open");
+  await expect(
+    page.getByRole("button", { name: "Mark details reviewed" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("42 Synthetic Street", { exact: true }),
+  ).toBeHidden();
+  await expect(page.getByText("555-0100", { exact: true })).toBeHidden();
+  await expect(page.getByText("SYNTHETIC-MRN-1", { exact: true })).toBeHidden();
+  await expect(
+    page.getByText("Unit 42, Jalan Synthetic; 012-3456789", { exact: true }),
+  ).toBeHidden();
+
+  const otherReportDetails = page
+    .locator("details")
+    .filter({ hasText: /Other report details/ });
+  await otherReportDetails.locator("summary").click();
+  await expect(
+    otherReportDetails.getByText("Synthetic safe extra detail", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    otherReportDetails.getByText("13/1/2026 6:46:30 AM", { exact: true }),
+  ).toBeVisible();
+  await expect(extractedDetails).not.toHaveAttribute("open");
+
+  await extractedDetails.locator("summary").click();
+  await expect(
+    page.getByRole("button", { name: "Mark details reviewed" }),
+  ).toBeVisible();
+  await expect(
+    extractedDetails.getByText("42 Synthetic Street", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    extractedDetails.getByText("Synthetic technical summary.", {
+      exact: true,
+    }),
+  ).toBeVisible();
 
   await expect(
     page.getByRole("button", { name: /View original report PDF/ }),
@@ -237,6 +339,39 @@ test("case detail groups report sections and keeps contact identifiers out of th
 
   await page.getByRole("button", { name: "View original report PDF" }).click();
   await expect(page.getByTitle("Original source report PDF")).toBeVisible();
+
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Mark details reviewed" }).click();
+  await expect(
+    page.getByRole("button", { name: "Mark details reviewed" }),
+  ).toHaveCount(0);
+  await expect(page.getByText(/^Details reviewed/)).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Synthetic Case Patient" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Technical summary" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Events", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Conclusion", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Name auto-extracted · not verified", { exact: true }),
+  ).toHaveCount(0);
+  expect(profileReviewPayloads).toHaveLength(1);
+  expect(profileReviewPayloads[0]?.review_confirmed).toBe(true);
+  expect(profileReviewPayloads[0]?.details).toEqual(extractedProfileFields);
+
+  await page.goto("/cases");
+  await expect(
+    page.getByRole("link", { name: /Synthetic Case Patient/ }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Synthetic conclusion.", { exact: true }),
+  ).toHaveCount(0);
 });
 
 test("combined printable report omits private patient-profile values", async ({
@@ -647,7 +782,7 @@ test("navigation highlights only the active screen and labels cases as Patient H
   ).toHaveCount(0);
 });
 
-test("workspace previews recent cases without rendering patient details", async ({
+test("workspace shows only reviewed names without exposing report text or case IDs", async ({
   page,
 }) => {
   requireBackendProjection();
@@ -657,8 +792,9 @@ test("workspace previews recent cases without rendering patient details", async 
       json: [
         {
           case_id: "CASE-RECENT-1",
-          patient_name: "Synthetic Private Name",
-          report_summary: "Synthetic private report summary.",
+          patient_name: null,
+          patient_name_verification_status: null,
+          report_summary: null,
           modalities: ["eeg", "video"],
           analysis_count: 3,
           latest_created_at: "2026-09-27T00:00:00Z",
@@ -669,6 +805,7 @@ test("workspace previews recent cases without rendering patient details", async 
         {
           case_id: "CASE-RECENT-2",
           patient_name: "Another Synthetic Name",
+          patient_name_verification_status: "reviewed",
           report_summary: "Another private report summary.",
           modalities: ["eeg"],
           analysis_count: 1,
@@ -686,22 +823,27 @@ test("workspace previews recent cases without rendering patient details", async 
   await expect(
     page.getByRole("heading", { name: "Recent patient history" }),
   ).toBeVisible();
-  await expect(page.getByRole("link", { name: /Review 01/ })).toHaveAttribute(
-    "href",
-    "/cases/CASE-RECENT-1",
+  const recentHistory = page.getByRole("region", {
+    name: "Recent patient history",
+  });
+  await expect(
+    recentHistory.getByRole("link", { name: /Patient name unavailable/ }),
+  ).toHaveAttribute("href", "/cases/CASE-RECENT-1");
+  await expect(
+    recentHistory.getByRole("link", { name: /Another Synthetic Name/ }),
+  ).toHaveAttribute("href", "/cases/CASE-RECENT-2");
+  await expect(recentHistory.getByText("Synthetic Private Name")).toHaveCount(
+    0,
   );
-  await expect(page.getByRole("link", { name: /Review 02/ })).toHaveAttribute(
-    "href",
-    "/cases/CASE-RECENT-2",
-  );
-  await expect(page.getByText("Synthetic Private Name")).toHaveCount(0);
-  await expect(page.getByText("Another Synthetic Name")).toHaveCount(0);
+  await expect(recentHistory.getByText("Another Synthetic Name")).toBeVisible();
   await expect(page.getByText("Synthetic private report summary.")).toHaveCount(
     0,
   );
   await expect(page.getByText("Another private report summary.")).toHaveCount(
     0,
   );
+  await expect(recentHistory.getByText(/3 analyses/)).toHaveCount(0);
+  await expect(recentHistory.getByText(/1 analysis/)).toHaveCount(0);
   await expect(page.getByText("CASE-RECENT-1", { exact: true })).toHaveCount(0);
   await expect(
     page

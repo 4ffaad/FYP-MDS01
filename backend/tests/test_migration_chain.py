@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_CONFIG = REPOSITORY_ROOT / "backend" / "alembic.ini"
-EXPECTED_HEAD = "028_video_privacy_fingerprint"
+EXPECTED_HEAD = "029_profile_verification_status"
 
 
 class MigrationChainTests(unittest.TestCase):
@@ -70,6 +70,15 @@ class MigrationChainTests(unittest.TestCase):
             }
             self.assertIn("idempotency_key_hash", privacy_columns)
             self.assertIn("content_fingerprint", privacy_columns)
+
+            profile_columns = {
+                column[1]: column for column in connection.execute(
+                    "PRAGMA table_info(case_patient_profiles)"
+                )
+            }
+            self.assertIn("verification_status", profile_columns)
+            self.assertEqual(0, profile_columns["reviewed_by_user_id"][3])
+            self.assertEqual(0, profile_columns["reviewed_at"][3])
 
     def test_upgrade_from_021_reaches_current_owner_scoped_schema(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mds01-alembic-021-") as directory:

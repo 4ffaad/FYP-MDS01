@@ -232,6 +232,18 @@ class PatientProfileApiTests(unittest.TestCase):
             self.assertNotIn("47 years", payload)
             self.assertNotIn("Synthetic reviewed finding", payload)
 
+        case_list = self.client.get("/api/cases", headers=headers).json()
+        case_detail = self.client.get(
+            f"/api/cases/{self.case_id}", headers=headers
+        ).json()
+        self.assertEqual(case_list[0]["patient_name"], "Synthetic Patient")
+        self.assertEqual(
+            case_list[0]["patient_name_verification_status"], "reviewed"
+        )
+        self.assertEqual(case_detail["patient_name"], "Synthetic Patient")
+        self.assertEqual(
+            case_detail["patient_name_verification_status"], "reviewed"
+        )
         loaded = self.client.get(
             f"/api/cases/{self.case_id}/patient-profile", headers=headers
         )
@@ -267,6 +279,72 @@ class PatientProfileApiTests(unittest.TestCase):
         )
         self.assertEqual(loaded.status_code, 200, loaded.text)
         self.assertEqual(loaded.json()["profile"]["details"], details)
+
+    def test_auto_extracted_profile_is_encrypted_owner_scoped_and_unverified(self) -> None:
+        headers = {"Origin": "http://localhost:3000"}
+        details = [
+            {"label": "Patient Name", "value": "Synthetic Patient"},
+            {"label": "Hospital ID", "value": "HOSP-001"},
+            {"label": "Findings", "value": "Synthetic extracted finding."},
+        ]
+        response = self.client.put(
+            f"/api/cases/{self.case_id}/patient-profile/extracted",
+            json={"details": details},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        profile = response.json()["profile"]
+        self.assertEqual(profile["verification_status"], "auto_extracted")
+        self.assertFalse(profile["reviewed"])
+        self.assertIsNone(profile["reviewed_at"])
+        self.assertEqual(profile["details"], details)
+        self.assertEqual(profile["name"], "Synthetic Patient")
+        for generic_response in (
+            self.client.get("/api/cases", headers=headers),
+            self.client.get(f"/api/cases/{self.case_id}", headers=headers),
+        ):
+            self.assertEqual(generic_response.status_code, 200)
+            self.assertNotIn("Synthetic Patient", generic_response.text)
+            self.assertNotIn("HOSP-001", generic_response.text)
+            self.assertNotIn("47 years", generic_response.text)
+            self.assertNotIn("Synthetic extracted finding", generic_response.text)
+            payload = generic_response.json()
+            summary = payload[0] if isinstance(payload, list) else payload
+            self.assertIsNone(summary["patient_name"])
+            self.assertIsNone(summary["patient_name_verification_status"])
+            self.assertIsNone(summary.get("report_summary"))
+
+        with Session(self.engine) as db:
+            stored = db.exec(select(CasePatientProfile)).one()
+            self.assertEqual(stored.verification_status, "auto_extracted")
+            self.assertIsNone(stored.reviewed_by_user_id)
+            self.assertIsNone(stored.reviewed_at)
+            self.assertNotIn(b"Synthetic Patient", stored.identity_ciphertext)
+            self.assertNotIn(b"Synthetic extracted finding", stored.identity_ciphertext)
+
+        loaded = self.client.get(
+            f"/api/cases/{self.case_id}/patient-profile", headers=headers
+        )
+        self.assertEqual(loaded.status_code, 200, loaded.text)
+        self.assertEqual(
+            loaded.json()["profile"]["verification_status"], "auto_extracted"
+        )
+        self.assertFalse(loaded.json()["profile"]["reviewed"])
+
+        self.client.post("/api/auth/logout", headers=headers)
+        self._register("bob@example.test")
+        bob_headers = {"Origin": "http://localhost:3000"}
+        forbidden_read = self.client.get(
+            f"/api/cases/{self.case_id}/patient-profile", headers=bob_headers
+        )
+        self.assertEqual(forbidden_read.status_code, 404)
+        forbidden = self.client.put(
+            f"/api/cases/{self.case_id}/patient-profile/extracted",
+            json={"details": details},
+            headers=bob_headers,
+        )
+        self.assertEqual(forbidden.status_code, 404)
 
     def test_legacy_age_field_rejects_dates_and_dob_labels(self) -> None:
         url = f"/api/cases/{self.case_id}/patient-profile"

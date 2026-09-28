@@ -95,6 +95,7 @@ test("case profile state is hidden when its case does not match the route", () =
       findings: "",
       details: [{ label: "Patient name", value: "Synthetic Patient A" }],
       reviewed: true as const,
+      verificationStatus: "reviewed" as const,
       reviewedAt: "2026-09-26T00:00:00Z",
     },
     error: null,
@@ -450,14 +451,15 @@ test("a delayed report response cannot replace details from a newer folder", asy
     await folderInput.setInputFiles(firstFolder);
     await firstStarted;
     await folderInput.setInputFiles(secondFolder);
-    const continueButton = page.getByRole("button", {
-      name: "Continue to patient details",
+    const patientDetails = page.getByRole("region", {
+      name: "Patient details",
     });
-    await expect(continueButton).toBeEnabled();
-    await continueButton.click();
-
     await expect(
-      page.getByText("Synthetic Patient B", { exact: true }),
+      patientDetails.getByText("Synthetic Patient B", { exact: true }),
+    ).toBeHidden();
+    await patientDetails.getByText("View extracted details").click();
+    await expect(
+      patientDetails.getByText("Synthetic Patient B", { exact: true }),
     ).toBeVisible();
     releaseFirst();
     await firstFinished;
@@ -474,7 +476,7 @@ test("a delayed report response cannot replace details from a newer folder", asy
   }
 });
 
-test("folder review lets the user opt in to extracted report details on step two", async ({
+test("folder review displays all extracted details without a confirmation step", async ({
   page,
 }) => {
   test.skip(
@@ -497,8 +499,6 @@ test("folder review lets the user opt in to extracted report details on step two
           ],
           truncated: false,
         },
-        requiresHumanReview: true,
-        stored: false,
       }),
     });
   });
@@ -516,59 +516,33 @@ test("folder review lets the user opt in to extracted report details on step two
       .locator('input[type="file"][webkitdirectory]')
       .setInputFiles(folder);
 
+    const details = page.getByRole("region", { name: "Patient details" });
+    const extractedDetails = details.locator("details");
+    await expect(extractedDetails).toHaveJSProperty("open", false);
     await expect(
-      page.getByRole("region", { name: "2 EEG recordings" }),
-    ).toContainText("included automatically");
-    await expect(page.getByLabel(/Include EEG recording/)).toHaveCount(0);
-    await expect(
-      page.getByRole("region", { name: "Patient details" }),
-    ).toHaveCount(0);
-    await page
-      .getByRole("button", { name: "Continue to patient details" })
-      .click();
-
-    const reportDetails = page.getByRole("region", { name: "Patient details" });
-    await expect(reportDetails.getByRole("checkbox")).toHaveCount(5);
-    for (const label of [
-      "Patient Name",
-      "Hospital ID",
-      "Age",
-      "Findings",
-      "Medication",
+      details.getByText("Synthetic Person", { exact: true }),
+    ).toBeHidden();
+    await extractedDetails.locator("summary").click();
+    for (const value of [
+      "Synthetic Person",
+      "H-42",
+      "47 years",
+      "Synthetic finding.",
+      "synthetic medication",
     ]) {
-      await expect(
-        reportDetails.getByRole("checkbox", {
-          name: `Include detail ${label}`,
-        }),
-      ).not.toBeChecked();
+      await expect(details).toContainText(value);
     }
-    await reportDetails
-      .getByRole("checkbox", { name: "Include detail Findings" })
-      .check();
-    await expect(reportDetails).toContainText("Patient Name");
-    await expect(reportDetails).toContainText("Synthetic Person");
-    await expect(reportDetails).toContainText("Hospital ID");
-    await expect(reportDetails).toContainText("H-42");
-    await expect(reportDetails).toContainText("Age");
-    await expect(reportDetails).toContainText("47 years");
-    await expect(reportDetails).toContainText("Findings");
-    await expect(reportDetails).toContainText("Synthetic finding.");
-    await expect(reportDetails).toContainText("Medication");
-    await expect(reportDetails).toContainText("synthetic medication");
-    await expect(reportDetails.locator("input, textarea, button")).toHaveCount(
-      5,
-    );
+    await expect(details.getByRole("checkbox")).toHaveCount(0);
+    await expect(details.locator("input, textarea, button")).toHaveCount(0);
     await expect(
-      page.getByLabel(/Report field name|Report field value|Remove detail/),
-    ).toHaveCount(0);
-
+      page.getByRole("region", { name: "Video input" }),
+    ).toContainText("1 video clip included automatically");
     await expect(
-      page.getByRole("button", { name: "Create patient review" }),
+      page.getByRole("button", { name: "Start processing" }),
     ).toBeDisabled();
     await expect(
-      page.getByText("Connect the local API to create a review."),
+      page.getByText("Connect the local API to create a patient review."),
     ).toBeVisible();
-    await expect(page.getByText(/UI stub mode is active/)).toHaveCount(0);
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(350);
     const viewport = await page.evaluate(() => ({
@@ -583,9 +557,6 @@ test("folder review lets the user opt in to extracted report details on step two
     expect(viewport.documentWidth).toBeLessThanOrEqual(viewport.width);
     expect(viewport.headerBottom).toBeLessThanOrEqual(viewport.mainTop ?? 0);
     await page.screenshot({
-      path: test.info().outputPath("patient-folder-viewport.png"),
-    });
-    await page.screenshot({
       path: test.info().outputPath("patient-folder-review.png"),
       fullPage: true,
     });
@@ -594,18 +565,18 @@ test("folder review lets the user opt in to extracted report details on step two
   }
 });
 
-test("an empty report extraction offers manual approved-field entry", async ({
+test("empty report extraction has no field-selection controls", async ({
   page,
 }) => {
   test.skip(
     process.env.NEXT_PUBLIC_USE_API_STUB !== "true",
-    "This test covers local manual-entry recovery in the disconnected API-stub view.",
+    "This test covers local report extraction in the disconnected API-stub view.",
   );
   await page.route("**/api/patient-report", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      json: { draft: { details: [], truncated: false }, stored: false },
+      json: { draft: { details: [], truncated: false } },
     }),
   );
   await page.goto("/upload");
@@ -620,28 +591,13 @@ test("an empty report extraction offers manual approved-field entry", async ({
       .locator('input[type="file"][webkitdirectory]')
       .setInputFiles(folder);
 
-    await expect(
-      page.getByRole("region", { name: "1 EEG recording", exact: true }),
-    ).toContainText("included automatically");
-    const continueButton = page.getByRole("button", {
-      name: "Continue to patient details",
-    });
-    await expect(continueButton).toBeEnabled();
-    await continueButton.click();
-
     const details = page.getByRole("region", { name: "Patient details" });
-    await expect(details).toContainText("No report details were extracted");
-    await page.getByRole("button", { name: "Add approved detail" }).click();
-    await page.getByLabel("Report field name 1").fill("Reviewed finding");
-    await page
-      .getByLabel("Report field value 1")
-      .fill("Synthetic manually reviewed detail");
-    const include = details.getByRole("checkbox", {
-      name: "Include detail Reviewed finding",
-    });
-    await expect(include).not.toBeChecked();
-    await include.check();
-    await expect(details).toContainText("1 field selected");
+    await expect(details).toContainText("No patient details were extracted");
+    await expect(details.getByRole("checkbox")).toHaveCount(0);
+    await expect(details.getByRole("button")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Start processing" }),
+    ).toBeDisabled();
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
@@ -687,26 +643,22 @@ test("video clips are summarized and included automatically for VSViG", async ({
       .locator('input[type="file"][webkitdirectory]')
       .setInputFiles(folder);
 
-    const videoProcessing = page.getByRole("region", {
-      name: "Video processing",
+    const videoInput = page.getByRole("region", {
+      name: "Video input",
     });
-    await expect(videoProcessing).toContainText(
+    await expect(videoInput).toContainText(
       "2 video clips included automatically",
     );
-    await expect(videoProcessing).toContainText(
+    await expect(videoInput).toContainText(
       "Full-frame blur runs before VSViG analysis",
     );
-    await expect(page.getByText("Clip 1", { exact: false })).toHaveCount(0);
-    await expect(page.getByText("Clip 2", { exact: false })).toHaveCount(0);
+    await expect(page.getByText("EEG input", { exact: true })).toHaveCount(0);
     await expect(
-      page.getByRole("region", { name: "2 EEG recordings" }),
-    ).toContainText("included automatically");
-    await expect(page.getByLabel(/Include EEG recording/)).toHaveCount(0);
-    await expect(
-      page.getByRole("region", { name: "Patient details" }),
+      page.getByRole("region", { name: /\d+ EEG recordings?/ }),
     ).toHaveCount(0);
-    await expect(videoProcessing.getByRole("checkbox")).toHaveCount(0);
-    await expect(videoProcessing.getByRole("button")).toHaveCount(0);
+    await expect(page.getByLabel(/Include EEG recording/)).toHaveCount(0);
+    await expect(videoInput.getByRole("checkbox")).toHaveCount(0);
+    await expect(videoInput.getByRole("button")).toHaveCount(0);
     const privacySettings = page.getByRole("region", {
       name: "Privacy settings",
     });
@@ -715,17 +667,27 @@ test("video clips are summarized and included automatically for VSViG", async ({
       privacySettings.getByRole("checkbox", { name: "Signal obfuscation" }),
     ).toBeVisible();
     await expect(
+      privacySettings.getByRole("heading", {
+        name: "Privacy representation preview",
+      }),
+    ).toBeVisible();
+    await expect(privacySettings).toContainText("Before · staged");
+    await expect(privacySettings).toContainText("After · metadata scrubbed");
+    await expect(privacySettings).toContainText(
+      "Illustrative preview — synthetic data, not your uploaded VEEG.",
+    );
+    await expect(
       page.getByRole("checkbox", { name: /VSViG analysis for clip/ }),
     ).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: /Check selected clips/ }),
-    ).toHaveCount(0);
+      page.getByRole("button", { name: "Start processing" }),
+    ).toBeVisible();
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
 });
 
-test("one patient folder persists only explicitly selected report details", async ({
+test("one patient folder includes every report detail and proceeds directly to processing", async ({
   page,
 }) => {
   test.skip(
@@ -734,11 +696,18 @@ test("one patient folder persists only explicitly selected report details", asyn
   );
   const createdAt = "2026-09-27T00:00:00Z";
   const archiveContentTypes: string[] = [];
-  let archiveEntries: string[] = [];
   let finalizedPayload = "";
   let savedDetails: Array<{ label: string; value: string }> = [];
-  let reviewConfirmed = false;
+  let profileVerificationStatus: string | null = null;
   const videoDetectionRequests: string[] = [];
+  let releaseUploadResponse = () => {};
+  let markUploadStarted = () => {};
+  const uploadResponseGate = new Promise<void>((resolve) => {
+    releaseUploadResponse = resolve;
+  });
+  const uploadStarted = new Promise<void>((resolve) => {
+    markUploadStarted = resolve;
+  });
 
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
@@ -760,12 +729,11 @@ test("one patient folder persists only explicitly selected report details", asyn
       },
     }),
   );
-  await page.route("**/api/uploads/drafts", (route) => {
+  await page.route("**/api/uploads/drafts", async (route) => {
     const request = route.request();
     archiveContentTypes.push(request.headers()["content-type"] ?? "");
-    const body = request.postDataBuffer();
-    if (body)
-      archiveEntries = Object.keys(unzipSync(new Uint8Array(body))).sort();
+    markUploadStarted();
+    await uploadResponseGate;
     return route.fulfill({
       status: 201,
       json: {
@@ -787,27 +755,51 @@ test("one patient folder persists only explicitly selected report details", asyn
       },
     });
   });
+  await page.route("**/api/sessions/MDS-SYNTHETIC", (route) =>
+    route.fulfill({
+      json: {
+        session_id: "MDS-SYNTHETIC",
+        case_id: "CASE-SYNTHETIC",
+        privacy_method: "metadata-scrub",
+        privacy_methods: ["metadata-scrub", "signal-obfuscation"],
+        status: "completed",
+        current_stage: "complete",
+        created_at: createdAt,
+        completed_at: createdAt,
+        error_message: null,
+        progress: {
+          total_recordings: 2,
+          finished_recordings: 2,
+          completed_recordings: 2,
+          failed_recordings: 0,
+          percent: 100,
+        },
+        summary: { model_alert_recordings: 0 },
+        recordings: [],
+      },
+    }),
+  );
   await page.route(
-    "**/api/cases/CASE-SYNTHETIC/patient-profile",
+    "**/api/cases/CASE-SYNTHETIC/patient-profile**",
     async (route) => {
       if (route.request().method() === "PUT") {
         const payload = route.request().postDataJSON() as {
           details: Array<{ label: string; value: string }>;
-          review_confirmed: boolean;
         };
         savedDetails = payload.details;
-        reviewConfirmed = payload.review_confirmed;
+        profileVerificationStatus = "auto_extracted";
       }
       return route.fulfill({
         json: {
           profile: {
-            name: "",
-            hospital_id: "",
-            age: "",
+            name: "Synthetic Person",
+            hospital_id: "Synthetic-H42",
+            age: "47 years",
             findings: "",
             details: savedDetails,
-            reviewed: true,
-            reviewed_at: createdAt,
+            reviewed: false,
+            verification_status: "auto_extracted",
+            reviewed_at: null,
           },
         },
       });
@@ -834,6 +826,21 @@ test("one patient folder persists only explicitly selected report details", asyn
     (route) => route.fulfill({ json: { jobs: [] } }),
   );
 
+  await page.addInitScript(() => {
+    const send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function (body) {
+      if (body instanceof Blob && body.size > 0) {
+        this.upload.dispatchEvent(
+          new ProgressEvent("progress", {
+            lengthComputable: true,
+            loaded: 18,
+            total: 100,
+          }),
+        );
+      }
+      return send.call(this, body);
+    };
+  });
   await page.goto("/upload");
   const scratch = process.env.TMPDIR;
   if (!scratch)
@@ -847,63 +854,94 @@ test("one patient folder persists only explicitly selected report details", asyn
       .locator('input[type="file"][webkitdirectory]')
       .setInputFiles(folder);
 
-    await expect(
-      page.getByRole("region", { name: "2 EEG recordings" }),
-    ).toContainText("included automatically");
-    await expect(page.getByLabel(/Include EEG recording/)).toHaveCount(0);
     const mediaPrivacy = page.getByRole("region", { name: "Privacy settings" });
     await mediaPrivacy
       .getByRole("checkbox", { name: "Signal obfuscation" })
       .check();
-    await page
-      .getByRole("button", { name: "Continue to patient details" })
-      .click();
-
     const reportDetails = page.getByRole("region", { name: "Patient details" });
-    await expect(reportDetails.getByRole("checkbox")).toHaveCount(4);
-    for (const label of ["Patient Name", "Hospital ID", "Age", "Findings"]) {
-      await expect(
-        reportDetails.getByRole("checkbox", {
-          name: `Include detail ${label}`,
-        }),
-      ).not.toBeChecked();
+    const extractedDetails = reportDetails.locator("details");
+    await expect(extractedDetails).toHaveJSProperty("open", false);
+    await extractedDetails.locator("summary").click();
+    for (const value of [
+      "Synthetic Person",
+      "Synthetic-H42",
+      "47 years",
+      "Synthetic reviewed finding.",
+    ]) {
+      await expect(reportDetails).toContainText(value);
     }
-    await reportDetails
-      .getByRole("checkbox", { name: "Include detail Age" })
-      .check();
-    await reportDetails
-      .getByRole("checkbox", { name: "Include detail Findings" })
-      .check();
-    await page.getByRole("button", { name: "Create patient review" }).click();
+    await expect(
+      page.getByRole("checkbox", { name: /Include detail/ }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Continue to patient details" }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "Start processing" }).click();
+
+    await uploadStarted;
+    const uploadProgress = page.getByRole("region", {
+      name: "Recording analysis",
+    });
+    await expect(uploadProgress).toContainText(
+      "2 EEG recordings · 18% of archive uploaded",
+    );
+    await expect(
+      uploadProgress.getByRole("progressbar", {
+        name: "EEG processing progress",
+      }),
+    ).toHaveJSProperty("value", 18);
+    releaseUploadResponse();
+
+    await expect(
+      page.getByRole("heading", { name: "Processing complete" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("2 of 2 EEG recordings complete"),
+    ).toBeVisible();
+    await page.getByRole("link", { name: "Open patient history" }).click();
 
     await expect(page).toHaveURL(/\/cases\/CASE-SYNTHETIC$/);
     await expect(
       page.getByRole("heading", { name: "Report overview" }),
     ).toBeVisible();
     await expect(
-      page.getByText("Synthetic Person", { exact: true }),
-    ).toHaveCount(0);
-    await page.getByText(/Other report details/).click();
-    await expect(page.getByText("47 years", { exact: true })).toBeVisible();
-    await expect(
-      page.getByText("Synthetic reviewed finding.").first(),
+      page.getByRole("heading", { name: "Patient review" }),
     ).toBeVisible();
-    await expect(page.getByText("Synthetic-H42", { exact: true })).toHaveCount(
-      0,
+    await expect(
+      page.getByRole("heading", { name: "Synthetic Person" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText("Synthetic Person", { exact: true }),
+    ).toBeHidden();
+    const allExtractedDetails = page
+      .locator("details")
+      .filter({ hasText: "All extracted report details" });
+    await expect(allExtractedDetails).toHaveJSProperty("open", false);
+    await expect(allExtractedDetails).toContainText("47 years");
+    await expect(allExtractedDetails).toContainText(
+      "Synthetic reviewed finding.",
     );
+    await expect(allExtractedDetails).toContainText("Synthetic-H42");
+    await expect(
+      page.getByText("Auto-extracted · not reviewed", {
+        exact: true,
+      }),
+    ).toBeVisible();
 
-    expect(reviewConfirmed).toBe(true);
+    expect(profileVerificationStatus).toBe("auto_extracted");
     expect(savedDetails.map((detail) => detail.label)).toEqual([
+      "Patient Name",
+      "Hospital ID",
       "Age",
       "Findings",
     ]);
     expect(archiveContentTypes).toEqual(["application/octet-stream"]);
-    expect(archiveEntries).toEqual(["recording-01.e", "recording-02.e"]);
     expect(finalizedPayload).toContain(
       '["metadata-scrub","signal-obfuscation"]',
     );
     expect(videoDetectionRequests).toEqual([]);
   } finally {
+    releaseUploadResponse();
     rmSync(folder, { recursive: true, force: true });
   }
 });
@@ -974,7 +1012,7 @@ test("canceling finalization prevents a late patient-case redirect", async ({
     },
   );
   await page.route(
-    "**/api/cases/CASE-CANCEL/patient-profile",
+    "**/api/cases/CASE-CANCEL/patient-profile**",
     async (route) => {
       const body = route.request().postDataJSON() as {
         details: Array<{ label: string; value: string }>;
@@ -987,8 +1025,9 @@ test("canceling finalization prevents a late patient-case redirect", async ({
             age: "",
             findings: "",
             details: body.details,
-            reviewed: true,
-            reviewed_at: reviewedAt,
+            reviewed: false,
+            verification_status: "auto_extracted",
+            reviewed_at: null,
           },
         },
       });
@@ -1006,13 +1045,7 @@ test("canceling finalization prevents a late patient-case redirect", async ({
     await page
       .locator('input[type="file"][webkitdirectory]')
       .setInputFiles(folder);
-    await page
-      .getByRole("button", { name: "Continue to patient details" })
-      .click();
-    await page
-      .getByRole("checkbox", { name: "Include detail Findings" })
-      .check();
-    await page.getByRole("button", { name: "Create patient review" }).click();
+    await page.getByRole("button", { name: "Start processing" }).click();
     await finalizeStarted;
 
     await page.getByRole("button", { name: "Cancel intake" }).click();
@@ -1030,7 +1063,7 @@ test("canceling finalization prevents a late patient-case redirect", async ({
   }
 });
 
-test("media intake includes every EEG and defers patient details to the next step", async ({
+test("media intake splits EEG privacy from video input and shows details inline", async ({
   page,
 }) => {
   test.skip(
@@ -1050,8 +1083,6 @@ test("media intake includes every EEG and defers patient details to the next ste
           ],
           truncated: false,
         },
-        requiresHumanReview: true,
-        stored: false,
       },
     }),
   );
@@ -1070,67 +1101,53 @@ test("media intake includes every EEG and defers patient details to the next ste
       .locator('input[type="file"][webkitdirectory]')
       .setInputFiles(folder);
 
-    const eeg = page.getByRole("region", { name: "EEG recordings" });
-    const video = page.getByRole("region", { name: "Video processing" });
+    const video = page.getByRole("region", { name: "Video input" });
     const privacy = page.getByRole("region", { name: "Privacy settings" });
-    await expect(eeg).toContainText("2 EEG recordings");
-    await expect(eeg).toContainText("included automatically");
-    await expect(video).toContainText("2 video clips");
-    await expect(video).toContainText("included automatically");
+    const details = page.getByRole("region", { name: "Patient details" });
+    await expect(privacy).toContainText(
+      "2 EEG recordings included automatically and analyzed independently",
+    );
+    await expect(video).toContainText("2 video clips included automatically");
     await expect(video).toContainText("Full-frame blur runs before VSViG");
-    await expect(video.getByRole("checkbox")).toHaveCount(0);
-    await expect(page.getByLabel(/Include EEG recording/)).toHaveCount(0);
+    await expect(page.getByText("EEG input", { exact: true })).toHaveCount(0);
     await expect(
-      page.getByText(/clip-one\.avi|clip-two\.avi|Clip 1|Clip 2/),
+      page.getByRole("region", { name: /\d+ EEG recordings?/ }),
     ).toHaveCount(0);
-    await expect(
-      page.getByRole("region", { name: "Patient details" }),
-    ).toHaveCount(0);
-    await expect(privacy.getByRole("checkbox")).toHaveCount(1);
     await expect(
       privacy.getByRole("checkbox", { name: "Signal obfuscation" }),
     ).toBeVisible();
+    await expect(
+      privacy.getByRole("heading", { name: "Privacy representation preview" }),
+    ).toBeVisible();
+    await expect(privacy).toContainText("Before · staged");
+    await expect(privacy).toContainText("After · metadata scrubbed");
+    await expect(privacy).toContainText(
+      "Illustrative preview — synthetic data, not your uploaded VEEG.",
+    );
+    await expect(
+      details.getByText("Synthetic Person", { exact: true }),
+    ).toBeHidden();
+    await details.getByText("View extracted details").click();
+    await expect(
+      details.getByText("Synthetic Person", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      details.getByText("Synthetic finding.", { exact: true }),
+    ).toBeVisible();
+    await expect(details.getByRole("checkbox")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Start processing" }),
+    ).toBeDisabled();
+
+    if ((await page.evaluate(() => window.innerWidth)) >= 1024) {
+      const privacyBox = await privacy.boundingBox();
+      const videoBox = await video.boundingBox();
+      expect(privacyBox).not.toBeNull();
+      expect(videoBox).not.toBeNull();
+      expect(privacyBox!.x + privacyBox!.width).toBeLessThan(videoBox!.x);
+    }
     await page.screenshot({
       path: test.info().outputPath("patient-folder-media-step.png"),
-      fullPage: true,
-    });
-
-    await page
-      .getByRole("button", { name: "Continue to patient details" })
-      .click();
-    await expect(
-      page.getByRole("region", { name: "Choose one patient folder" }),
-    ).toHaveCount(0);
-    await expect(page.locator("#patient-details-step")).toBeFocused();
-    await expect
-      .poll(() =>
-        page.evaluate(() => {
-          const header = document.querySelector(".app-header");
-          const detailsStep = document.querySelector("#patient-details-step");
-          if (
-            !(header instanceof HTMLElement) ||
-            !(detailsStep instanceof HTMLElement)
-          )
-            return Number.NEGATIVE_INFINITY;
-          return Math.round(
-            detailsStep.getBoundingClientRect().top -
-              header.getBoundingClientRect().bottom,
-          );
-        }),
-      )
-      .toBeGreaterThanOrEqual(12);
-    const details = page.getByRole("region", { name: "Patient details" });
-    await expect(details).toBeVisible();
-    await expect(details).toContainText("Synthetic Person");
-    await expect(details).toContainText("Synthetic finding.");
-    await expect(
-      details.getByRole("checkbox", { name: "Include detail Findings" }),
-    ).not.toBeChecked();
-    await page.screenshot({
-      path: test.info().outputPath("patient-folder-details-viewport.png"),
-    });
-    await page.screenshot({
-      path: test.info().outputPath("patient-folder-details-step.png"),
       fullPage: true,
     });
   } finally {
@@ -1148,10 +1165,12 @@ test("one case submits every selected video to VSViG sequentially", async ({
   const createdAt = "2026-09-27T00:00:00Z";
   const detectionJobs: Array<Record<string, unknown> & { job_id: string }> = [];
   const detectionEvents: string[] = [];
-  const detectionPayloads: string[] = [];
+  const detectionFormats: string[] = [];
   const detectionCaseIds: string[] = [];
   let savedDetails: Array<{ label: string; value: string }> = [];
   let legacyPrivacyRequests = 0;
+  let eegTerminalSeen = false;
+  let videoSubmittedBeforeEeg = false;
 
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
@@ -1195,8 +1214,33 @@ test("one case submits every selected video to VSViG sequentially", async ({
         },
       }),
   );
+  await page.route("**/api/sessions/MDS-VIDEO-SYNTHETIC", (route) => {
+    eegTerminalSeen = true;
+    return route.fulfill({
+      json: {
+        session_id: "MDS-VIDEO-SYNTHETIC",
+        case_id: "CASE-VIDEO-SYNTHETIC",
+        privacy_method: "metadata-scrub",
+        privacy_methods: ["metadata-scrub"],
+        status: "completed",
+        current_stage: "complete",
+        created_at: createdAt,
+        completed_at: createdAt,
+        error_message: null,
+        progress: {
+          total_recordings: 2,
+          finished_recordings: 2,
+          completed_recordings: 2,
+          failed_recordings: 0,
+          percent: 100,
+        },
+        summary: { model_alert_recordings: 0 },
+        recordings: [],
+      },
+    });
+  });
   await page.route(
-    "**/api/cases/CASE-VIDEO-SYNTHETIC/patient-profile",
+    "**/api/cases/CASE-VIDEO-SYNTHETIC/patient-profile**",
     async (route) => {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON() as {
@@ -1212,8 +1256,9 @@ test("one case submits every selected video to VSViG sequentially", async ({
             age: "",
             findings: "",
             details: savedDetails,
-            reviewed: true,
-            reviewed_at: createdAt,
+            reviewed: false,
+            verification_status: "auto_extracted",
+            reviewed_at: null,
           },
         },
       });
@@ -1222,9 +1267,10 @@ test("one case submits every selected video to VSViG sequentially", async ({
   await page.route("**/api/video-detection/jobs", async (route) => {
     if (route.request().method() !== "POST")
       return route.fulfill({ json: { jobs: detectionJobs } });
+    if (!eegTerminalSeen) videoSubmittedBeforeEeg = true;
     const request = route.request();
     const headers = request.headers();
-    detectionPayloads.push(request.postDataBuffer()?.toString("utf8") ?? "");
+    detectionFormats.push(headers["x-video-format"] ?? "");
     detectionCaseIds.push(headers["x-case-id"] ?? "");
     const index = detectionJobs.length + 1;
     const job = {
@@ -1302,20 +1348,29 @@ test("one case submits every selected video to VSViG sequentially", async ({
       .setInputFiles(folder);
 
     await expect(
-      page.getByRole("region", { name: "EEG recordings" }),
-    ).toContainText("2 EEG recordings");
-    await expect(page.getByLabel(/Include EEG recording/)).toHaveCount(0);
-    await expect(
-      page.getByRole("region", { name: "Video processing" }),
+      page.getByRole("region", { name: "Video input" }),
     ).toContainText("2 video clips included automatically");
-    await page
-      .getByRole("button", { name: "Continue to patient details" })
-      .click();
-    await page
-      .getByRole("checkbox", { name: "Include detail Findings" })
-      .check();
-    await page.getByRole("button", { name: "Create patient review" }).click();
+    await page.getByRole("button", { name: "Start processing" }).click();
 
+    await expect(
+      page.getByRole("heading", { name: "Processing complete" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("2 of 2 EEG recordings complete"),
+    ).toBeVisible();
+    const videoProgressRegion = page.getByRole("region", {
+      name: "Video processing",
+    });
+    await expect(
+      videoProgressRegion.getByText("Complete", { exact: true }),
+    ).toHaveCount(2);
+    await expect(videoProgressRegion.getByRole("progressbar")).toHaveCount(0);
+    await expect(videoProgressRegion.getByText(/Phase estimate/)).toHaveCount(
+      0,
+    );
+    await expect(page.getByText("Video 1", { exact: true })).toBeVisible();
+    await expect(page.getByText("Video 2", { exact: true })).toBeVisible();
+    await page.getByRole("link", { name: "Open patient history" }).click();
     await expect(page).toHaveURL(/\/cases\/CASE-VIDEO-SYNTHETIC$/);
     await expect(
       page.getByRole("heading", { name: "Report overview" }),
@@ -1326,14 +1381,13 @@ test("one case submits every selected video to VSViG sequentially", async ({
     expect(savedDetails).toEqual([
       { label: "Findings", value: "Synthetic finding." },
     ]);
-    expect([...detectionPayloads].sort()).toEqual(
-      ["synthetic-video-one", "synthetic-video-two"].sort(),
-    );
+    expect(detectionFormats).toEqual(["avi", "avi"]);
     expect(detectionCaseIds).toEqual([
       "CASE-VIDEO-SYNTHETIC",
       "CASE-VIDEO-SYNTHETIC",
     ]);
     expect(detectionJobs).toHaveLength(2);
+    expect(videoSubmittedBeforeEeg).toBe(false);
     expect(legacyPrivacyRequests).toBe(0);
     expect(detectionEvents).toEqual([
       "POST /api/video-detection/jobs",
@@ -1392,13 +1446,7 @@ test("shows a safe message for a structured upload validation error", async ({
     await page
       .locator('input[type="file"][webkitdirectory]')
       .setInputFiles(folder);
-    await page
-      .getByRole("button", { name: "Continue to patient details" })
-      .click();
-    await page
-      .getByRole("checkbox", { name: "Include detail Findings" })
-      .check();
-    await page.getByRole("button", { name: "Create patient review" }).click();
+    await page.getByRole("button", { name: "Start processing" }).click();
 
     const alert = page.getByRole("main").getByRole("alert");
     await expect(alert).toContainText("rejected (422)");
@@ -1410,16 +1458,22 @@ test("shows a safe message for a structured upload validation error", async ({
   }
 });
 
-test("video input rejection is summarized in the linked patient case", async ({
+test("video privacy-gate failures stay visible before model scoring", async ({
   page,
 }) => {
   test.skip(
     process.env.NEXT_PUBLIC_USE_API_STUB !== "false",
-    "Run with NEXT_PUBLIC_USE_API_STUB=false to exercise the linked job flow.",
+    "Run with NEXT_PUBLIC_USE_API_STUB=false to verify the intercepted detection workflow.",
   );
   const createdAt = "2026-09-27T00:00:00Z";
-  let rejectedVideoPosts = 0;
+  const detectionJobs: Array<Record<string, unknown> & { job_id: string }> = [];
+  let detectionPosts = 0;
+  let predictionRequests = 0;
 
+  await page.on("request", (request) => {
+    if (new URL(request.url()).pathname.endsWith("/predictions"))
+      predictionRequests += 1;
+  });
   await page.route("**/api/patient-report", (route) =>
     route.fulfill({
       json: {
@@ -1434,7 +1488,7 @@ test("video input rejection is summarized in the linked patient case", async ({
     route.fulfill({
       status: 201,
       json: {
-        draft_id: "UPL-REJECTED-SYNTHETIC",
+        draft_id: "UPL-PRIVACY-FAIL-SYNTHETIC",
         status: "staged",
         created_at: createdAt,
         expires_at: "2026-09-28T00:00:00Z",
@@ -1442,19 +1496,43 @@ test("video input rejection is summarized in the linked patient case", async ({
     }),
   );
   await page.route(
-    "**/api/uploads/drafts/UPL-REJECTED-SYNTHETIC/finalize",
+    "**/api/uploads/drafts/UPL-PRIVACY-FAIL-SYNTHETIC/finalize",
     (route) =>
       route.fulfill({
         status: 202,
         json: {
-          session_id: "MDS-REJECTED-SYNTHETIC",
-          case_id: "CASE-REJECTED-SYNTHETIC",
+          session_id: "MDS-PRIVACY-FAIL-SYNTHETIC",
+          case_id: "CASE-PRIVACY-FAIL-SYNTHETIC",
           status: "queued",
         },
       }),
   );
+  await page.route("**/api/sessions/MDS-PRIVACY-FAIL-SYNTHETIC", (route) =>
+    route.fulfill({
+      json: {
+        session_id: "MDS-PRIVACY-FAIL-SYNTHETIC",
+        case_id: "CASE-PRIVACY-FAIL-SYNTHETIC",
+        privacy_method: "metadata-scrub",
+        privacy_methods: ["metadata-scrub"],
+        status: "completed",
+        current_stage: "complete",
+        created_at: createdAt,
+        completed_at: createdAt,
+        error_message: null,
+        progress: {
+          total_recordings: 2,
+          finished_recordings: 2,
+          completed_recordings: 2,
+          failed_recordings: 0,
+          percent: 100,
+        },
+        summary: { model_alert_recordings: 0 },
+        recordings: [],
+      },
+    }),
+  );
   await page.route(
-    "**/api/cases/CASE-REJECTED-SYNTHETIC/patient-profile",
+    "**/api/cases/CASE-PRIVACY-FAIL-SYNTHETIC/patient-profile**",
     (route) =>
       route.fulfill({
         json: {
@@ -1464,44 +1542,55 @@ test("video input rejection is summarized in the linked patient case", async ({
             age: "",
             findings: "",
             details: [{ label: "Findings", value: "Synthetic finding." }],
-            reviewed: true,
-            reviewed_at: createdAt,
+            reviewed: false,
+            verification_status: "auto_extracted",
+            reviewed_at: null,
           },
         },
       }),
   );
   await page.route("**/api/video-detection/jobs", (route) => {
-    rejectedVideoPosts += 1;
-    return route.fulfill({
-      status: 422,
-      json: { detail: "Synthetic video contract rejection." },
-    });
+    if (route.request().method() !== "POST")
+      return route.fulfill({ json: { jobs: detectionJobs } });
+    detectionPosts += 1;
+    const index = detectionJobs.length + 1;
+    const job = {
+      job_id: `VID-PRIVACY-FAIL-SYNTHETIC-${index}`,
+      case_id: "CASE-PRIVACY-FAIL-SYNTHETIC",
+      label: `Video ${index}`,
+      status: "queued",
+      current_stage: "preflight",
+      duration_seconds: 10,
+      fps: 30,
+      created_at: createdAt,
+      retention_expires_at: "2026-09-28T00:00:00Z",
+      video_available: false,
+      error: null,
+    };
+    detectionJobs.push(job);
+    return route.fulfill({ status: 202, json: { job } });
   });
-  await page.route("**/api/cases/CASE-REJECTED-SYNTHETIC", (route) =>
-    route.fulfill({
-      json: {
-        case_id: "CASE-REJECTED-SYNTHETIC",
-        analyses: [
-          {
-            id: "MDS-REJECTED-SYNTHETIC",
-            modality: "eeg",
-            status: "processing",
-            created_at: createdAt,
-            review_ready: false,
-          },
-        ],
-      },
-    }),
-  );
   await page.route(
-    "**/api/video-privacy/jobs?case_id=CASE-REJECTED-SYNTHETIC",
-    (route) => route.fulfill({ json: { jobs: [] } }),
+    "**/api/video-detection/jobs/VID-PRIVACY-FAIL-SYNTHETIC-*",
+    (route) => {
+      const jobId = new URL(route.request().url()).pathname.split("/").at(-1);
+      const job = detectionJobs.find((candidate) => candidate.job_id === jobId);
+      if (!job)
+        return route.fulfill({ status: 404, json: { detail: "Not found." } });
+      job.status = "failed";
+      job.current_stage = "failed";
+      job.error =
+        "The video could not be face-redacted safely. No detection result was published.";
+      return route.fulfill({ json: { job } });
+    },
   );
 
   const scratch = process.env.TMPDIR;
   if (!scratch)
     throw new Error("TMPDIR is required for isolated browser fixtures.");
-  const folder = mkdtempSync(join(scratch, "mds01-video-rejection-test-"));
+  const folder = mkdtempSync(
+    join(scratch, "mds01-video-privacy-failure-test-"),
+  );
   try {
     writeFileSync(join(folder, "recording-one.e"), "synthetic-eeg-one");
     writeFileSync(join(folder, "recording-two.e"), "synthetic-eeg-two");
@@ -1512,39 +1601,21 @@ test("video input rejection is summarized in the linked patient case", async ({
     await page
       .locator('input[type="file"][webkitdirectory]')
       .setInputFiles(folder);
-    await page
-      .getByRole("button", { name: "Continue to patient details" })
-      .click();
-    await page
-      .getByRole("checkbox", { name: "Include detail Findings" })
-      .check();
-    await page.getByRole("button", { name: "Create patient review" }).click();
+    await page.getByRole("button", { name: "Start processing" }).click();
 
     await expect(
-      page.getByRole("alert").filter({
-        hasText: "2 video clips need attention",
-      }),
+      page.getByRole("heading", { name: "Processing finished with issues" }),
     ).toBeVisible();
+    const videoProgress = page.getByRole("region", {
+      name: "Video processing",
+    });
+    await expect(videoProgress.getByRole("alert")).toHaveCount(2);
+    await expect(
+      videoProgress.getByText(/privacy transform could not be validated/i),
+    ).toHaveCount(2);
     await expect(page.getByText(/clip-one\.avi|clip-two\.avi/)).toHaveCount(0);
-    expect(rejectedVideoPosts).toBe(2);
-    await page
-      .getByRole("button", { name: "Continue to case with video warning" })
-      .click();
-
-    await expect(page).toHaveURL(
-      /\/cases\/CASE-REJECTED-SYNTHETIC\?video_rejected_count=2&video_unconfirmed_count=0$/,
-    );
-    await expect(
-      page.getByRole("alert").filter({
-        hasText: "2 video clips were not accepted by VSViG",
-      }),
-    ).toBeVisible();
-    await expect(
-      page.getByText("No model result is available for those clips."),
-    ).toBeVisible();
-    await expect(
-      page.getByText("VSViG video analysis", { exact: true }),
-    ).toHaveCount(0);
+    expect(detectionPosts).toBe(2);
+    expect(predictionRequests).toBe(0);
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }

@@ -11,7 +11,9 @@ function createSecurityComposeProjectName({
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const randomToken = token();
     if (!TOKEN_PATTERN.test(randomToken)) {
-      throw new Error("The security test run token must be 128-bit lowercase hex.");
+      throw new Error(
+        "The security test run token must be 128-bit lowercase hex.",
+      );
     }
     const projectName = `mds01-security-${randomToken}`;
     if (!exists(projectName)) return projectName;
@@ -28,7 +30,14 @@ function requireSecurityComposeProjectName(value) {
   return value;
 }
 
+function resolveSecurityComposeProjectName(value, options) {
+  return value === undefined
+    ? createSecurityComposeProjectName(options)
+    : requireSecurityComposeProjectName(value);
+}
+
 module.exports = {
   createSecurityComposeProjectName,
   requireSecurityComposeProjectName,
+  resolveSecurityComposeProjectName,
 };

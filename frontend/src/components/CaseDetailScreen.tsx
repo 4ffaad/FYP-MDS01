@@ -11,6 +11,7 @@ import {
   getCaseSourceReportPdf,
   getPatientProfile,
   getVideoPrivacyJobs,
+  savePatientProfile,
   saveCaseSourceReportPdf,
 } from "@/lib/api";
 import type {
@@ -47,15 +48,21 @@ type LoadedSourceReport = {
   available?: boolean;
 };
 
-export function CaseDetailScreen({
-  caseId,
-  videoRejectedCount = 0,
-  videoUnconfirmedCount = 0,
-}: {
+type CaseDetailScreenProps = {
   caseId: string;
   videoRejectedCount?: number;
   videoUnconfirmedCount?: number;
-}) {
+};
+
+export function CaseDetailScreen(props: CaseDetailScreenProps) {
+  return <CaseDetailScreenContent key={props.caseId} {...props} />;
+}
+
+function CaseDetailScreenContent({
+  caseId,
+  videoRejectedCount = 0,
+  videoUnconfirmedCount = 0,
+}: CaseDetailScreenProps) {
   const [caseData, setCaseData] = useState<CaseDetail | null>(null);
   const [patientProfileLoad, setPatientProfileLoad] =
     useState<PatientProfileLoad | null>(null);
@@ -75,6 +82,7 @@ export function CaseDetailScreen({
   const [profileActionError, setProfileActionError] = useState<string | null>(
     null,
   );
+  const [profileActionBusy, setProfileActionBusy] = useState(false);
   const currentSourceReport =
     sourceReportLoad?.caseId === caseId ? sourceReportLoad : null;
   const currentVideoPrivacy =
@@ -191,6 +199,38 @@ export function CaseDetailScreen({
       if (retry) clearTimeout(retry);
     };
   }, [caseId]);
+
+  async function markPatientProfileReviewed() {
+    if (!patientProfile || patientProfile.reviewed || profileActionBusy) return;
+    if (
+      !window.confirm(
+        "Mark all extracted patient details as reviewed? Confirm only after comparing every value with the source report. This records data review, not clinical validation.",
+      )
+    )
+      return;
+    const lifecycle = caseLifecycleRef.current;
+    setProfileActionError(null);
+    setProfileActionBusy(true);
+    try {
+      const reviewedProfile = await savePatientProfile(
+        caseId,
+        patientProfile.details ?? [],
+      );
+      if (!isCurrentCase(caseId, lifecycle)) return;
+      setPatientProfileLoad({
+        caseId,
+        profile: reviewedProfile,
+        error: null,
+      });
+    } catch {
+      if (!isCurrentCase(caseId, lifecycle)) return;
+      setProfileActionError(
+        "The patient details remain unverified because the review could not be saved.",
+      );
+    } finally {
+      if (isCurrentCase(caseId, lifecycle)) setProfileActionBusy(false);
+    }
+  }
 
   async function removePatientProfile() {
     if (
@@ -354,10 +394,19 @@ export function CaseDetailScreen({
       </div>
     );
 
-  const displayName = patientDisplayName(patientProfile, caseData.patientName);
+  const patientDetailsReviewed =
+    patientProfile?.reviewed ??
+    caseData.patientNameVerificationStatus === "reviewed";
+  const displayName = patientDetailsReviewed
+    ? patientDisplayName(patientProfile, caseData.patientName)
+    : "Patient review";
+  const nameVerificationStatus =
+    patientProfile?.verificationStatus ??
+    caseData.patientNameVerificationStatus;
   const report = reportDetails(patientProfile);
-  const reportSummary =
-    report.conclusion[0] ?? report.technical[0] ?? report.events[0] ?? null;
+  const reportSummary = patientProfile?.reviewed
+    ? (report.conclusion[0] ?? report.technical[0] ?? report.events[0] ?? null)
+    : null;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -380,6 +429,11 @@ export function CaseDetailScreen({
             <h1 className="mt-3 break-words text-[clamp(2rem,5vw,3rem)] font-semibold tracking-[-0.05em] text-ink">
               {displayName}
             </h1>
+            {nameVerificationStatus === "auto_extracted" && (
+              <p className="mt-2 inline-flex rounded-full bg-amber-soft/60 px-3 py-1 text-xs font-semibold text-ink-muted">
+                Name auto-extracted · not verified
+              </p>
+            )}
             <p className="mt-3 max-w-2xl text-sm leading-6 text-ink-muted">
               Report overview and independent EEG and video review history.
               Internal case references are kept out of the screen.
@@ -450,6 +504,16 @@ export function CaseDetailScreen({
             </div>
           )}
 
+          {patientProfile && !patientProfile.reviewed && (
+            <p
+              className="mt-5 rounded-xl border border-amber/30 bg-amber-soft/40 px-4 py-3 text-sm leading-6 text-ink-muted"
+              role="status"
+            >
+              Patient details were extracted automatically from the report and
+              remain unverified until reviewed against the source.
+            </p>
+          )}
+
           <section
             className="panel glass-panel mt-6 overflow-hidden"
             aria-labelledby="patient-report-heading"
@@ -464,8 +528,11 @@ export function CaseDetailScreen({
                   Report overview
                 </h2>
                 <p className="mt-1 text-sm leading-6 text-ink-muted">
-                  Key report sections are grouped below. The original PDF
-                  retains the full document for authorized review.
+                  {patientProfile?.reviewed
+                    ? "Reviewed report sections are grouped below. The original PDF retains the full document for authorized review."
+                    : patientProfile
+                      ? "Unverified extracted report text is hidden from the overview. Expand All extracted report details below to compare it with the source."
+                      : "Patient report details are unavailable. Attach or open the original PDF for authorized review."}
                 </p>
                 <p className="mt-2 max-w-2xl text-xs leading-5 text-ink-muted">
                   For a Word report, export a PDF on this device and attach it
@@ -519,28 +586,48 @@ export function CaseDetailScreen({
 
             {patientProfile ? (
               <div className="space-y-5 p-5 sm:p-7">
-                {reportSummary && (
-                  <div className="rounded-2xl border border-teal/15 bg-teal-soft/40 p-4 sm:p-5">
-                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-teal-dark">
-                      Report at a glance · {reportSummary.label}
-                    </p>
-                    <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-sm leading-6 text-ink">
-                      {reportSummary.value}
-                    </p>
-                  </div>
-                )}
+                {patientProfile.reviewed ? (
+                  <>
+                    {reportSummary && (
+                      <div className="rounded-2xl border border-teal/15 bg-teal-soft/40 p-4 sm:p-5">
+                        <p className="text-xs font-bold uppercase tracking-[0.12em] text-teal-dark">
+                          Report at a glance · {reportSummary.label}
+                        </p>
+                        <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-sm leading-6 text-ink">
+                          {reportSummary.value}
+                        </p>
+                      </div>
+                    )}
 
-                <div className="grid gap-4 lg:grid-cols-3">
-                  <ReportSection
-                    title="Technical summary"
-                    details={report.technical}
-                  />
-                  <ReportSection title="Events" details={report.events} />
-                  <ReportSection
-                    title="Conclusion"
-                    details={report.conclusion}
-                  />
-                </div>
+                    <div className="grid gap-4 lg:grid-cols-3">
+                      <ReportSection
+                        title="Technical summary"
+                        details={report.technical}
+                      />
+                      <ReportSection title="Events" details={report.events} />
+                      <ReportSection
+                        title="Conclusion"
+                        details={report.conclusion}
+                      />
+                    </div>
+
+                    {!report.technical.length &&
+                      !report.events.length &&
+                      !report.conclusion.length &&
+                      !report.additional.length && (
+                        <p className="rounded-xl border border-dashed border-rule-strong p-4 text-sm leading-6 text-ink-muted">
+                          No structured report sections are available. Attach or
+                          open the original PDF to review the complete document.
+                        </p>
+                      )}
+                  </>
+                ) : (
+                  <p className="rounded-xl border border-amber/30 bg-amber-soft/40 p-4 text-sm leading-6 text-ink-muted">
+                    Unverified report text is hidden from the overview. Open All
+                    extracted report details below to inspect it before marking
+                    the complete profile reviewed.
+                  </p>
+                )}
 
                 {report.additional.length > 0 && (
                   <details className="rounded-xl border border-rule bg-surface/60 px-4 py-3">
@@ -554,14 +641,44 @@ export function CaseDetailScreen({
                   </details>
                 )}
 
-                {!report.technical.length &&
-                  !report.events.length &&
-                  !report.conclusion.length &&
-                  !report.additional.length && (
-                    <p className="rounded-xl border border-dashed border-rule-strong p-4 text-sm leading-6 text-ink-muted">
-                      No structured report sections are available. Attach or
-                      open the original PDF to review the complete document.
-                    </p>
+                {patientProfile.details &&
+                  patientProfile.details.length > 0 && (
+                    <details className="rounded-2xl border border-rule bg-surface/60 p-4 sm:p-5">
+                      <summary className="cursor-pointer text-sm font-semibold text-ink">
+                        All extracted report details (
+                        {patientProfile.details.length})
+                      </summary>
+                      <p className="mt-2 text-xs leading-5 text-ink-muted">
+                        Owner-only encrypted profile. These details are
+                        auto-extracted and unverified; compare them with the
+                        source report before marking them reviewed.
+                      </p>
+                      <ReportDetailsList
+                        details={patientProfile.details}
+                        className="mt-4 grid gap-4 sm:grid-cols-2"
+                      />
+                      {!patientProfile.reviewed && (
+                        <div className="mt-4 space-y-3 border-t border-rule pt-4">
+                          <p className="text-xs leading-5 text-ink-muted">
+                            Compare every extracted value with the source report
+                            before marking it reviewed. This records data
+                            review; it does not verify clinical credentials or
+                            model output.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => void markPatientProfileReviewed()}
+                            disabled={profileActionBusy}
+                            className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-teal px-3 py-2 text-xs font-semibold text-white hover:bg-teal-dark disabled:cursor-wait disabled:opacity-60"
+                          >
+                            <Icon name="check" className="size-4" />
+                            {profileActionBusy
+                              ? "Saving review…"
+                              : "Mark details reviewed"}
+                          </button>
+                        </div>
+                      )}
+                    </details>
                   )}
 
                 <div className="border-t border-rule pt-4 text-xs leading-5 text-ink-muted">
@@ -593,7 +710,9 @@ export function CaseDetailScreen({
                 )}
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="text-xs text-ink-muted">
-                    Details reviewed {formatDate(patientProfile.reviewedAt)}
+                    {patientProfile.reviewed && patientProfile.reviewedAt
+                      ? `Details reviewed ${formatDate(patientProfile.reviewedAt)}`
+                      : "Auto-extracted · not reviewed"}
                   </p>
                   <button
                     type="button"

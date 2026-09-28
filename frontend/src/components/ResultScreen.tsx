@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getResult, getSession } from "@/lib/api";
 import { formatSubmittedAt } from "@/lib/format";
+import { highestScoringAttribution } from "@/lib/research-attribution";
 import type {
   AnalysisResult,
   PredictionLabel,
@@ -92,6 +93,14 @@ function ResultContent({ recordId }: { recordId: string }) {
   const scoreDescription = calibrated
     ? "Each point estimates the probability for one four-second VEEG window. Highlighted windows crossed the configured threshold."
     : "Full-recording overview. Highlighted windows crossed the configured threshold; select a point for its exact time.";
+  const firstFlaggedWindow = result.predictionWindows.find(
+    (window) => window.seizureDetected,
+  );
+  const decisionEvidence = firstFlaggedWindow
+    ? `A ${formatOffset(firstFlaggedWindow.startSeconds)}–${formatOffset(firstFlaggedWindow.endSeconds)} window scored ${firstFlaggedWindow.score.toFixed(3)}, meeting the threshold of ${result.threshold.toFixed(3)}.`
+    : result.highestWindow
+      ? `No window met the threshold. The highest score was ${result.highestWindow.score.toFixed(3)} against a threshold of ${result.threshold.toFixed(3)}.`
+      : "No scored window is available for this recording.";
 
   return (
     <div className="page-frame">
@@ -205,6 +214,64 @@ function ResultContent({ recordId }: { recordId: string }) {
                 </p>
               )}
             </div>
+          </section>
+
+          <section
+            className="panel border-l-4 border-teal p-5 sm:p-6"
+            aria-labelledby="model-decision-heading"
+          >
+            <p className="eyebrow">Evidence checklist</p>
+            <h2
+              id="model-decision-heading"
+              className="mt-1 text-base font-bold"
+            >
+              Model decision &amp; score
+            </h2>
+            <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <dt className="text-xs font-semibold text-ink-muted">
+                  Model decision
+                </dt>
+                <dd className="mt-1 font-semibold text-ink">
+                  {hasAlerts ? "Flagged for review" : "No windows flagged"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-semibold text-ink-muted">
+                  {calibrated ? "Peak window estimate" : "Peak window score"}
+                </dt>
+                <dd className="mt-1 font-mono font-semibold tabular-nums text-ink">
+                  {result.highestWindow?.score.toFixed(3) ?? "Unavailable"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-semibold text-ink-muted">
+                  Decision threshold
+                </dt>
+                <dd className="mt-1 font-mono font-semibold tabular-nums text-ink">
+                  {result.threshold.toFixed(3)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-semibold text-ink-muted">
+                  Input sensitivity
+                </dt>
+                <dd className="mt-1 font-semibold text-ink">
+                  {result.researchAttributions.length > 0
+                    ? "Available below"
+                    : "Unavailable"}
+                </dd>
+              </div>
+            </dl>
+            <p className="mt-4 border-t border-rule pt-4 text-sm leading-6 text-ink-muted">
+              <span className="font-semibold text-ink">Why this decision:</span>{" "}
+              {decisionEvidence}
+            </p>
+            <p className="mt-2 text-xs leading-5 text-amber">
+              {calibrated
+                ? "Window-level estimate only; not a recording-level probability, diagnosis, or clinical certainty."
+                : "Uncalibrated score, not a confidence estimate or probability. Research output only; not a diagnosis."}
+            </p>
           </section>
 
           <section
@@ -338,7 +405,8 @@ function ResearchEvidence({
 }: {
   attributions: ResearchAttribution[];
 }) {
-  const strongest = attributions[0];
+  const strongest = highestScoringAttribution(attributions);
+  if (!strongest) return null;
   const maxChannelScore = Math.max(
     ...strongest.channelScores.map((item) => item.meanAbsoluteAttribution),
     1e-9,

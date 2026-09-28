@@ -181,6 +181,9 @@ def list_cases(
             {
                 "case_id": case_id,
                 "patient_name": patient.get("patient_name"),
+                "patient_name_verification_status": patient.get(
+                    "patient_name_verification_status"
+                ),
                 "report_summary": patient.get("report_summary"),
                 "modalities": sorted(item["modalities"]),
                 "analysis_count": item["analysis_count"],
@@ -199,7 +202,7 @@ def _patient_summaries_for_cases(
     case_ids,
     owner_user_id: int | None,
 ) -> dict[str, dict[str, str | None]]:
-    """Decrypt only owner-scoped name and allow-listed conclusion previews."""
+    """Decrypt reviewed, owner-scoped name and conclusion previews only."""
 
     if owner_user_id is None:
         return {}
@@ -210,6 +213,7 @@ def _patient_summaries_for_cases(
     profiles = db.exec(
         select(CasePatientProfile).where(
             CasePatientProfile.owner_user_id == owner_user_id,
+            CasePatientProfile.verification_status == "reviewed",
             case_id_column.in_(identifiers),
         )
     ).all()
@@ -259,6 +263,9 @@ def _patient_summaries_for_cases(
             report_summary = report_summary[:277].rstrip() + "…"
         summaries[row.case_id] = {
             "patient_name": patient_name[:160] or None,
+            "patient_name_verification_status": (
+                row.verification_status if patient_name else None
+            ),
             "report_summary": report_summary or None,
         }
     return summaries
@@ -342,6 +349,9 @@ def get_case(
     return {
         "case_id": case_id,
         "patient_name": patient.get("patient_name"),
+        "patient_name_verification_status": patient.get(
+            "patient_name_verification_status"
+        ),
         "report_summary": patient.get("report_summary"),
         "analyses": sorted(analyses, key=lambda item: item["created_at"], reverse=True),
     }

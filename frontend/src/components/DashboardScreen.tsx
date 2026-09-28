@@ -63,15 +63,17 @@ export function DashboardScreen() {
           .map(
             ({
               caseId,
+              patientName,
+              patientNameVerificationStatus,
               modalities,
-              analysisCount,
               latestCreatedAt,
               status,
               flaggedIntervalCount,
             }) => ({
               caseId,
+              patientName,
+              patientNameVerificationStatus,
               modalities,
-              analysisCount,
               latestCreatedAt,
               status,
               flaggedIntervalCount,

@@ -1,8 +1,9 @@
-"""Encrypt and owner-scope the clinician-reviewed patient profile."""
+"""Encrypt and owner-scope patient profiles with explicit review status."""
 
 from __future__ import annotations
 
 import json
+import re
 import secrets
 from typing import Any
 
@@ -34,6 +35,10 @@ class PatientProfileCryptoError(RuntimeError):
     """Raised when identity encryption or authenticated decryption fails."""
 
 
+class ReviewedPatientProfileConflict(RuntimeError):
+    """Raised when an automatic extraction would replace reviewed data."""
+
+
 def _profile_key(version: int = CRYPTO_VERSION) -> bytes:
     """Derive a domain-separated profile key from the configured storage key."""
 
@@ -62,7 +67,7 @@ def _associated_data(owner_user_id: int, case_id: str, version: int) -> bytes:
 
 
 def _validated_details(details: object) -> list[dict[str, str]]:
-    """Validate the bounded, clinician-reviewed report fields before encryption."""
+    """Validate bounded report fields before encryption."""
 
     if not isinstance(details, list) or len(details) > _MAX_PROFILE_DETAILS:
         raise ValueError("Invalid patient report details.")
@@ -181,7 +186,7 @@ def save_patient_profile(
     findings: str = "",
     details: list[dict[str, str]] | None = None,
 ) -> CasePatientProfile:
-    """Encrypt and upsert the doctor-reviewed fields for an owned case."""
+    """Encrypt and upsert patient fields after an explicit review."""
 
     nonce, ciphertext = encrypt_profile(
         owner_user_id,
@@ -208,6 +213,7 @@ def save_patient_profile(
             identity_nonce=nonce,
             identity_ciphertext=ciphertext,
             crypto_version=CRYPTO_VERSION,
+            verification_status="reviewed",
             reviewed_by_user_id=owner_user_id,
             reviewed_at=now,
             created_at=now,
@@ -217,8 +223,98 @@ def save_patient_profile(
         profile.identity_nonce = nonce
         profile.identity_ciphertext = ciphertext
         profile.crypto_version = CRYPTO_VERSION
+        profile.verification_status = "reviewed"
         profile.reviewed_by_user_id = owner_user_id
         profile.reviewed_at = now
+        profile.updated_at = now
+    db.add(profile)
+    try:
+        db.commit()
+        db.refresh(profile)
+    except Exception:
+        db.rollback()
+        raise
+    return profile
+
+
+def save_extracted_patient_profile(
+    db: Session,
+    *,
+    case_id: str,
+    owner_user_id: int,
+    details: list[dict[str, str]],
+) -> CasePatientProfile:
+    """Encrypt auto-extracted report fields without marking them reviewed."""
+
+    validated_details = _validated_details(details)
+    if not validated_details:
+        raise ValueError("At least one extracted patient detail is required.")
+    values = {
+        re.sub(r"[^a-z0-9]+", " ", item["label"].casefold()).strip(): item[
+            "value"
+        ].strip()
+        for item in validated_details
+    }
+    name = values.get("patient name") or values.get("name of patient") or ""
+    hospital_id = next(
+        (
+            values[label]
+            for label in (
+                "hospital id",
+                "hospital number",
+                "hospital no",
+                "medical record number",
+                "medical record no",
+                "medical record id",
+                "mrn",
+            )
+            if values.get(label)
+        ),
+        "",
+    )
+    nonce, ciphertext = encrypt_profile(
+        owner_user_id,
+        case_id,
+        {
+            "name": name,
+            "hospital_id": hospital_id,
+            "age": "",
+            "findings": "",
+            "details": validated_details,
+        },
+    )
+    profile = db.exec(
+        select(CasePatientProfile).where(
+            CasePatientProfile.case_id == case_id,
+            CasePatientProfile.owner_user_id == owner_user_id,
+        )
+    ).first()
+    if profile is not None and profile.verification_status == "reviewed":
+        raise ReviewedPatientProfileConflict(
+            "An extracted report cannot replace an already reviewed patient profile."
+        )
+
+    now = utc_now()
+    if profile is None:
+        profile = CasePatientProfile(
+            case_id=case_id,
+            owner_user_id=owner_user_id,
+            identity_nonce=nonce,
+            identity_ciphertext=ciphertext,
+            crypto_version=CRYPTO_VERSION,
+            verification_status="auto_extracted",
+            reviewed_by_user_id=None,
+            reviewed_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+    else:
+        profile.identity_nonce = nonce
+        profile.identity_ciphertext = ciphertext
+        profile.crypto_version = CRYPTO_VERSION
+        profile.verification_status = "auto_extracted"
+        profile.reviewed_by_user_id = None
+        profile.reviewed_at = None
         profile.updated_at = now
     db.add(profile)
     try:
