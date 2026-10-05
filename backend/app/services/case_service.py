@@ -15,7 +15,7 @@ from backend.app.database.models.case_profile import CasePatientProfile
 from backend.app.database.models.eeg import EEGSession
 from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.database.models.video import VideoPrivacyJob
-from backend.app.database.repository import list_flagged_window_counts, list_recordings_for_session
+from backend.app.database.repository import list_flagged_window_counts, list_recordings_for_sessions
 from backend.app.services.case_profile_service import (
     PatientProfileCryptoError,
     delete_patient_profile,
@@ -122,10 +122,19 @@ def list_cases(
     eeg_sessions = list(db.exec(eeg_statement).all())
     video_jobs = list(db.exec(video_statement).all())
     privacy_jobs = list(db.exec(privacy_statement).all())
+    session_db_ids = [session.id for session in eeg_sessions if session.id is not None]
+    recordings_by_session: dict[int, list] = defaultdict(list)
+    recordings = list_recordings_for_sessions(db, session_db_ids, owner_user_id)
+    for recording in recordings:
+        recordings_by_session[recording.session_db_id].append(recording)
+    recording_ids = [recording.id for recording in recordings if recording.id is not None]
+    flagged_counts = list_flagged_window_counts(db, recording_ids)
     grouped: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
             "modalities": set(),
             "analysis_count": 0,
+            "eeg_recording_count": 0,
+            "video_clip_count": 0,
             "privacy_preview_count": 0,
             "latest_created_at": None,
             "statuses": [],
@@ -141,13 +150,11 @@ def list_cases(
         item["analysis_count"] += 1
         item["statuses"].append(session.status.value)
         item["latest_created_at"] = max_timestamp(item["latest_created_at"], session.created_at)
-        if session.id is not None:
-            records = list_recordings_for_session(db, session.id, owner_user_id)
-            item["flagged_interval_count"] += sum(
-                list_flagged_window_counts(db, [record.id]).get(record.id, 0)
-                for record in records
-                if record.id is not None
-            )
+        records = recordings_by_session.get(session.id, []) if session.id is not None else []
+        item["eeg_recording_count"] += len(records)
+        item["flagged_interval_count"] += sum(
+            flagged_counts.get(record.id, 0) for record in records if record.id is not None
+        )
         item["explanation_ready"] = item["explanation_ready"] or session.status.value in {
             "completed",
             "completed_with_errors",
@@ -158,6 +165,7 @@ def list_cases(
         item = grouped[case_id]
         item["modalities"].add("video")
         item["analysis_count"] += 1
+        item["video_clip_count"] += 1
         item["statuses"].append(job.status)
         item["latest_created_at"] = max_timestamp(item["latest_created_at"], job.created_at)
         item["explanation_ready"] = item["explanation_ready"] or job.status == "ready"
@@ -187,6 +195,8 @@ def list_cases(
                 "report_summary": patient.get("report_summary"),
                 "modalities": sorted(item["modalities"]),
                 "analysis_count": item["analysis_count"],
+                "eeg_recording_count": item["eeg_recording_count"],
+                "video_clip_count": item["video_clip_count"],
                 "privacy_preview_count": item["privacy_preview_count"],
                 "latest_created_at": item["latest_created_at"].isoformat(),
                 "status": summarize_status(item["statuses"]),
@@ -202,7 +212,7 @@ def _patient_summaries_for_cases(
     case_ids,
     owner_user_id: int | None,
 ) -> dict[str, dict[str, str | None]]:
-    """Decrypt reviewed, owner-scoped name and conclusion previews only."""
+    """Decrypt owner-scoped name and conclusion previews only."""
 
     if owner_user_id is None:
         return {}
@@ -213,7 +223,6 @@ def _patient_summaries_for_cases(
     profiles = db.exec(
         select(CasePatientProfile).where(
             CasePatientProfile.owner_user_id == owner_user_id,
-            CasePatientProfile.verification_status == "reviewed",
             case_id_column.in_(identifiers),
         )
     ).all()

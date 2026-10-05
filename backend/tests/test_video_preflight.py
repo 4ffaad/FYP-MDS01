@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -22,6 +23,18 @@ from backend.app.video_detection.contract import DetectionError
 from backend.app.video_privacy import processor as privacy_processor
 from backend.app.video_privacy.processor import VideoProcessorError
 
+POSE_READY = {
+    "ready": True,
+    "checked_frames": 30,
+    "required_frames": 30,
+    "window_seconds": 5,
+    "frames_without_person": 0,
+    "frames_with_multiple_people": 0,
+    "frames_with_tracking_break": 0,
+    "frames_with_incomplete_pose": 0,
+    "missing_landmarks": {},
+}
+
 
 class VideoPreflightTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
@@ -32,6 +45,25 @@ class VideoPreflightTests(unittest.IsolatedAsyncioTestCase):
             file=io.BytesIO(b"synthetic video bytes"),
             headers=Headers({"content-type": "video/x-msvideo"}),
         )
+
+    def test_pose_readiness_worker_result_is_bounded_and_sanitized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "private-source.mp4"
+            source.write_bytes(b"private fixture")
+
+            def write_result(command, timeout):
+                self.assertIn("--pose-readiness", command)
+                self.assertEqual(timeout, service.VIDEO_POSE_READINESS_TIMEOUT_SECONDS)
+                Path(command[5]).write_text(json.dumps(POSE_READY), encoding="utf-8")
+
+            with patch.object(service, "execute", side_effect=write_result):
+                result = service._run_pose_readiness(source)
+            leftovers = list(Path(directory).glob(".pose-readiness-*.json"))
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["checked_frames"], 30)
+        self.assertEqual(result["missing_landmarks"], {})
+        self.assertEqual(leftovers, [])
 
     async def test_preflight_decoder_timeout_uses_killable_secret_free_process(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -166,7 +198,13 @@ class VideoPreflightTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             service,
             "_preflight_uploaded_video",
-            return_value={"width": 1920, "height": 1080, "fps": 25.0, "frame_count": 250},
+            return_value={
+                "width": 1920,
+                "height": 1080,
+                "fps": 25.0,
+                "frame_count": 250,
+                "pose_readiness": POSE_READY,
+            },
         ):
             result = await service.preflight_video_upload(self.storage, self.upload)
 
@@ -178,16 +216,46 @@ class VideoPreflightTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(service, "VSVIG_ALLOW_LETTERBOX_ADAPTATION", True, create=True), patch.object(
             service,
             "_preflight_uploaded_video",
-            return_value={"width": 640, "height": 480, "fps": 25.0, "frame_count": 250},
+            return_value={
+                "width": 640,
+                "height": 480,
+                "fps": 25.0,
+                "frame_count": 250,
+                "pose_readiness": POSE_READY,
+            },
         ):
             result = await service.preflight_video_upload(self.storage, self.upload)
 
         self.assertTrue(result["accepted"])
         self.assertEqual(result["adaptation"], "letterbox")
         self.assertTrue(result["experimental"])
-        self.assertIn("not been validated as equivalent", result["message"])
+        self.assertIn("not validated as native equivalents", result["message"])
 
-    async def test_job_admission_rejects_lower_resolution_even_if_preflight_is_bypassed(self) -> None:
+    async def test_preflight_reports_missing_required_landmarks_without_accepting_clip(self) -> None:
+        pose_readiness = {
+            **POSE_READY,
+            "ready": False,
+            "frames_with_incomplete_pose": 2,
+            "missing_landmarks": {"left eye": 1, "right ankle": 2},
+        }
+        with patch.object(
+            service,
+            "_preflight_uploaded_video",
+            return_value={
+                "width": 1920,
+                "height": 1080,
+                "fps": 25.0,
+                "frame_count": 250,
+                "pose_readiness": pose_readiness,
+            },
+        ):
+            result = await service.preflight_video_upload(self.storage, self.upload)
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["pose_readiness"]["missing_landmarks"], pose_readiness["missing_landmarks"])
+        self.assertIn("15 required landmarks", result["message"])
+
+    async def test_job_admission_queues_a_private_review_copy_for_lower_resolution(self) -> None:
         database = MagicMock()
         storage = MagicMock()
         storage.save_upload = AsyncMock(return_value=Path("/private/encrypted-video"))
@@ -204,13 +272,15 @@ class VideoPreflightTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"width": 640, "height": 480, "fps": 25.0, "frame_count": 250},
             ),
             patch.object(service, "cleanup_case_profile_if_empty"),
-            self.assertRaises(DetectionError) as raised,
         ):
-            await service.create_job(database, storage, upload, owner=7)
+            job = await service.create_job(database, storage, upload, owner=7)
 
-        self.assertEqual(str(raised.exception), "video_resolution_mismatch")
-        storage.delete_job.assert_called_once()
-        database.delete.assert_called_once()
+        self.assertEqual(job.status, "processing")
+        self.assertEqual(job.current_stage, "privacy-review")
+        self.assertEqual(job.error_code, "video_resolution_mismatch")
+        self.assertEqual(job.original_path, "/private/encrypted-video")
+        storage.delete_job.assert_not_called()
+        database.delete.assert_not_called()
 
     async def test_job_admission_accepts_lower_resolution_only_when_letterbox_is_enabled(self) -> None:
         database = MagicMock()
@@ -226,12 +296,54 @@ class VideoPreflightTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             service,
             "_preflight_uploaded_video",
-            return_value={"width": 640, "height": 480, "fps": 25.0, "frame_count": 250},
+            return_value={
+                "width": 640,
+                "height": 480,
+                "fps": 25.0,
+                "frame_count": 250,
+                "pose_readiness": POSE_READY,
+            },
         ):
             job = await service.create_job(database, storage, upload, owner=7)
 
         self.assertEqual(job.duration_seconds, 10.0)
         storage.delete_job.assert_not_called()
+
+    async def test_job_admission_queues_a_private_review_copy_for_incomplete_opening_pose(self) -> None:
+        database = MagicMock()
+        storage = MagicMock()
+        storage.save_upload = AsyncMock(return_value=Path("/private/encrypted-video"))
+        upload = UploadFile(
+            filename="clip.avi",
+            file=io.BytesIO(b"synthetic video bytes"),
+            headers=Headers({"content-type": "video/x-msvideo"}),
+        )
+        pose_readiness = {
+            **POSE_READY,
+            "ready": False,
+            "frames_with_incomplete_pose": 1,
+            "missing_landmarks": {"right ankle": 1},
+        }
+        with patch.object(service, "load_contract"), patch.object(
+            service,
+            "_preflight_uploaded_video",
+            return_value={
+                "width": 1920,
+                "height": 1080,
+                "fps": 25.0,
+                "frame_count": 250,
+                "pose_readiness": pose_readiness,
+            },
+        ), patch.object(service, "cleanup_case_profile_if_empty"):
+            job = await service.create_job(database, storage, upload, owner=7)
+
+        self.assertEqual(job.status, "processing")
+        self.assertEqual(job.current_stage, "privacy-review")
+        self.assertEqual(job.error_code, "pose_readiness_landmarks")
+        self.assertEqual(job.duration_seconds, 10.0)
+        self.assertEqual(job.original_path, "/private/encrypted-video")
+        storage.delete_job.assert_not_called()
+        database.delete.assert_not_called()
 
 
 if __name__ == "__main__":

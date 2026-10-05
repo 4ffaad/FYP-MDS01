@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 
 import numpy as np
-from sqlalchemy import delete, inspect
+from sqlalchemy import delete, inspect, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -40,8 +40,11 @@ from backend.app.core.config import (
     SHAP_MAX_WINDOWS,
     SHAP_TIME_BINS,
     SIGNAL_RETENTION_CONTEXT_SECONDS,
+    STORAGE_KEY_ENV,
     TEMPLATE_KEY_ENV,
 )
+from backend.app.eeg.io import read_legacy_eeg_video_sync
+from backend.app.eeg.legacy_nicolet import LegacyNicoletReader, validate_legacy_nicolet
 from backend.app.eeg.model_input import preprocess_edf, preprocess_eeg
 from backend.app.ml.interface import InferenceService, WindowPrediction
 from backend.app.ml.model_loader import get_inference_service
@@ -60,6 +63,11 @@ from backend.app.privacy.signal_projection import obfuscate_signal
 from backend.app.services.explanation_service import build_score_summary
 from backend.app.services.storage_service import SessionStorage
 from backend.app.services.validation_service import ValidationError, validate_edf, validate_eeg
+from backend.app.services.video_sync_service import (
+    VideoSyncCryptoError,
+    encrypt_recording_manifest,
+    resolve_case_video_sync,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -145,13 +153,14 @@ def _record_has_private_paths(record: EEGRecording) -> bool:
     )
 
 
-def sweep_interrupted_sessions() -> None:
+def sweep_interrupted_sessions(*, reconcile_active: bool = True) -> None:
     """Reconcile interrupted EEG work and retry incomplete private cleanup.
 
     Active sessions cannot survive a process restart because their work runs in
-    an in-process background task. They are converted to a safe terminal
-    failure, while any cleanup failure leaves internal paths populated so the
-    next sweep can retry it. Paths are never serialized by this function.
+    an in-process background task. Startup reconciliation converts them to a
+    safe terminal failure. Periodic cleanup leaves active work alone. Any
+    cleanup failure leaves internal paths populated so the next sweep can
+    retry it. Paths are never serialized by this function.
     """
 
     schema = inspect(engine)
@@ -168,6 +177,8 @@ def sweep_interrupted_sessions() -> None:
                 continue
             records = list_recordings_for_session(db, session.id)
             active = session.status in _ACTIVE_SESSION_STATUSES
+            if active and not reconcile_active:
+                continue
             has_paths = bool(session.original_path) or any(
                 _record_has_private_paths(record) for record in records
             )
@@ -242,7 +253,9 @@ async def eeg_retention_loop() -> None:
     while True:
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
         try:
-            await asyncio.to_thread(sweep_interrupted_sessions)
+            await asyncio.to_thread(
+                sweep_interrupted_sessions, reconcile_active=False
+            )
         except Exception:
             LOGGER.warning("EEG retention cleanup unavailable; retrying.")
 
@@ -441,9 +454,49 @@ def process_session(session_id: str) -> None:
 
             any_errors = False
             records: list[EEGRecording] = []
+            sync_manifests: list[dict | None] = []
             for sequence_index, extracted_path in enumerate(extracted_paths, start=1):
                 reference = reference_annotations.get(extracted_path.name.lower())
                 events = embedded_events.get(extracted_path.name.lower(), [])
+                sync_manifest = None
+                sync_status = "unavailable"
+                if (
+                    extracted_path.suffix.lower() == ".e"
+                    and session.owner_user_id is not None
+                    and session.case_id
+                ):
+                    try:
+                        header = validate_legacy_nicolet(extracted_path)
+                        samples = read_legacy_eeg_video_sync(
+                            extracted_path,
+                            read_base64_key(STORAGE_KEY_ENV),
+                            context=f"{session.owner_user_id}:{session.case_id}",
+                        )
+                        if samples:
+                            sync_status = "available"
+                            sync_manifest = {
+                                "segments": [
+                                    {
+                                        "source_start_seconds": segment.start_seconds,
+                                        "duration_seconds": segment.duration_seconds,
+                                    }
+                                    for segment in header.segments
+                                ],
+                                "markers": [
+                                    {
+                                        "source_name_token": sample.source_name_token,
+                                        "frame_index": sample.frame_index,
+                                        "eeg_clock_seconds": sample.eeg_clock_seconds,
+                                    }
+                                    for sample in samples
+                                ],
+                            }
+                    except Exception as exc:
+                        sync_status = "invalid"
+                        LOGGER.warning(
+                            "Nicolet video sync metadata unavailable (error_type=%s).",
+                            type(exc).__name__,
+                        )
                 record = EEGRecording(
                     record_id=generate_record_id(),
                     session_db_id=session.id,
@@ -455,19 +508,41 @@ def process_session(session_id: str) -> None:
                     ),
                     reference_intervals_json=json.dumps(reference[1]) if reference else None,
                     annotation_events_json=json.dumps(events) if events else None,
+                    video_sync_status=sync_status,
                     status=RecordingStatus.VALIDATING,
                 )
                 db.add(record)
                 records.append(record)
+                sync_manifests.append(sync_manifest)
             db.commit()
-            for record in records:
+            for record, manifest in zip(records, sync_manifests, strict=True):
                 db.refresh(record)
+                if manifest is not None and session.owner_user_id and session.case_id:
+                    try:
+                        encrypt_recording_manifest(
+                            record,
+                            owner_user_id=session.owner_user_id,
+                            case_id=session.case_id,
+                            manifest=manifest,
+                        )
+                    except VideoSyncCryptoError:
+                        record.video_sync_status = "unavailable"
+                        LOGGER.warning("Nicolet video sync metadata could not be protected.")
+                    db.add(record)
+            db.commit()
+            resolve_case_video_sync(db, session.owner_user_id, session.case_id)
 
             for record in records:
                 try:
                     _process_record(db, session, record, storage, inference)
                 except Exception as exc:
                     any_errors = True
+                    failed_stage = session.current_stage or "unknown"
+                    LOGGER.error(
+                        "EEG recording processing failed (stage=%s, error_type=%s).",
+                        failed_stage,
+                        type(exc).__name__,
+                    )
                     record_db_id = record.id
                     db.rollback()
                     failed_record = db.get(EEGRecording, record_db_id) if record_db_id else None
@@ -484,14 +559,39 @@ def process_session(session_id: str) -> None:
                     if not retained_cleanup_failed:
                         failed_record.retained_artifact_path = None
                     failed_record.status = RecordingStatus.FAILED
-                    failed_record.error_message = _safe_error(exc)
+                    safe_error = _safe_error(exc)
+                    if safe_error == "Processing failed unexpectedly.":
+                        safe_error = (
+                            f"Processing failed unexpectedly during {failed_stage} "
+                            f"({type(exc).__name__})."
+                        )
+                    failed_record.error_message = safe_error
                     db.add(failed_record)
                     db.commit()
 
-            session.status = AnalysisStatus.COMPLETED_WITH_ERRORS if any_errors else AnalysisStatus.COMPLETED
-            session.current_stage = None
-            session.completed_at = _now()
-            db.add(session)
+            final_status = (
+                AnalysisStatus.COMPLETED_WITH_ERRORS
+                if any_errors
+                else AnalysisStatus.COMPLETED
+            )
+            db.exec(
+                update(EEGRecording)
+                .where(
+                    EEGRecording.session_db_id == session.id,
+                    EEGRecording.status == RecordingStatus.INFERRED,
+                )
+                .values(error_message=None)
+            )
+            db.exec(
+                update(EEGSession)
+                .where(EEGSession.id == session.id)
+                .values(
+                    status=final_status,
+                    current_stage=None,
+                    error_message=None,
+                    completed_at=_now(),
+                )
+            )
             db.commit()
         except Exception as exc:
             _mark_session_failed(db, session_id, _safe_error(exc))
@@ -760,6 +860,7 @@ def _process_record(
                 if isinstance(conversion_details, dict)
                 else False
             ),
+            review_source_path=extracted_path,
         )
         record.retained_artifact_path = retained_artifact_path
         record.status = RecordingStatus.INFERRED
@@ -788,8 +889,9 @@ def _retain_positive_artifact(
     window_starts: np.ndarray,
     predictions: list[WindowPrediction],
     has_time_gaps: bool = False,
+    review_source_path: Path | None = None,
 ) -> str | None:
-    """Encrypt only model-positive EEG segments for private retention.
+    """Encrypt the configured EEG review waveform for private retention.
 
     Parameters
     ----------
@@ -800,7 +902,7 @@ def _retain_positive_artifact(
     storage : SessionStorage
         Private storage service for temporary and retained artifacts.
     source_path : pathlib.Path
-        Private extracted EDF used only to create a scrubbed positive clip.
+        Private extracted EDF used to create the scrubbed review artifact.
     model_windows : numpy.ndarray
         Model input after the selected privacy transformation.
     window_starts : numpy.ndarray
@@ -811,7 +913,7 @@ def _retain_positive_artifact(
     Returns
     -------
     str or None
-        Internal encrypted artifact path when a model alert exists.
+        Internal encrypted artifact path when retention is configured.
     """
 
     alert_intervals = detected_intervals(
@@ -819,12 +921,44 @@ def _retain_positive_artifact(
         record.duration_seconds or 0.0,
         SIGNAL_RETENTION_CONTEXT_SECONDS,
     )
-    if not alert_intervals:
+    if not alert_intervals and not ENABLE_FULL_SIGNAL_PREVIEW:
         return None
     intervals = [(0.0, record.duration_seconds or 0.0)] if ENABLE_FULL_SIGNAL_PREVIEW else alert_intervals
 
+    review_segments: list[tuple[float, np.ndarray]] = []
+    review_labels: list[str] = []
+    if (
+        review_source_path is not None
+        and review_source_path.suffix.lower() == ".e"
+        and SIGNAL_OBFUSCATION not in methods_from_profile(session.privacy_method)
+    ):
+        try:
+            review_segments, review_labels = LegacyNicoletReader(
+                review_source_path
+            ).read_review_segments(intervals)
+        except Exception as exc:
+            LOGGER.warning(
+                "Auxiliary EEG review traces unavailable (error_type=%s).",
+                type(exc).__name__,
+            )
+
     temporary_dir = storage.directory(session.session_id, "work")
-    if has_time_gaps:
+    if has_time_gaps or (review_source_path is not None and review_source_path.suffix.lower() == ".e"):
+        if (
+            ENABLE_FULL_SIGNAL_PREVIEW
+            and review_source_path is not None
+            and review_source_path.suffix.lower() == ".e"
+            and not has_time_gaps
+        ):
+            temporary_path = temporary_dir / f"{record.record_id}.retained.edf"
+            write_scrubbed_edf_clip(
+                source_path, temporary_path, intervals, review_segments, review_labels
+            )
+            return str(
+                storage.store_encrypted_artifact(
+                    session.session_id, temporary_path, f"{record.record_id}.edf"
+                )
+            )
         indexes = (
             np.arange(len(window_starts), dtype=np.int64)
             if ENABLE_FULL_SIGNAL_PREVIEW
@@ -833,7 +967,14 @@ def _retain_positive_artifact(
         if not len(indexes):
             return None
         temporary_path = temporary_dir / f"{record.record_id}.retained.npz"
-        write_model_window_npz(temporary_path, model_windows, window_starts, indexes)
+        write_model_window_npz(
+            temporary_path,
+            model_windows,
+            window_starts,
+            indexes,
+            review_segments,
+            review_labels,
+        )
         return str(
             storage.store_encrypted_artifact(
                 session.session_id,

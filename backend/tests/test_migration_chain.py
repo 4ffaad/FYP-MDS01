@@ -13,10 +13,13 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_CONFIG = REPOSITORY_ROOT / "backend" / "alembic.ini"
-EXPECTED_HEAD = "029_profile_verification_status"
+EXPECTED_HEAD = "032_patient_region_review_blur"
 
 
 class MigrationChainTests(unittest.TestCase):
+    def test_current_revision_id_fits_alembic_version_column(self) -> None:
+        self.assertLessEqual(len(EXPECTED_HEAD), 32)
+
     def _run_alembic(self, database_url: str, *arguments: str) -> None:
         environment = os.environ.copy()
         environment["DATABASE_URL"] = database_url
@@ -70,6 +73,43 @@ class MigrationChainTests(unittest.TestCase):
             }
             self.assertIn("idempotency_key_hash", privacy_columns)
             self.assertIn("content_fingerprint", privacy_columns)
+
+            detection_columns = {
+                column[1]
+                for column in connection.execute(
+                    "PRAGMA table_info(video_detection_jobs)"
+                )
+            }
+            self.assertIn("review_privacy_method", detection_columns)
+
+            detection_columns = {
+                column[1]: column
+                for column in connection.execute(
+                    "PRAGMA table_info(video_detection_jobs)"
+                )
+            }
+            self.assertIn("blur_strength_percent", detection_columns)
+            self.assertEqual(1, detection_columns["blur_strength_percent"][3])
+            self.assertEqual("100", detection_columns["blur_strength_percent"][4])
+            for name in (
+                "source_name_token",
+                "source_group_id",
+                "sync_group_complete",
+                "eeg_recording_db_id",
+                "eeg_sync_status",
+                "eeg_sync_nonce",
+                "eeg_sync_ciphertext",
+            ):
+                self.assertIn(name, detection_columns)
+
+            recording_columns = {
+                column[1]
+                for column in connection.execute("PRAGMA table_info(recordings)")
+            }
+            self.assertTrue(
+                {"video_sync_status", "video_sync_nonce", "video_sync_ciphertext"}
+                <= recording_columns
+            )
 
             profile_columns = {
                 column[1]: column for column in connection.execute(

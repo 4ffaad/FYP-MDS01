@@ -10,12 +10,15 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+import hashlib
+import hmac
 import math
 import os
 from pathlib import Path
 import stat
 import struct
 from typing import BinaryIO, cast
+import unicodedata
 
 import numpy as np
 from scipy.signal import resample_poly
@@ -32,6 +35,10 @@ _MAX_EVENT_PACKET_BYTES = int(os.getenv("MDS01_MAX_LEGACY_NICOLET_EVENT_BYTES", 
 _MAX_EVENT_SECTION_BYTES = 64 * 1024**2
 _MAX_EVENT_SEGMENT_COMPARISONS = 1_000_000
 _EVENT_SCAN_CHUNK_BYTES = 64 * 1024
+_VIDEO_SYNC_PREFIX_BYTES = 752
+_VIDEO_SYNC_RECORD_BYTES = 600
+_MAX_VIDEO_SYNC_SECTION_BYTES = 64 * 1024**2
+_MAX_VIDEO_SYNC_ENTRIES = 100_000
 _MAX_SIGNAL_SAMPLES = int(os.getenv("MDS01_MAX_LEGACY_NICOLET_SAMPLES", "5000000"))
 
 
@@ -47,6 +54,8 @@ if any(
         _MAX_EVENT_PACKET_BYTES,
         _MAX_EVENT_SECTION_BYTES,
         _MAX_EVENT_SEGMENT_COMPARISONS,
+        _MAX_VIDEO_SYNC_SECTION_BYTES,
+        _MAX_VIDEO_SYNC_ENTRIES,
         _MAX_SIGNAL_SAMPLES,
     )
 ):
@@ -268,6 +277,115 @@ class NicoletHeader:
     segments: tuple[NicoletSegment, ...]
     total_samples: int
     events: tuple[NicoletEvent, ...]
+
+
+@dataclass(frozen=True)
+class NicoletVideoSyncSample:
+    """A sanitized video frame anchor on the source EEG clock."""
+
+    source_name_token: str
+    frame_index: int
+    eeg_clock_seconds: float
+
+
+def video_sync_name_token(filename: str, key: bytes, *, context: str = "") -> str:
+    """HMAC a source basename so the raw video reference never reaches storage."""
+
+    basename = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    normalized = unicodedata.normalize("NFC", basename).strip().rstrip(" .").casefold()
+    if (
+        not normalized
+        or normalized in {".", ".."}
+        or len(normalized) > 255
+        or any(ord(character) < 32 for character in normalized)
+        or len(key) < 32
+    ):
+        raise LegacyNicoletError("Legacy Nicolet video sync reference is invalid.")
+    return hmac.new(
+        key,
+        b"mds01-video-sync-v1\x00"
+        + context.encode("utf-8")
+        + b"\x00"
+        + normalized.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def parse_video_sync_section(
+    payload: bytes,
+    first_segment_start_seconds: float,
+    key: bytes,
+    *,
+    context: str = "",
+) -> tuple[NicoletVideoSyncSample, ...]:
+    """Parse the observed 752-byte prefix and 600-byte video sync rows.
+
+    The binary layout is empirically validated against the supplied Nicolet
+    recordings. Malformed or unknown layouts fail closed; filenames are used
+    only to derive keyed tokens and are never returned.
+    """
+
+    if (
+        len(payload) > _MAX_VIDEO_SYNC_SECTION_BYTES
+        or len(payload) < _VIDEO_SYNC_PREFIX_BYTES
+        or (len(payload) - _VIDEO_SYNC_PREFIX_BYTES) % _VIDEO_SYNC_RECORD_BYTES
+    ):
+        raise LegacyNicoletError("Legacy Nicolet video sync section is invalid.")
+    record_count = (len(payload) - _VIDEO_SYNC_PREFIX_BYTES) // _VIDEO_SYNC_RECORD_BYTES
+    if record_count > _MAX_VIDEO_SYNC_ENTRIES:
+        raise LegacyNicoletError("Legacy Nicolet video sync count exceeds the safe limit.")
+    if not _finite(first_segment_start_seconds):
+        raise LegacyNicoletError("Legacy Nicolet video sync timing is invalid.")
+
+    samples: list[NicoletVideoSyncSample] = []
+    for index in range(record_count):
+        offset = _VIDEO_SYNC_PREFIX_BYTES + index * _VIDEO_SYNC_RECORD_BYTES
+        row = payload[offset : offset + _VIDEO_SYNC_RECORD_BYTES]
+        frame_index = struct.unpack_from("<Q", row, 0)[0]
+        day_serial, fraction_seconds = struct.unpack_from("<dd", row, 8)
+        if (
+            frame_index > 100_000_000
+            or not _finite(day_serial)
+            or not _finite(fraction_seconds)
+            or fraction_seconds < 0
+            or fraction_seconds >= _DAY_SECONDS
+        ):
+            raise LegacyNicoletError("Legacy Nicolet video sync timing is invalid.")
+
+        name_end = next(
+            (position for position in range(24, _VIDEO_SYNC_RECORD_BYTES, 2)
+             if row[position : position + 2] == b"\x00\x00"),
+            None,
+        )
+        if name_end is None or name_end == 24:
+            raise LegacyNicoletError("Legacy Nicolet video sync reference is invalid.")
+        try:
+            source_name = row[24:name_end].decode("utf-16le", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise LegacyNicoletError("Legacy Nicolet video sync reference is invalid.") from exc
+
+        eeg_clock_seconds = (
+            day_serial * _DAY_SECONDS
+            + fraction_seconds
+            - _NICOLET_EPOCH_OFFSET
+            - first_segment_start_seconds
+        )
+        if (
+            not _finite(eeg_clock_seconds)
+            or eeg_clock_seconds < -1
+            or eeg_clock_seconds > 7 * _DAY_SECONDS
+        ):
+            raise LegacyNicoletError("Legacy Nicolet video sync timing is invalid.")
+        samples.append(
+            NicoletVideoSyncSample(
+                source_name_token=video_sync_name_token(
+                    source_name, key, context=context
+                ),
+                frame_index=frame_index,
+                eeg_clock_seconds=eeg_clock_seconds,
+            )
+        )
+    return tuple(samples)
 
 
 def _canonical_electrode_label(label: str) -> str:
@@ -700,6 +818,39 @@ class LegacyNicoletReader:
         except (OSError, EOFError, struct.error, ValueError, OverflowError) as exc:
             raise LegacyNicoletError("Legacy Nicolet file is unreadable or malformed.") from exc
 
+    def read_video_sync_samples(
+        self, key: bytes, *, context: str = ""
+    ) -> tuple[NicoletVideoSyncSample, ...]:
+        """Return keyed video frame anchors without exposing source filenames."""
+
+        self.read_header()
+        try:
+            with self._open_source() as stream:
+                tag_index = self._read_tags(stream)
+                section_id = tag_index.get("VIDEOSYNCGUID")
+                entries = self._section_entries.get(section_id, ()) if section_id is not None else ()
+                if not entries:
+                    return ()
+                total_bytes = sum(entry.section_length for entry in entries)
+                if total_bytes > _MAX_VIDEO_SYNC_SECTION_BYTES:
+                    raise LegacyNicoletError(
+                        "Legacy Nicolet video sync section exceeds the safe size limit."
+                    )
+                payload = b"".join(
+                    self._read_at(stream, entry.offset, entry.section_length)
+                    for entry in entries
+                )
+            return parse_video_sync_section(
+                payload,
+                self._first_segment_start_seconds,
+                key,
+                context=context,
+            )
+        except LegacyNicoletError:
+            raise
+        except (OSError, EOFError, struct.error, ValueError, OverflowError) as exc:
+            raise LegacyNicoletError("Legacy Nicolet video sync section is unreadable.") from exc
+
     def _read_channel_samples(
         self,
         stream: BinaryIO,
@@ -795,6 +946,76 @@ class LegacyNicoletReader:
         if not np.isfinite(signals).all():
             raise LegacyNicoletError("Legacy Nicolet signal data is non-finite.")
         return cast(np.ndarray, signals.astype(np.float32, copy=False)), sampling_rate, labels
+
+    def read_review_segments(
+        self, intervals: list[tuple[float, float]]
+    ) -> tuple[list[tuple[float, np.ndarray]], list[str]]:
+        """Read bounded auxiliary review traces from a legacy recording.
+
+        Only the reviewed EOG, ECG, chin-difference, and photic traces are
+        returned. Results use the model sample rate and preserve source-relative
+        start times over caller-supplied review intervals.
+        """
+
+        header = self.read_header()
+        if header.sampling_rate != LEGACY_SOURCE_SAMPLING_RATE or not intervals:
+            return [], []
+        def normalized_label(label: str) -> str:
+            value = label.strip().upper().replace(" ", "")
+            return value[:-4] if value.endswith("-REF") else value
+
+        by_label = {}
+        for channel in header.channels:
+            label = normalized_label(channel.label)
+            if label in by_label:
+                return [], []
+            by_label[label] = channel
+        required = {"EOGRIGHT", "EOGLEFT", "EKG", "CHIN1", "CHIN2", "PHOTIC"}
+        if not required.issubset(by_label):
+            return [], []
+        labels = ["EOG Left-Ref", "EOG Right-Ref", "ECG", "Chin 1-Chin 2", "Photic"]
+        output: list[tuple[float, np.ndarray]] = []
+        segments = coalesce_contiguous_segments(header.segments, header.sampling_rate)
+        with self._open_source() as stream:
+            for requested_start, requested_end in intervals:
+                for segment in segments:
+                    start = max(requested_start, segment.start_seconds)
+                    end = min(requested_end, segment.start_seconds + segment.duration_seconds)
+                    if end <= start:
+                        continue
+                    first = segment.sample_start + round((start - segment.start_seconds) * header.sampling_rate)
+                    last = min(
+                        segment.sample_start + segment.sample_count,
+                        segment.sample_start + round((end - segment.start_seconds) * header.sampling_rate),
+                    )
+                    if last <= first:
+                        continue
+                    count = last - first
+                    source = np.empty((5, count), dtype=np.float32)
+                    for index, name in enumerate(("EOGLEFT", "EOGRIGHT", "EKG", "CHIN1", "PHOTIC")):
+                        source[index] = self._read_channel_samples(
+                            stream,
+                            by_label[name],
+                            header.total_samples,
+                            sample_start=first,
+                            sample_count=count,
+                        )
+                    source[3] -= self._read_channel_samples(
+                        stream,
+                        by_label["CHIN2"],
+                        header.total_samples,
+                        sample_start=first,
+                        sample_count=count,
+                    )
+                    sampled = resample_poly(
+                        source,
+                        _LEGACY_RESAMPLE_UP,
+                        _LEGACY_RESAMPLE_DOWN,
+                        axis=1,
+                        window=("kaiser", 5.0),
+                    ).astype(np.float32, copy=False)
+                    output.append((start, sampled))
+        return output, labels
 
     def read_data_segments(self) -> tuple[list[tuple[float, np.ndarray]], int, list[str]]:
         """Read each contiguous acquisition segment without joining time gaps."""
@@ -905,3 +1126,14 @@ def read_legacy_nicolet_events(path: str | Path) -> tuple[NicoletEvent, ...]:
     """Return sanitized embedded event timing without raw labels or text."""
 
     return LegacyNicoletReader(path).read_header().events
+
+
+def read_legacy_nicolet_video_sync(
+    path: str | Path,
+    key: bytes,
+    *,
+    context: str = "",
+) -> tuple[NicoletVideoSyncSample, ...]:
+    """Return keyed video frame anchors without source filenames."""
+
+    return LegacyNicoletReader(path).read_video_sync_samples(key, context=context)

@@ -5,9 +5,12 @@ from __future__ import annotations
 import base64
 import json
 import os
+import tempfile
 import unittest
 from contextlib import contextmanager
-from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi.testclient import TestClient
@@ -16,9 +19,24 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
-from backend.app.database.models.eeg import AnalysisStatus, EEGSession
+from backend.app.database.models.eeg import (
+    AnalysisStatus,
+    EEGRecording,
+    EEGSession,
+    Explanation,
+    Prediction,
+    RecordingStatus,
+)
 from backend.app.database.models.case_profile import CasePatientProfile
+from backend.app.database.models.video import (
+    VideoPrivacyJob,
+    VideoPrivacyProfile,
+    VideoPrivacyStatus,
+)
+from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.main import app
+from backend.app.services.storage_service import SessionStorage
+from backend.app.services.video_storage_service import VideoStorage
 from backend.app.services.case_profile_service import (
     PatientProfileCryptoError,
     _associated_data,
@@ -280,7 +298,7 @@ class PatientProfileApiTests(unittest.TestCase):
         self.assertEqual(loaded.status_code, 200, loaded.text)
         self.assertEqual(loaded.json()["profile"]["details"], details)
 
-    def test_auto_extracted_profile_is_encrypted_owner_scoped_and_unverified(self) -> None:
+    def test_auto_extracted_profile_is_owner_scoped_and_listed_without_approval(self) -> None:
         headers = {"Origin": "http://localhost:3000"}
         details = [
             {"label": "Patient Name", "value": "Synthetic Patient"},
@@ -305,14 +323,15 @@ class PatientProfileApiTests(unittest.TestCase):
             self.client.get(f"/api/cases/{self.case_id}", headers=headers),
         ):
             self.assertEqual(generic_response.status_code, 200)
-            self.assertNotIn("Synthetic Patient", generic_response.text)
             self.assertNotIn("HOSP-001", generic_response.text)
             self.assertNotIn("47 years", generic_response.text)
             self.assertNotIn("Synthetic extracted finding", generic_response.text)
             payload = generic_response.json()
             summary = payload[0] if isinstance(payload, list) else payload
-            self.assertIsNone(summary["patient_name"])
-            self.assertIsNone(summary["patient_name_verification_status"])
+            self.assertEqual(summary["patient_name"], "Synthetic Patient")
+            self.assertEqual(
+                summary["patient_name_verification_status"], "auto_extracted"
+            )
             self.assertIsNone(summary.get("report_summary"))
 
         with Session(self.engine) as db:
@@ -410,6 +429,228 @@ class PatientProfileApiTests(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(write.status_code, 404)
+
+    def test_case_delete_removes_all_owned_analyses_and_retained_files(self) -> None:
+        headers = {"Origin": "http://localhost:3000"}
+        profile = self.client.put(
+            f"/api/cases/{self.case_id}/patient-profile",
+            json={"name": "Synthetic Patient", "hospital_id": "SYNTHETIC", "review_confirmed": True},
+            headers=headers,
+        )
+        self.assertEqual(profile.status_code, 200, profile.text)
+        with Session(self.engine) as db:
+            session = db.exec(select(EEGSession)).one()
+            session.status = AnalysisStatus.COMPLETED
+            db.add(session)
+            db.add(
+                VideoDetectionJob(
+                    owner_user_id=self.alice.id,
+                    job_id="VID-DETECTION-SYNTHETIC",
+                    case_id=self.case_id,
+                    status="ready",
+                    retention_expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+                )
+            )
+            db.add(
+                VideoPrivacyJob(
+                    owner_user_id=self.alice.id,
+                    case_id=self.case_id,
+                    job_id="VID-PRIVACY-SYNTHETIC",
+                    profile=VideoPrivacyProfile.FACE_REDACTED,
+                    status=VideoPrivacyStatus.READY,
+                    display_label="Synthetic review clip",
+                )
+            )
+            db.flush()
+            recording = EEGRecording(
+                record_id="REC-SYNTHETIC",
+                session_db_id=session.id,
+                sequence_index=1,
+                original_filename="synthetic.edf",
+                status=RecordingStatus.INFERRED,
+            )
+            db.add(recording)
+            db.flush()
+            prediction = Prediction(
+                recording_db_id=recording.id,
+                window_index=0,
+                model_name="development-stub",
+                model_version="stub-0.1.0",
+                probability=0.8,
+                seizure_detected=True,
+                start_seconds=0,
+                end_seconds=4,
+            )
+            db.add(prediction)
+            db.flush()
+            db.add(
+                Explanation(
+                    prediction_db_id=prediction.id,
+                    method="synthetic",
+                    explanation_path="synthetic.json",
+                )
+            )
+            db.commit()
+
+        with tempfile.TemporaryDirectory() as storage_dir:
+            root = Path(storage_dir)
+            stored_ids = (
+                "SES-ALICE-01",
+                "VID-DETECTION-SYNTHETIC",
+                "VID-PRIVACY-SYNTHETIC",
+            )
+            for identifier in stored_ids:
+                private_dir = root / identifier
+                private_dir.mkdir()
+                (private_dir / "media.enc").write_bytes(b"synthetic ciphertext")
+            wrapped_eeg_storage = MagicMock(wraps=SessionStorage(root=root))
+            wrapped_video_storage = MagicMock(wraps=VideoStorage(root=root))
+            with (
+                patch(
+                    "backend.app.services.case_deletion_service.SessionStorage",
+                    return_value=wrapped_eeg_storage,
+                ) as eeg_storage,
+                patch(
+                    "backend.app.services.case_deletion_service.VideoStorage",
+                    return_value=wrapped_video_storage,
+                ) as video_storage,
+            ):
+                response = self.client.delete(
+                    f"/api/cases/{self.case_id}", headers=headers
+                )
+
+            for identifier in stored_ids:
+                self.assertFalse((root / identifier).exists(), identifier)
+
+        self.assertEqual(response.status_code, 204, response.text)
+        eeg_storage.return_value.delete_session.assert_called_once_with("SES-ALICE-01")
+        self.assertEqual(
+            {call.args[0] for call in video_storage.return_value.delete_job.call_args_list},
+            {"VID-DETECTION-SYNTHETIC", "VID-PRIVACY-SYNTHETIC"},
+        )
+        with Session(self.engine) as db:
+            for model in (
+                EEGSession,
+                EEGRecording,
+                Prediction,
+                Explanation,
+                VideoDetectionJob,
+                VideoPrivacyJob,
+                CasePatientProfile,
+            ):
+                self.assertEqual(db.exec(select(model)).all(), [], model.__name__)
+
+    def test_case_delete_is_owner_scoped_and_waits_for_active_processing(self) -> None:
+        headers = {"Origin": "http://localhost:3000"}
+        with (
+            patch("backend.app.services.case_deletion_service.SessionStorage") as eeg_storage,
+            patch("backend.app.services.case_deletion_service.VideoStorage") as video_storage,
+        ):
+            active = self.client.delete(f"/api/cases/{self.case_id}", headers=headers)
+            unknown = self.client.delete("/api/cases/CASE-00000001", headers=headers)
+
+        self.assertEqual(active.status_code, 409, active.text)
+        self.assertEqual(unknown.status_code, 404, unknown.text)
+        eeg_storage.return_value.delete_session.assert_not_called()
+        video_storage.return_value.delete_job.assert_not_called()
+        with Session(self.engine) as db:
+            self.assertEqual(len(db.exec(select(EEGSession)).all()), 1)
+
+        with Session(self.engine) as db:
+            session = db.exec(select(EEGSession)).one()
+            session.status = AnalysisStatus.COMPLETED
+            db.add(session)
+            db.add(
+                VideoDetectionJob(
+                    owner_user_id=self.alice.id,
+                    job_id="VID-DETECTION-BUSY",
+                    case_id=self.case_id,
+                    status="processing",
+                    retention_expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+                )
+            )
+            db.commit()
+        active_detection = self.client.delete(
+            f"/api/cases/{self.case_id}", headers=headers
+        )
+        self.assertEqual(active_detection.status_code, 409, active_detection.text)
+
+        with Session(self.engine) as db:
+            detection = db.exec(select(VideoDetectionJob)).one()
+            detection.status = "ready"
+            db.add(detection)
+            db.add(
+                VideoPrivacyJob(
+                    owner_user_id=self.alice.id,
+                    case_id=self.case_id,
+                    job_id="VID-PRIVACY-BUSY",
+                    profile=VideoPrivacyProfile.FACE_REDACTED,
+                    status=VideoPrivacyStatus.QUEUED,
+                    display_label="Synthetic active preview",
+                )
+            )
+            db.commit()
+        active_privacy = self.client.delete(
+            f"/api/cases/{self.case_id}", headers=headers
+        )
+        self.assertEqual(active_privacy.status_code, 409, active_privacy.text)
+        eeg_storage.return_value.delete_session.assert_not_called()
+        video_storage.return_value.delete_job.assert_not_called()
+
+        with Session(self.engine) as db:
+            other_owner = User(
+                public_id="USR-OTHER-SYNTHETIC",
+                email="other@example.test",
+                password_hash="test-only",
+            )
+            db.add(other_owner)
+            db.flush()
+            foreign_case_id = "CASE-FADE1234"
+            db.add(
+                EEGSession(
+                    session_id="SES-FOREIGN-01",
+                    owner_user_id=other_owner.id,
+                    case_id=foreign_case_id,
+                    status=AnalysisStatus.FAILED,
+                )
+            )
+            db.commit()
+
+        foreign = self.client.delete(f"/api/cases/{foreign_case_id}", headers=headers)
+        self.assertEqual(foreign.status_code, 404, foreign.text)
+        with Session(self.engine) as db:
+            self.assertEqual(
+                len(db.exec(select(EEGSession).where(EEGSession.session_id == "SES-FOREIGN-01")).all()),
+                1,
+            )
+
+    def test_case_delete_storage_failure_keeps_database_rows_and_profile(self) -> None:
+        headers = {"Origin": "http://localhost:3000"}
+        profile = self.client.put(
+            f"/api/cases/{self.case_id}/patient-profile",
+            json={"name": "Synthetic Patient", "hospital_id": "SYNTHETIC", "review_confirmed": True},
+            headers=headers,
+        )
+        self.assertEqual(profile.status_code, 200, profile.text)
+        with Session(self.engine) as db:
+            session = db.exec(select(EEGSession)).one()
+            session.status = AnalysisStatus.COMPLETED
+            db.add(session)
+            db.commit()
+
+        with (
+            patch("backend.app.services.case_deletion_service.SessionStorage") as eeg_storage,
+            patch("backend.app.services.case_deletion_service.VideoStorage") as video_storage,
+        ):
+            eeg_storage.return_value.delete_session.side_effect = OSError("private path")
+            response = self.client.delete(f"/api/cases/{self.case_id}", headers=headers)
+
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertNotIn("private path", response.text)
+        video_storage.return_value.delete_job.assert_not_called()
+        with Session(self.engine) as db:
+            self.assertEqual(len(db.exec(select(EEGSession)).all()), 1)
+            self.assertEqual(len(db.exec(select(CasePatientProfile)).all()), 1)
 
 
 if __name__ == "__main__":

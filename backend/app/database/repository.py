@@ -377,16 +377,24 @@ def list_model_metadata(db: Session, recording_ids: list[int]) -> dict[int, dict
     return metadata
 
 
-def delete_session_data(db: Session, session: EEGSession) -> None:
-    """Delete one session and all dependent result and audit rows.
+def delete_sessions_data(
+    db: Session,
+    sessions: list[EEGSession],
+    *,
+    commit: bool = True,
+) -> None:
+    """Delete sessions and their dependent result and audit rows.
 
     Parameters
     ----------
     db : sqlmodel.Session
         Database session used for the deletion transaction.
-    session : EEGSession
-        Session row to remove. Its private files are deleted separately by
+    sessions : list[EEGSession]
+        Session rows to remove. Their private files are deleted separately by
         the storage service.
+    commit : bool
+        Commit the deletion transaction unless the caller groups it with
+        additional case data.
 
     Raises
     ------
@@ -394,14 +402,34 @@ def delete_session_data(db: Session, session: EEGSession) -> None:
         Database errors are propagated so the caller can report failure.
     """
 
-    recordings = list_recordings_for_session(db, session.id or 0)
-    recording_ids = [recording.id for recording in recordings if recording.id is not None]
-    if recording_ids:
-        prediction_ids = select(Prediction.id).where(Prediction.recording_db_id.in_(recording_ids))
-        db.exec(delete(Explanation).where(Explanation.prediction_db_id.in_(prediction_ids)))
+    session_ids = [session.id for session in sessions if session.id is not None]
+    if session_ids:
+        recording_ids = select(EEGRecording.id).where(
+            EEGRecording.session_db_id.in_(session_ids)
+        )
+        prediction_ids = select(Prediction.id).where(
+            Prediction.recording_db_id.in_(recording_ids)
+        )
+        db.exec(
+            delete(Explanation).where(Explanation.prediction_db_id.in_(prediction_ids))
+        )
         db.exec(delete(Prediction).where(Prediction.recording_db_id.in_(recording_ids)))
-        db.exec(delete(ProcessingAttempt).where(ProcessingAttempt.recording_db_id.in_(recording_ids)))
-    db.exec(delete(ProcessingAttempt).where(ProcessingAttempt.session_db_id == session.id))
-    db.exec(delete(EEGRecording).where(EEGRecording.session_db_id == session.id))
-    db.delete(session)
-    db.commit()
+        db.exec(
+            delete(ProcessingAttempt).where(
+                or_(
+                    ProcessingAttempt.session_db_id.in_(session_ids),
+                    ProcessingAttempt.recording_db_id.in_(recording_ids),
+                )
+            )
+        )
+        db.exec(delete(EEGRecording).where(EEGRecording.session_db_id.in_(session_ids)))
+    for session in sessions:
+        db.delete(session)
+    if commit and sessions:
+        db.commit()
+
+
+def delete_session_data(db: Session, session: EEGSession) -> None:
+    """Delete one session and its dependent rows in one transaction."""
+
+    delete_sessions_data(db, [session])

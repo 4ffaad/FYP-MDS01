@@ -1621,6 +1621,7 @@ Seizure End Time: 3036 seconds
                         session_id="SES-PARTIAL",
                         original_filename="session.zip",
                         original_path=str(encrypted_archive),
+                        error_message="EEG processing was interrupted before completion.",
                     )
                 )
                 db.commit()
@@ -1629,6 +1630,7 @@ Seizure End Time: 3036 seconds
                 if record.sequence_index == 1:
                     raise ValidationError("malformed EDF")
                 record.status = RecordingStatus.INFERRED
+                record.error_message = "EEG processing was interrupted before completion."
                 db.add(record)
                 db.commit()
 
@@ -1647,6 +1649,8 @@ Seizure End Time: 3036 seconds
                 self.assertEqual(records[0].status, RecordingStatus.FAILED)
                 self.assertEqual(records[1].status, RecordingStatus.INFERRED)
                 self.assertEqual(records[0].error_message, "malformed EDF")
+                self.assertIsNone(session.error_message)
+                self.assertIsNone(records[1].error_message)
                 self.assertEqual(records[0].reference_annotation_source, "chb-mit-summary")
                 self.assertEqual(json.loads(records[0].reference_intervals_json), [[12.0, 24.0]])
                 self.assertEqual(json.loads(records[1].reference_intervals_json), [])

@@ -1,16 +1,10 @@
-# MDS01 backend
+# Backend
 
-FastAPI, PostgreSQL and encrypted filesystem storage. Run Docker Compose from the repository root.
+FastAPI, PostgreSQL, and encrypted private file storage run through Docker
+Compose. Start with the [local setup](../docs/setup.md), then use the
+[backend guide](../docs/backend.md) or [architecture](../docs/architecture.md).
+The [video runbook](../docs/video-detection.md) documents pinned VSViG assets
+and its inference contract.
 
-- [First run and tests](../docs/setup.md)
-- [Architecture](../docs/architecture.md)
-- [Video seizure review setup and model contract](../docs/video-detection.md)
-- [Processing, API and research commands](../docs/backend.md)
-- [Interactive API reference](http://127.0.0.1:8000/docs) when running locally
-
-Use Alembic for schema changes. Keep processing in services, database queries in repositories, and patient binaries out of PostgreSQL. The tracked base Compose file uses a development stub; the local two-terminal quickstart opts into the exact H5 research profile and fails closed if its reviewed local assets are missing.
-
-Local teammate runs use `AUTH_MODE=local-accounts`: `POST /api/auth/register`
-or `/api/auth/login` sets an HttpOnly session cookie, and protected EEG/video
-queries are filtered by the signed-in user. `AUTH_MODE=local` is reserved for
-isolated tests. Production requires Cloudflare Access.
+Keep route handlers thin, database queries in repositories, and patient
+binaries out of PostgreSQL. Use Alembic for schema changes.

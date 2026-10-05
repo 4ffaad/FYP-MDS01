@@ -8,6 +8,10 @@ import numpy as np
 
 from backend.app.database.models.video import VideoPrivacyProfile
 from backend.app.video_privacy.processor import VideoPrivacyProcessor
+from backend.app.video_detection.visualization import (
+    render_visualization,
+    validate_visualization_artifact,
+)
 
 
 def require(condition: bool, message: str) -> None:
@@ -35,6 +39,18 @@ def verify() -> None:
         require(result.frame_count == 4, "unexpected synthetic frame count")
         require(result.detected_frames == 0 and not result.usable, "unexpected detection in synthetic input")
         require(output.stat().st_size > 0 and preview.stat().st_size > 0, "privacy output was not created")
+        review = root / "review.mp4"
+        metadata = render_visualization(source, review, [])
+        require(metadata["available"], "synthetic review video was not created")
+        require(metadata["full_frame_fallback_frames"] == 4, "unexpected synthetic face fallback")
+        validate_visualization_artifact(
+            review,
+            expected_fps=6,
+            expected_width=128,
+            expected_height=128,
+            expected_frame_count=4,
+            expected_duration=4 / 6,
+        )
     print("Face-redaction runtime passed the synthetic, no-detection smoke check.")
 
 

@@ -87,7 +87,11 @@ DEFAULT_THRESHOLD = 0.5
 
 
 class DetectionError(RuntimeError):
-    """Only fixed public error codes cross the API boundary."""
+    """Carry a fixed public error code and optional sanitized diagnostics."""
+
+    def __init__(self, code: str, *, details: dict | None = None):
+        super().__init__(code)
+        self.details = details or {}
 
 
 def digest(path: Path) -> str:
@@ -286,27 +290,65 @@ def validate_predictions(rows: list, duration: float, model: dict) -> dict:
                   "score_type": "uncalibrated_model_score", "seizure_detected": flagged, **model}
         evidence = row.get("model_evidence")
         if evidence is not None:
-            patches = evidence.get("patches") if isinstance(evidence, dict) else None
+            method = evidence.get("method") if isinstance(evidence, dict) else None
             patch_labels = model.get("patch_labels") if isinstance(model, dict) else None
-            if (
-                not isinstance(evidence, dict)
-                or evidence.get("method") != "patch-occlusion"
-                or not isinstance(patches, list)
-                or len(patches) != 15
-                or {item.get("patch_index") for item in patches if isinstance(item, dict)} != set(range(15))
-                or any(
-                    not isinstance(item, dict)
-                    or type(item.get("patch_index")) is not int
-                    or not 0 <= item["patch_index"] < 15
-                    or not math.isfinite(float(item.get("score_change", float("nan"))))
-                    or (
-                        isinstance(patch_labels, list)
-                        and len(patch_labels) == 15
-                        and item.get("component") != patch_labels[item["patch_index"]]
-                    )
-                    for item in patches
+
+            def finite_number(value):
+                return (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(float(value))
                 )
-            ):
+
+            if method == "patch-occlusion":
+                patches = evidence.get("patches")
+                valid_evidence = (
+                    isinstance(patches, list)
+                    and len(patches) == 15
+                    and {item.get("patch_index") for item in patches if isinstance(item, dict)}
+                    == set(range(15))
+                    and all(
+                        isinstance(item, dict)
+                        and type(item.get("patch_index")) is int
+                        and 0 <= item["patch_index"] < 15
+                        and finite_number(item.get("score_change"))
+                        and (
+                            not isinstance(patch_labels, list)
+                            or len(patch_labels) != 15
+                            or item.get("component") == patch_labels[item["patch_index"]]
+                        )
+                        for item in patches
+                    )
+                )
+            elif method == "vsvig-graph-grad-cam":
+                samples = evidence.get("gradcam_samples")
+                valid_evidence = (
+                    evidence.get("target_class")
+                    == ("flagged" if flagged else "below_threshold")
+                    and isinstance(samples, list)
+                    and len(samples) == 30
+                    and all(
+                        isinstance(sample, dict)
+                        and finite_number(sample.get("timestamp"))
+                        and start <= sample["timestamp"] <= end
+                        and isinstance(sample.get("patches"), list)
+                        and len(sample["patches"]) == 15
+                        and {item.get("patch_index") for item in sample["patches"] if isinstance(item, dict)}
+                        == set(range(15))
+                        and all(
+                            isinstance(item, dict)
+                            and type(item.get("patch_index")) is int
+                            and 0 <= item["patch_index"] < 15
+                            and finite_number(item.get("relevance"))
+                            and 0 <= float(item["relevance"]) <= 1
+                            for item in sample["patches"]
+                        )
+                        for sample in samples
+                    )
+                )
+            else:
+                valid_evidence = False
+            if not valid_evidence:
                 raise DetectionError("invalid_model_output")
             window["model_evidence"] = evidence
         windows.append(window)

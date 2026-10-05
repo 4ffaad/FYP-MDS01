@@ -25,6 +25,12 @@ from backend.app.services.case_profile_service import (
     save_extracted_patient_profile,
     save_patient_profile,
 )
+from backend.app.services.case_deletion_service import (
+    CaseDeletionInProgress,
+    CaseDeletionNotFound,
+    CaseDeletionStorageError,
+    delete_case as delete_case_data,
+)
 from backend.app.services.case_source_report_service import (
     MAX_CASE_SOURCE_REPORT_BYTES,
     CaseSourceReportError,
@@ -121,6 +127,32 @@ def get_case_detail(
     return case
 
 
+@router.delete("/{case_id}", status_code=204)
+def remove_case(
+    case_id: str,
+    db: Session = Depends(get_session),
+    current_user: User | None = Depends(require_api_auth),
+) -> Response:
+    """Delete all linked analyses, media, and identity for the owner."""
+
+    owner = _profile_owner(current_user)
+    try:
+        delete_case_data(db, case_id=case_id, owner_user_id=owner)
+    except CaseDeletionNotFound as exc:
+        raise HTTPException(status_code=404, detail="Case was not found.") from exc
+    except CaseDeletionInProgress as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="This case has processing work. Wait until it finishes before deleting the case.",
+        ) from exc
+    except CaseDeletionStorageError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Case data cleanup is unavailable; retry after cleanup recovers.",
+        ) from exc
+    return Response(status_code=204)
+
+
 def _profile_owner(user: User | None) -> int:
     """Require an authenticated account; admin-wide read scopes never apply."""
 
@@ -194,7 +226,7 @@ async def put_extracted_patient_profile(
     db: Session = Depends(get_session),
     current_user: User | None = Depends(require_api_auth),
 ) -> dict:
-    """Encrypt owner-submitted extraction fields while keeping review status explicit."""
+    """Store extracted report fields encrypted in the owner's patient profile."""
 
     owner = _profile_owner(current_user)
     _require_owned_case(db, case_id, owner)

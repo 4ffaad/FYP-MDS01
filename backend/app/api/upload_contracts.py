@@ -24,8 +24,10 @@ def binary_upload_openapi() -> dict:
     )
 
 
-def video_binary_upload_openapi(*, profile_required: bool = False) -> dict:
-    """Document the required format and optional privacy-profile headers."""
+def video_binary_upload_openapi(
+    *, profile_required: bool = False, include_blur_strength: bool = False
+) -> dict:
+    """Document the video format and optional privacy/model-input headers."""
 
     parameters = [
         {
@@ -46,6 +48,21 @@ def video_binary_upload_openapi(*, profile_required: bool = False) -> dict:
                 "schema": {
                     "type": "string",
                     "enum": ["face-redacted", "face-redacted-pose-preview"],
+                },
+            }
+        )
+    if include_blur_strength:
+        parameters.append(
+            {
+                "name": "X-Model-Blur-Percent",
+                "in": "header",
+                "required": False,
+                "description": "VSViG model-input blur as a percentage of the reviewed default sigma. Values below 50 are rejected.",
+                "schema": {
+                    "type": "integer",
+                    "minimum": 50,
+                    "maximum": 100,
+                    "default": 100,
                 },
             }
         )

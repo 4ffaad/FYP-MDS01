@@ -47,6 +47,8 @@ htmlcov/
 *.npz
 *.pth
 *.pt
+!backend/tests/fixtures/synthetic-review.mp4
+!frontend/tests/fixtures/synthetic-review.mp4
 /video-models/
 /backend/model/shap-background-*.npy
 backend/model/*.h5

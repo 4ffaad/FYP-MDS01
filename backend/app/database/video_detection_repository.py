@@ -22,16 +22,29 @@ def list_jobs(db: Session, owner: int | None) -> list[VideoDetectionJob]:
     return list(db.exec(statement.order_by(desc(created_at))).all())
 
 
-def has_active_job(db: Session) -> bool:
-    return db.exec(select(VideoDetectionJob.id).where(
-        VideoDetectionJob.status.in_(("queued", "processing")),
-    )).first() is not None
+def count_active_jobs(db: Session) -> int:
+    return len(
+        db.exec(
+            select(VideoDetectionJob.id).where(
+                VideoDetectionJob.status.in_(("queued", "processing")),
+            )
+        ).all()
+    )
 
 
 def get_queued_job(db: Session, job_id: str) -> VideoDetectionJob | None:
     return db.exec(select(VideoDetectionJob).where(
         VideoDetectionJob.job_id == job_id, VideoDetectionJob.status == "queued",
     )).first()
+
+
+def get_next_queued_job(db: Session) -> VideoDetectionJob | None:
+    created_at = getattr(VideoDetectionJob, "created_at")
+    return db.exec(
+        select(VideoDetectionJob)
+        .where(VideoDetectionJob.status == "queued")
+        .order_by(created_at, VideoDetectionJob.id)
+    ).first()
 
 
 def list_unexpired_jobs(db: Session) -> list[VideoDetectionJob]:

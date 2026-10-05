@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Column, Text, UniqueConstraint
+from sqlalchemy import Column, LargeBinary, Text, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from backend.app.database.models.types import EnumString
@@ -148,6 +148,15 @@ class EEGRecording(SQLModel, table=True):
     annotation_events_json: str | None = Field(
         default=None,
         sa_column=Column(Text, nullable=True),
+    )
+    video_sync_status: str = Field(default="unavailable", max_length=24)
+    video_sync_nonce: bytes | None = Field(
+        default=None,
+        sa_column=Column(LargeBinary, nullable=True),
+    )
+    video_sync_ciphertext: bytes | None = Field(
+        default=None,
+        sa_column=Column(LargeBinary, nullable=True),
     )
     status: RecordingStatus = Field(
         default=RecordingStatus.UPLOADED,

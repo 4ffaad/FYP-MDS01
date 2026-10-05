@@ -1,8 +1,9 @@
-"""Disposable video-review fixture with encrypted scores only."""
+"""Disposable video-review fixture with encrypted scores and synthetic video."""
 
 from datetime import timedelta
 import json
 import os
+from pathlib import Path
 import secrets
 import sys
 
@@ -56,6 +57,13 @@ def seed(email: str) -> str:
         output.write_text(json.dumps(predictions, allow_nan=False))
         job.predictions_path = str(
             storage.store_artifact(job.job_id, output, "predictions.json")
+        )
+        video = storage.work_path(job.job_id, "synthetic-review.mp4")
+        video.write_bytes(
+            (Path(__file__).parent / "fixtures" / "synthetic-review.mp4").read_bytes()
+        )
+        job.visualization_path = str(
+            storage.store_artifact(job.job_id, video, "video.visualization.mp4")
         )
         db.add(job)
         db.commit()

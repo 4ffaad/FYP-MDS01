@@ -12,6 +12,9 @@ from backend.app.database.models.eeg import (
     AnalysisStatus,
     EEGRecording,
     EEGSession,
+    ProcessingAttempt,
+    ProcessingStage,
+    ProcessingStatus,
     Prediction,
     RecordingStatus,
 )
@@ -58,6 +61,7 @@ class SessionSummaryRepositoryTests(unittest.TestCase):
             session = EEGSession(
                 session_id="SES-SAFE-SUMMARY",
                 status=AnalysisStatus.COMPLETED_WITH_ERRORS,
+                error_message="EEG processing was interrupted before completion.",
             )
             db.add(session)
             db.commit()
@@ -69,6 +73,7 @@ class SessionSummaryRepositoryTests(unittest.TestCase):
                 sequence_index=1,
                 original_filename="completed.edf",
                 status=RecordingStatus.INFERRED,
+                error_message="EEG processing was interrupted before completion.",
             )
             failed = EEGRecording(
                 record_id="REC-FAILED",
@@ -101,6 +106,7 @@ class SessionSummaryRepositoryTests(unittest.TestCase):
         failed_payload = records["REC-FAILED"]
 
         self.assertEqual(payload["summary"], {"model_alert_recordings": 1})
+        self.assertIsNone(payload["error_message"])
         self.assertEqual(counts, {completed.id: 2, failed.id: 0})
         self.assertIn(completed.id, metadata)
         self.assertNotIn(failed.id, metadata)
@@ -120,6 +126,8 @@ class SessionSummaryRepositoryTests(unittest.TestCase):
         self.assertIsNone(failed_payload["model_name"])
         self.assertIsNone(failed_payload["model_version"])
         self.assertIsNone(failed_payload["score_type"])
+        self.assertIsNone(completed_payload["error_message"])
+        self.assertEqual(failed_payload["error_message"], "Safe processing failure.")
         self.assertEqual(set(completed_payload), set(failed_payload))
 
     def test_session_list_bulk_queries_preserve_each_session_summary(self) -> None:
@@ -201,6 +209,54 @@ class SessionSummaryRepositoryTests(unittest.TestCase):
         self.assertFalse(newer_records["REC-NEWER-FAILED"]["model_alert"])
         self.assertEqual(newer_records["REC-NEWER-FAILED"]["alert_intervals"], [])
         self.assertEqual(len(prediction_selects), 3)
+
+    def test_public_session_exposes_safe_stage_history_without_error_details(self) -> None:
+        with Session(self.engine) as db:
+            session = EEGSession(
+                session_id="SES-STAGE-HISTORY",
+                status=AnalysisStatus.VALIDATING,
+            )
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+            recording = EEGRecording(
+                record_id="REC-STAGE-HISTORY",
+                session_db_id=session.id,
+                sequence_index=2,
+                original_filename="private-patient-name.edf",
+                status=RecordingStatus.PROCESSING,
+            )
+            db.add(recording)
+            db.commit()
+            db.refresh(recording)
+            db.add(
+                ProcessingAttempt(
+                    recording_db_id=recording.id,
+                    session_db_id=session.id,
+                    stage=ProcessingStage.INFERENCE,
+                    status=ProcessingStatus.RUNNING,
+                    error_message="private diagnostic detail",
+                    started_at=datetime(2026, 10, 1, 1, 2, tzinfo=timezone.utc),
+                )
+            )
+            db.commit()
+
+            payload = public_session(db, session)
+
+        self.assertEqual(
+            payload["processing_attempts"],
+            [
+                {
+                    "recording_sequence_index": 2,
+                    "stage": "inference",
+                    "status": "running",
+                    "started_at": "2026-10-01T01:02:00+00:00",
+                    "finished_at": None,
+                }
+            ],
+        )
+        self.assertNotIn("private diagnostic detail", str(payload))
+        self.assertNotIn("private-patient-name", str(payload))
 
 
 if __name__ == "__main__":

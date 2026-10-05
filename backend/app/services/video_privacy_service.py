@@ -63,12 +63,12 @@ from backend.app.video_privacy.processor import (
 
 PROFILE_DETAILS: dict[VideoPrivacyProfile, dict[str, str]] = {
     VideoPrivacyProfile.FACE_REDACTED: {
-        "label": "Full-frame blur",
-        "description": "The full frame is blurred on every frame. Face-detection coverage is a quality signal for review; it does not change the blur extent.",
+        "label": "Face blur with full-frame fallback",
+        "description": "A detected face is blurred. If detection is missing or ambiguous, the full frame is blurred.",
     },
     VideoPrivacyProfile.FACE_REDACTED_POSE_PREVIEW: {
-        "label": "Full-frame blur + body-keypoint preview",
-        "description": "The full frame is blurred before the pinned Lightweight OpenPose body-joint detector runs. OpenCV renders only a privacy-safe preview; no VSViG score or facial Action Units are produced.",
+        "label": "Face blur + body-keypoint preview",
+        "description": "Face blur is applied before the pinned Lightweight OpenPose body-joint detector runs, with full-frame blur when face detection is uncertain. This preview produces no VSViG score.",
     },
     VideoPrivacyProfile.POSE_ONLY: {
         "label": "Pose-only",
@@ -116,11 +116,11 @@ def parse_profile(value: str | None) -> VideoPrivacyProfile:
         return VideoPrivacyProfile.FACE_REDACTED
     if value == VideoPrivacyProfile.FACE_REDACTED_POSE_PREVIEW.value:
         return VideoPrivacyProfile.FACE_REDACTED_POSE_PREVIEW
-    raise ValueError("Only available profiles are full-frame redaction and redacted pose preview.")
+    raise ValueError("Only available profiles are face redaction and redacted pose preview.")
 
 
 def finalize_protected_video(source: Path, visual: Path, output: Path) -> None:
-    """Finalize one audio-free privacy-safe video without source metadata."""
+    """Finalize one audio-free H.264 review video without source metadata."""
 
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
@@ -135,7 +135,8 @@ def finalize_protected_video(source: Path, visual: Path, output: Path) -> None:
             [
                 ffmpeg, "-nostdin", "-v", "error", "-y",
                 "-i", str(visual),
-                "-map", "0:v:0", "-an", "-c:v", "copy",
+                "-map", "0:v:0", "-an", "-c:v", "libx264",
+                "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p",
                 "-map_metadata", "-1", "-map_chapters", "-1", "-sn", "-dn",
                 "-movflags", "+faststart", "-fs", str(VIDEO_MAX_OUTPUT_BYTES), str(output),
             ],
@@ -170,20 +171,39 @@ def finalize_protected_video(source: Path, visual: Path, output: Path) -> None:
         stream_types = [stream.get("codec_type") for stream in streams]
         format_tags = details.get("format", {}).get("tags", {})
         allowed_format_tags = {"major_brand", "minor_version", "compatible_brands", "encoder"}
-        allowed_stream_tags = {"language", "handler_name", "vendor_id"}
+        allowed_stream_tags = {"language", "handler_name", "vendor_id", "encoder"}
         allowed_stream_tag_values = {
             "language": {"und"},
             "handler_name": {"VideoHandler", "SoundHandler"},
             "vendor_id": {"[0][0][0][0]"},
         }
+        format_encoder = format_tags.get("encoder")
+        safe_format_encoder = format_encoder is None or (
+            isinstance(format_encoder, str)
+            and re.fullmatch(r"Lavf\d+(?:\.\d+)+", format_encoder) is not None
+        )
+        safe_stream_encoders = all(
+            isinstance(stream.get("tags", {}).get("encoder"), str)
+            and re.fullmatch(
+                r"Lavc\d+(?:\.\d+)+ libx264",
+                stream["tags"]["encoder"],
+            )
+            for stream in streams
+            if "encoder" in stream.get("tags", {})
+        )
         if (
             stream_types.count("video") != 1
             or stream_types.count("audio") != 0
             or any(kind not in {"video", "audio"} for kind in stream_types)
             or set(format_tags) - allowed_format_tags
+            or not safe_format_encoder
+            or not safe_stream_encoders
             or any(set(stream.get("tags", {})) - allowed_stream_tags for stream in streams)
             or any(
-                any(value not in allowed_stream_tag_values[tag] for tag, value in stream.get("tags", {}).items())
+                any(
+                    tag != "encoder" and value not in allowed_stream_tag_values[tag]
+                    for tag, value in stream.get("tags", {}).items()
+                )
                 for stream in streams
             )
         ):

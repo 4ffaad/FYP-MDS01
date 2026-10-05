@@ -20,6 +20,7 @@ MIN_PASSWORD_LENGTH = 8
 MAX_PASSWORD_LENGTH = 1024
 DEMO_ADMIN_PUBLIC_ID = "USR-DEMO-ADMIN"
 DEFAULT_DEMO_ADMIN_EMAIL = "admin@mds01.local"
+DEMO_ADMIN_DISPLAY_NAME = "Dr. Aisha Rahman (Demo)"
 SESSION_TTL = timedelta(hours=8)
 _SCRYPT_N = 2**14
 _SCRYPT_R = 8
@@ -133,8 +134,11 @@ def ensure_demo_admin(db: Session) -> User | None:
     validate_password(password)
     user = db.exec(select(User).where(User.email == email)).first()
     if user is not None:
-        if user.public_id == DEMO_ADMIN_PUBLIC_ID and not user.is_admin:
+        if user.public_id == DEMO_ADMIN_PUBLIC_ID and (
+            not user.is_admin or user.display_name != DEMO_ADMIN_DISPLAY_NAME
+        ):
             user.is_admin = True
+            user.display_name = DEMO_ADMIN_DISPLAY_NAME
             db.add(user)
             db.commit()
             db.refresh(user)
@@ -145,7 +149,7 @@ def ensure_demo_admin(db: Session) -> User | None:
         email=email,
         password_hash=hash_password(password),
         auth_provider="local",
-        display_name="admin",
+        display_name=DEMO_ADMIN_DISPLAY_NAME,
         is_admin=True,
     )
     db.add(user)

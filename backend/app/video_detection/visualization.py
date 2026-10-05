@@ -47,6 +47,7 @@ SKELETON_EDGES = (
     (0, 15),
     (15, 17),
 )
+FACE_KEYPOINTS = (0, 14, 15, 16, 17)
 
 
 def validate_visualization_artifact(
@@ -75,7 +76,7 @@ def validate_visualization_artifact(
                 "-v",
                 "error",
                 "-show_entries",
-                "format=duration:stream=codec_type,width,height,avg_frame_rate,nb_read_frames,nb_frames",
+                "format=duration:stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,nb_read_frames,nb_frames",
                 "-count_frames",
                 "-of",
                 "json",
@@ -112,6 +113,8 @@ def validate_visualization_artifact(
     ):
         raise DetectionError("visualization_failed")
     video = video_streams[0]
+    if video.get("codec_name") != "h264" or video.get("pix_fmt") != "yuv420p":
+        raise DetectionError("visualization_failed")
     try:
         duration = float(format_data.get("duration", 0))
         width = int(video.get("width", 0))
@@ -145,13 +148,64 @@ def validate_visualization_artifact(
             raise DetectionError("visualization_failed")
 
 
-def _mask_frame(cv2: Any, frame: np.ndarray, keypoints: np.ndarray | None) -> np.ndarray:
-    """Blur every source pixel before adding the non-identifying pose overlay."""
-
-    _ = keypoints
+def _mask_frame(cv2: Any, frame: np.ndarray) -> np.ndarray:
+    """Blur every pixel when the tracked face is uncertain."""
     height, width = frame.shape[:2]
     sigma = max(25.0, min(width, height) * 0.04)
     return cv2.GaussianBlur(frame, (0, 0), sigmaX=sigma, sigmaY=sigma)
+
+
+def _redact_face(
+    cv2: Any,
+    frame: np.ndarray,
+    keypoints: np.ndarray | None,
+) -> tuple[np.ndarray, bool]:
+    """Blur the tracked face, falling back to the full frame if head landmarks fail."""
+
+    try:
+        if keypoints is None or keypoints.shape != (18, 3):
+            raise ValueError("tracked-face landmarks are unavailable")
+        points = keypoints[list(FACE_KEYPOINTS)]
+        height, frame_width = frame.shape[:2]
+        valid = (
+            (points[:, 2] >= 0.1)
+            & np.isfinite(points).all(axis=1)
+            & (points[:, 0] >= 0)
+            & (points[:, 0] < frame_width)
+            & (points[:, 1] >= 0)
+            & (points[:, 1] < height)
+        )
+        if not valid.all():
+            raise ValueError("tracked-face landmarks are incomplete")
+        nose, left_eye, right_eye, left_ear, right_ear = points[:, :2]
+        face_width = max(
+            float(np.linalg.norm(left_ear - right_ear)),
+            float(np.linalg.norm(left_eye - right_eye)) * 1.6,
+        )
+        if not math.isfinite(face_width) or face_width < 20:
+            raise ValueError("tracked-face region is too small")
+        eye_line = float((left_eye[1] + right_eye[1]) / 2)
+        left = int(math.floor(min(left_ear[0], right_ear[0]) - face_width * 0.4))
+        right = int(math.ceil(max(left_ear[0], right_ear[0]) + face_width * 0.4))
+        top = int(math.floor(min(eye_line, nose[1]) - face_width * 0.8))
+        bottom = int(math.ceil(max(eye_line, nose[1]) + face_width * 1.2))
+        left, top = max(0, left), max(0, top)
+        right, bottom = min(frame_width, right), min(height, bottom)
+        if right <= left or bottom <= top:
+            raise ValueError("tracked-face region is invalid")
+        if (right - left) * (bottom - top) > frame_width * height * 0.55:
+            raise ValueError("tracked-face region covers most of the frame")
+        redacted = frame.copy()
+        region = redacted[top:bottom, left:right]
+        if region.shape[0] < 24 or region.shape[1] < 24:
+            raise ValueError("tracked-face region is too small")
+        sigma = max(16.0, min(region.shape[:2]) * 0.25)
+        redacted[top:bottom, left:right] = cv2.GaussianBlur(
+            region, (0, 0), sigmaX=sigma, sigmaY=sigma
+        )
+        return redacted, True
+    except Exception:
+        return _mask_frame(cv2, frame), False
 
 
 def _draw_pose(cv2: Any, frame: np.ndarray, keypoints: np.ndarray | None) -> None:
@@ -185,6 +239,36 @@ def _draw_pose(cv2: Any, frame: np.ndarray, keypoints: np.ndarray | None) -> Non
             -1,
             cv2.LINE_AA,
         )
+
+
+def _pose_at_time(
+    pose_samples: list[tuple[float, np.ndarray]], sample_times: list[float], timestamp: float
+) -> np.ndarray | None:
+    """Interpolate adjacent tracked poses; reject stale or malformed samples."""
+
+    if not sample_times:
+        return None
+    right = bisect_right(sample_times, timestamp)
+    if right == 0:
+        return pose_samples[0][1] if sample_times[0] - timestamp <= 1 / 6 + 1e-6 else None
+    if right == len(sample_times):
+        return pose_samples[-1][1] if timestamp - sample_times[-1] <= 1 / 6 + 1e-6 else None
+    left_time, left = pose_samples[right - 1]
+    right_time, next_pose = pose_samples[right]
+    gap = right_time - left_time
+    if gap <= 0 or gap > 0.25 or left.shape != (18, 3) or next_pose.shape != (18, 3):
+        return None
+    if timestamp - left_time <= 1e-6:
+        return left
+    fraction = (timestamp - left_time) / gap
+    interpolated = left.copy()
+    valid = (left[:, 2] >= 0.1) & (next_pose[:, 2] >= 0.1)
+    interpolated[valid, :2] = (
+        left[valid, :2] * (1 - fraction) + next_pose[valid, :2] * fraction
+    )
+    interpolated[valid, 2] = np.minimum(left[valid, 2], next_pose[valid, 2])
+    interpolated[~valid, 2] = 0
+    return interpolated
 
 
 def _overlay(
@@ -240,7 +324,7 @@ def render_visualization(
     *,
     preview_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Create a video-only, masked, skeleton-overlaid review artifact."""
+    """Create a face-blurred, skeleton-overlaid review artifact."""
 
     try:
         cv2: Any = import_module("cv2")
@@ -265,26 +349,44 @@ def render_visualization(
     ):
         capture.release()
         raise DetectionError("visualization_failed")
+    render_path = output_path.with_name(f".{output_path.stem}.render.mp4")
     if (
         output_path.is_symlink()
+        or render_path.is_symlink()
         or (preview_path is not None and preview_path.is_symlink())
     ):
         capture.release()
         raise DetectionError("visualization_failed")
+    for candidate in (output_path, render_path):
+        if candidate.exists() and not candidate.is_file():
+            capture.release()
+            raise DetectionError("visualization_failed")
+        candidate.unlink(missing_ok=True)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if preview_path is not None:
         preview_path.parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(
-        str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
+        str(render_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
     )
     if not writer.isOpened():
         capture.release()
         raise DetectionError("visualization_failed")
 
     sample_times = [sample[0] for sample in pose_samples]
-    sample_index = 0
+    if any(
+        not math.isfinite(sample_time)
+        for sample_time in sample_times
+    ) or any(
+        right <= left
+        for left, right in zip(sample_times, sample_times[1:])
+    ):
+        capture.release()
+        writer.release()
+        render_path.unlink(missing_ok=True)
+        raise DetectionError("visualization_failed")
     frame_index = 0
+    face_blurred_frames = 0
     started_at = time.monotonic()
     try:
         while True:
@@ -298,16 +400,9 @@ def render_visualization(
                 raise DetectionError("visualization_failed")
             timestamp = frame_index / fps
             frame_index += 1
-            pose = None
-            if sample_times:
-                sample_index = min(
-                    max(0, bisect_right(sample_times, timestamp) - 1),
-                    len(pose_samples) - 1,
-                )
-                sample_time, keypoints = pose_samples[sample_index]
-                # Do not draw stale pose data across a large decode gap.
-                pose = keypoints if abs(timestamp - sample_time) <= 1.0 else None
-            protected = _mask_frame(cv2, frame, pose)
+            pose = _pose_at_time(pose_samples, sample_times, timestamp)
+            protected, face_blurred = _redact_face(cv2, frame, pose)
+            face_blurred_frames += int(face_blurred)
             _draw_pose(cv2, protected, pose)
             _overlay(cv2, protected, timestamp, pose_detected=pose is not None)
             writer.write(protected)
@@ -320,7 +415,7 @@ def render_visualization(
                     or preview_path.stat().st_size > 2 * 1024 * 1024
                 ):
                     raise DetectionError("visualization_failed")
-            if output_path.stat().st_size > VIDEO_MAX_OUTPUT_BYTES:
+            if render_path.stat().st_size > VIDEO_MAX_OUTPUT_BYTES:
                 raise DetectionError("visualization_failed")
     finally:
         capture.release()
@@ -328,7 +423,60 @@ def render_visualization(
 
     if (
         frame_index == 0
-        or not output_path.exists()
+        or not render_path.exists()
+        or render_path.stat().st_size == 0
+        or render_path.stat().st_size > VIDEO_MAX_OUTPUT_BYTES
+    ):
+        raise DetectionError("visualization_failed")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        render_path.unlink(missing_ok=True)
+        raise DetectionError("visualization_failed")
+    try:
+        subprocess.run(  # nosec B603
+            [
+                ffmpeg,
+                "-nostdin",
+                "-v",
+                "error",
+                "-n",
+                "-i",
+                str(render_path),
+                "-map",
+                "0:v:0",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-crf",
+                "23",
+                "-pix_fmt",
+                "yuv420p",
+                "-map_metadata",
+                "-1",
+                "-map_chapters",
+                "-1",
+                "-movflags",
+                "+faststart",
+                "-fs",
+                str(VIDEO_MAX_OUTPUT_BYTES),
+                str(output_path),
+            ],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=VIDEO_PRIVACY_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        output_path.unlink(missing_ok=True)
+        raise DetectionError("visualization_failed") from exc
+    finally:
+        render_path.unlink(missing_ok=True)
+    if (
+        output_path.is_symlink()
+        or not output_path.is_file()
         or output_path.stat().st_size == 0
         or output_path.stat().st_size > VIDEO_MAX_OUTPUT_BYTES
     ):
@@ -337,7 +485,12 @@ def render_visualization(
         "available": True,
         "media_type": "video/mp4",
         "audio_included": False,
-        "privacy_method": "full-frame-blur-and-skeleton-overlay",
+        "privacy_method": "tracked-face-blur-with-full-frame-fallback-and-skeleton-overlay",
+        "face_blur_coverage": face_blurred_frames / frame_index,
+        "full_frame_fallback_frames": frame_index - face_blurred_frames,
+        "quality_flags": ["full_frame_fallback_used"]
+        if face_blurred_frames < frame_index
+        else [],
         "frame_count": frame_index,
         "fps": fps,
         "width": width,

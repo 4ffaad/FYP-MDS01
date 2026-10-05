@@ -32,9 +32,26 @@ class StreamedUploadOpenAPITests(unittest.TestCase):
             {"type": "string", "format": "binary"},
         )
 
-    def test_detection_visualization_is_not_a_public_route(self) -> None:
+    def test_detection_visualization_requires_authentication(self) -> None:
         schema = app.openapi()
-        self.assertNotIn("/api/video-detection/jobs/{job_id}/visualization", schema["paths"])
+        operation = schema["paths"][
+            "/api/video-detection/jobs/{job_id}/visualization"
+        ]["get"]
+        self.assertIn(
+            {"SessionCookie": []},
+            operation["security"],
+        )
+
+    def test_detection_upload_documents_the_bounded_blur_setting(self) -> None:
+        operation = app.openapi()["paths"]["/api/video-detection/jobs"]["post"]
+        parameter = next(
+            item
+            for item in operation["parameters"]
+            if item["name"] == "X-Model-Blur-Percent"
+        )
+        self.assertEqual(parameter["schema"]["minimum"], 50)
+        self.assertEqual(parameter["schema"]["maximum"], 100)
+        self.assertEqual(parameter["schema"]["default"], 100)
 
 
 if __name__ == "__main__":

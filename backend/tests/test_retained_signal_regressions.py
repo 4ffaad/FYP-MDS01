@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import tempfile
 import unittest
 import warnings
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -26,12 +29,113 @@ from backend.app.privacy.retention import (
     write_obfuscated_npz,
     write_scrubbed_edf_clip,
 )
-from backend.app.services.signal_service import _read_npz_preview, build_signal_preview
+from backend.app.services.signal_service import (
+    _filter_review_signal,
+    _read_npz_preview,
+    build_signal_preview,
+)
 from backend.app.services.storage_service import SessionStorage
 
 
 class RetainedSignalRegressionTests(unittest.TestCase):
     """Protect retained previews against overlap and calibration regressions."""
+
+    def test_review_filter_removes_50_hz_interference_without_erasing_eeg(self) -> None:
+        times = np.arange(10 * MODEL_SAMPLING_RATE) / MODEL_SAMPLING_RATE
+        eeg = np.sin(2 * np.pi * 10 * times)
+        mains = np.sin(2 * np.pi * 50 * times)
+        filtered = _filter_review_signal(eeg + mains)
+        original_spectrum = np.abs(np.fft.rfft(eeg + mains))
+        filtered_spectrum = np.abs(np.fft.rfft(filtered))
+        frequencies = np.fft.rfftfreq(len(times), 1 / MODEL_SAMPLING_RATE)
+        ten_hz = np.argmin(np.abs(frequencies - 10))
+        fifty_hz = np.argmin(np.abs(frequencies - 50))
+        self.assertGreater(filtered_spectrum[ten_hz] / original_spectrum[ten_hz], 0.8)
+        self.assertLess(filtered_spectrum[fifty_hz] / original_spectrum[fifty_hz], 0.1)
+
+    def test_parallel_waveform_ranges_materialize_to_distinct_private_files(self) -> None:
+        """Concurrent chart range fetches must not share plaintext temp paths."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            storage = SessionStorage(root / "sessions", b"s" * 32)
+            source = root / "retained.npz"
+            windows = np.zeros((1, 1024, len(MODEL_CHANNELS)), dtype=np.float32)
+            write_model_window_npz(source, windows, np.asarray([0.0]), np.asarray([0]))
+            encrypted = storage.store_encrypted_artifact("SES-PARALLEL", source, "REC-PARALLEL.npz")
+            session = SimpleNamespace(session_id="SES-PARALLEL", privacy_method="metadata-scrub")
+            record = SimpleNamespace(
+                id=1,
+                record_id="REC-PARALLEL",
+                status=RecordingStatus.INFERRED,
+                retained_artifact_path=str(encrypted),
+                duration_seconds=4.0,
+            )
+            barrier = Barrier(2)
+            paths: list[Path] = []
+
+            def read_preview(path: Path, *_args, **_kwargs) -> dict:
+                paths.append(path)
+                barrier.wait(timeout=5)
+                self.assertTrue(path.is_file())
+                return {"channels": [], "time_seconds": [], "segments": []}
+
+            with (
+                patch("backend.app.services.signal_service.ENABLE_SIGNAL_PREVIEW", True),
+                patch("backend.app.services.signal_service.ENABLE_FULL_SIGNAL_PREVIEW", True),
+                patch("backend.app.services.signal_service.list_predictions", return_value=[]),
+                patch("backend.app.services.signal_service._read_npz_preview", side_effect=read_preview),
+                ThreadPoolExecutor(max_workers=2) as pool,
+            ):
+                futures = [
+                    pool.submit(build_signal_preview, object(), session, record, storage, start, 2, 128)
+                    for start in (0.0, 1.0)
+                ]
+                for future in futures:
+                    future.result(timeout=10)
+
+            self.assertEqual(len(paths), 2)
+            self.assertEqual(len(set(paths)), 2)
+            self.assertTrue(all(not path.exists() for path in paths))
+
+    def test_gap_preserving_preview_filters_continuous_model_windows(self) -> None:
+        starts = np.asarray([0.0, 2.0, 4.0, 6.0], dtype=np.float64)
+        samples = np.arange(10 * MODEL_SAMPLING_RATE) / MODEL_SAMPLING_RATE
+        source = np.sin(2 * np.pi * 10 * samples) + np.sin(2 * np.pi * 50 * samples)
+        windows = np.stack([
+            np.repeat(source[int(start * MODEL_SAMPLING_RATE):int(start * MODEL_SAMPLING_RATE) + 1024, None], len(MODEL_CHANNELS), axis=1)
+            for start in starts
+        ]).astype(np.float32)
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "retained.npz"
+            write_model_window_npz(artifact, windows, starts, np.arange(len(starts)))
+            preview = _read_npz_preview(
+                artifact, [], 0.0, 10.0, 10_000, filter_for_display=True
+            )
+        self.assertEqual(preview["display_filter"], "0.5–70 Hz · 50 Hz notch")
+        self.assertEqual(len(preview["time_seconds"]), len(samples))
+        spectrum = np.abs(np.fft.rfft(preview["channels"][0]["samples"]))
+        frequencies = np.fft.rfftfreq(len(samples), 1 / MODEL_SAMPLING_RATE)
+        self.assertGreater(spectrum[np.argmin(abs(frequencies - 10))], 900)
+        self.assertLess(spectrum[np.argmin(abs(frequencies - 50))], 130)
+
+    def test_auxiliary_review_channels_remain_time_aligned_in_encrypted_artifact_source(self) -> None:
+        windows = np.zeros((1, 1024, len(MODEL_CHANNELS)), dtype=np.float32)
+        labels = ["EOG Left-Ref", "EOG Right-Ref", "ECG", "Chin 1-Chin 2", "Photic"]
+        review = np.repeat(np.arange(5, dtype=np.float32)[:, None], 1024, axis=1)
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "retained.npz"
+            write_model_window_npz(
+                artifact,
+                windows,
+                np.asarray([0.0]),
+                np.asarray([0]),
+                [(0.0, review)],
+                labels,
+            )
+            preview = _read_npz_preview(artifact, [], 0.0, 4.0, 2048)
+        self.assertEqual([item["label"] for item in preview["channels"][-5:]], labels)
+        self.assertEqual(preview["channels"][-1]["time_seconds"], preview["time_seconds"])
+        self.assertEqual(preview["channels"][-1]["samples"][0], 4.0)
 
     def test_model_window_npz_preserves_large_source_time_offsets(self) -> None:
         gap_seconds = float(2 * 365 * 24 * 60 * 60)

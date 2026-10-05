@@ -35,6 +35,22 @@ class VideoProcessorError(RuntimeError):
 
 VSVIG_INPUT_WIDTH = 1920
 VSVIG_INPUT_HEIGHT = 1080
+MODEL_INPUT_BLUR_BASE_SIGMA = 19.0
+MODEL_INPUT_BLUR_MIN_PERCENT = 50
+MODEL_INPUT_BLUR_MAX_PERCENT = 100
+
+
+def model_blur_sigma(blur_strength_percent: int) -> float:
+    """Scale the fallback full-frame blur while retaining a privacy floor."""
+
+    if (
+        type(blur_strength_percent) is not int
+        or not MODEL_INPUT_BLUR_MIN_PERCENT
+        <= blur_strength_percent
+        <= MODEL_INPUT_BLUR_MAX_PERCENT
+    ):
+        raise VideoProcessorError("Model-input blur strength is outside the supported range.")
+    return MODEL_INPUT_BLUR_BASE_SIGMA * blur_strength_percent / 100
 
 
 def video_worker_environment() -> dict[str, str]:
@@ -103,7 +119,7 @@ class VideoProcessingResult:
 
 
 class VideoPrivacyProcessor:
-    """Blur every frame in full and track face-detection coverage for review."""
+    """Blur one detected face, falling back to full-frame blur when ambiguous."""
 
     @staticmethod
     def _stream_metadata(capture) -> dict[str, float | int]:
@@ -349,8 +365,11 @@ class VideoPrivacyProcessor:
         profile: VideoPrivacyProfile,
         *,
         allow_full_blur_fallback: bool = False,
+        blur_strength_percent: int = MODEL_INPUT_BLUR_MAX_PERCENT,
     ) -> VideoProcessingResult:
         """Read, transform, and validate one video."""
+
+        blur_sigma = model_blur_sigma(blur_strength_percent)
 
         try:
             cv2: Any = import_module("cv2")
@@ -424,7 +443,11 @@ class VideoPrivacyProcessor:
                     raise VideoProcessorError("Video timing is not constant.")
                 frame_count += 1
                 transformed, detected = self._transform_frame(
-                    cv2, frame, profile, face_detector=face_detector
+                    cv2,
+                    frame,
+                    profile,
+                    face_detector=face_detector,
+                    blur_sigma=blur_sigma,
                 )
                 detected_frames += int(detected)
                 writer.write(transformed)
@@ -473,8 +496,7 @@ class VideoPrivacyProcessor:
         if validated_frames == 0 or validated_frames != frame_count:
             raise VideoProcessorError("Transformed video failed output validation.")
 
-        # Full-frame blur is applied independently of detection; the preview-only
-        # pose workflow may retain that stronger fallback, but marks it for review.
+        # Ambiguous or missed faces already receive a full-frame fallback.
         flags, usable, needs_review = VideoPrivacyProcessor._quality_assessment(
             detected_frames,
             frame_count,
@@ -493,16 +515,42 @@ class VideoPrivacyProcessor:
         )
 
     @staticmethod
-    def _transform_frame(cv2, frame, profile, *, face_detector, pose=None):
+    def _transform_frame(
+        cv2,
+        frame,
+        profile,
+        *,
+        face_detector,
+        pose=None,
+        blur_sigma=MODEL_INPUT_BLUR_BASE_SIGMA,
+    ):
         if profile != VideoPrivacyProfile.FACE_REDACTED:
             raise VideoProcessorError("Face redaction is the only available privacy transform.")
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(24, 24))
-        # Detection changes the coverage signal, not the blur extent: every
-        # frame receives full-frame Gaussian blur.
         if len(faces) != 1:
-            return cv2.GaussianBlur(frame, (0, 0), sigmaX=19, sigmaY=19), False
-        transformed = cv2.GaussianBlur(frame, (0, 0), sigmaX=19, sigmaY=19)
+            return cv2.GaussianBlur(
+                frame, (0, 0), sigmaX=blur_sigma, sigmaY=blur_sigma
+            ), False
+        x, y, width, height = (int(value) for value in faces[0])
+        if min(x, y, width, height) < 0 or width < 24 or height < 24:
+            return cv2.GaussianBlur(
+                frame, (0, 0), sigmaX=blur_sigma, sigmaY=blur_sigma
+            ), False
+        pad_x, pad_y = max(12, width // 2), max(12, height // 2)
+        left, top = max(0, x - pad_x), max(0, y - pad_y)
+        right = min(frame.shape[1], x + width + pad_x)
+        bottom = min(frame.shape[0], y + height + pad_y)
+        if right <= left or bottom <= top:
+            return cv2.GaussianBlur(
+                frame, (0, 0), sigmaX=blur_sigma, sigmaY=blur_sigma
+            ), False
+        transformed = frame.copy()
+        region = transformed[top:bottom, left:right]
+        sigma = max(19.0, min(width, height) * 0.35)
+        transformed[top:bottom, left:right] = cv2.GaussianBlur(
+            region, (0, 0), sigmaX=sigma, sigmaY=sigma
+        )
         return transformed, True
 
 

@@ -305,7 +305,7 @@ def get_signal(
     start_seconds : float
         Start time within the recording, defaulting to zero.
     duration_seconds : float
-        Requested duration, limited to 660 seconds for a bounded alert clip.
+        Requested duration, bounded by the configured review limit.
     max_points : int
         Maximum number of samples returned per channel.
     db : sqlmodel.Session
@@ -314,19 +314,19 @@ def get_signal(
     Returns
     -------
     dict
-        Bounded retained de-identified or obfuscated signal data with model
-        alert intervals when local preview is enabled.
+        Bounded retained de-identified or obfuscated waveform data with model
+        alert intervals.
 
     Raises
     ------
     fastapi.HTTPException
-        Raised with HTTP 404 when preview is disabled or no retained positive
-        artifact is available.
+        Raised with HTTP 404 when waveform access or its retained artifact is
+        unavailable.
     """
     if not ENABLE_SIGNAL_PREVIEW:
         raise HTTPException(
             status_code=404,
-            detail="Waveform access is disabled for this privacy-first prototype.",
+            detail="Waveform access is disabled by the service configuration.",
         )
     max_duration = FULL_SIGNAL_PREVIEW_MAX_SECONDS if ENABLE_FULL_SIGNAL_PREVIEW else 660.0
     if duration_seconds > max_duration:

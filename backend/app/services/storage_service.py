@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import logging
 import shutil
 import re
 import os
@@ -35,6 +36,7 @@ class StorageError(ValueError):
 
 
 _ENCRYPTED_MAGIC = b"MDS01GCM1"
+_BOUND_ENCRYPTED_MAGIC = b"MDS01GCM2"
 _NONCE_BYTES = 12
 _TAG_BYTES = 16
 _MAX_ANNOTATION_MEMBER_BYTES = 1024 * 1024
@@ -42,6 +44,7 @@ MAX_ARCHIVE_TOTAL_BYTES = int(os.getenv("MDS01_MAX_ARCHIVE_TOTAL_BYTES", str(2 *
 MAX_ZIP_COMPRESSION_RATIO = float(os.getenv("MDS01_MAX_ZIP_COMPRESSION_RATIO", "100"))
 MAX_ARCHIVE_MEMBER_COUNT = int(os.getenv("MDS01_MAX_ARCHIVE_MEMBER_COUNT", "4096"))
 _MAX_ARCHIVE_CENTRAL_DIRECTORY_BYTES = 64 * 1024**2
+LOGGER = logging.getLogger(__name__)
 if MAX_ARCHIVE_TOTAL_BYTES <= 0 or MAX_ZIP_COMPRESSION_RATIO <= 0 or MAX_ARCHIVE_MEMBER_COUNT <= 0:
     raise RuntimeError("Archive limits must be positive.")
 
@@ -228,9 +231,10 @@ class SessionStorage:
         total = 0
         nonce = secrets.token_bytes(_NONCE_BYTES)
         encryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce)).encryptor()
+        encryptor.authenticate_additional_data(self._associated_data(destination))
         try:
             with self._open_private_output(destination) as output:
-                output.write(_ENCRYPTED_MAGIC)
+                output.write(_BOUND_ENCRYPTED_MAGIC)
                 output.write(nonce)
                 while chunk := await upload.read(1024 * 1024):
                     total += len(chunk)
@@ -246,7 +250,7 @@ class SessionStorage:
         return destination
 
     def promote_draft(self, draft_id: str, session_id: str) -> Path:
-        """Copy an encrypted draft into a session, retaining rollback safety."""
+        """Rebind an encrypted draft to its committed session storage path."""
 
         source = self.draft_path(draft_id)
         if not source.exists():
@@ -254,9 +258,14 @@ class SessionStorage:
         destination = self.directory(session_id, "original") / "upload.zip.enc"
         try:
             with self._open_private_input(source) as input_stream, self._open_private_output(destination) as output_stream:
-                shutil.copyfileobj(input_stream, output_stream)
+                self._reencrypt_stream(input_stream, output_stream, source, destination)
         except FileExistsError as exc:
             raise StorageError("Session upload already exists.") from exc
+        except Exception as exc:
+            destination.unlink(missing_ok=True)
+            if isinstance(exc, StorageError):
+                raise
+            raise StorageError("Staged archive cannot be promoted.") from exc
         return destination
 
     def delete_draft(self, draft_id: str) -> None:
@@ -350,7 +359,8 @@ class SessionStorage:
             if size < minimum_size:
                 raise StorageError("Stored archive is incomplete.")
             with encrypted_path.open("rb") as source:
-                if source.read(len(_ENCRYPTED_MAGIC)) != _ENCRYPTED_MAGIC:
+                magic = source.read(len(_ENCRYPTED_MAGIC))
+                if magic not in {_ENCRYPTED_MAGIC, _BOUND_ENCRYPTED_MAGIC}:
                     raise StorageError("Stored archive is not encrypted.")
                 nonce = source.read(_NONCE_BYTES)
                 source.seek(size - _TAG_BYTES)
@@ -358,6 +368,8 @@ class SessionStorage:
                 source.seek(len(_ENCRYPTED_MAGIC) + _NONCE_BYTES)
                 remaining = size - len(_ENCRYPTED_MAGIC) - _NONCE_BYTES - _TAG_BYTES
                 decryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce, tag)).decryptor()
+                if magic == _BOUND_ENCRYPTED_MAGIC:
+                    decryptor.authenticate_additional_data(self._associated_data(encrypted_path))
                 with self._open_private_output(destination) as output:
                     while remaining:
                         if deadline is not None and time.monotonic() > deadline:
@@ -369,6 +381,8 @@ class SessionStorage:
                         output.write(decryptor.update(chunk))
                     output.write(decryptor.finalize())
             os.chmod(destination, 0o600)
+            if magic == _ENCRYPTED_MAGIC:
+                self._upgrade_legacy_envelope(encrypted_path, destination)
             return destination
         except StorageError:
             self._remove_plaintext_file(destination)
@@ -376,6 +390,102 @@ class SessionStorage:
         except Exception as exc:
             self._remove_plaintext_file(destination)
             raise StorageError("Stored archive cannot be decrypted.") from exc
+
+    def _associated_data(self, path: Path) -> bytes:
+        """Bind new ciphertext to its canonical private-storage-relative path."""
+
+        root = Path(os.path.abspath(self.root))
+        candidate = Path(os.path.abspath(path))
+        try:
+            relative = candidate.relative_to(root)
+        except ValueError as exc:
+            raise StorageError("Stored artifact path is outside private storage.") from exc
+        if not relative.parts or ".." in relative.parts:
+            raise StorageError("Stored artifact path is invalid.")
+        return b"MDS01 private storage v2\0" + relative.as_posix().encode("utf-8")
+
+    def _reencrypt_stream(
+        self,
+        source,
+        destination,
+        source_path: Path,
+        destination_path: Path,
+    ) -> None:
+        """Authenticate a staged envelope and encrypt it for its final path."""
+
+        size = os.fstat(source.fileno()).st_size
+        minimum_size = len(_ENCRYPTED_MAGIC) + _NONCE_BYTES + _TAG_BYTES
+        if size < minimum_size:
+            raise StorageError("Staged archive is incomplete.")
+        magic = source.read(len(_ENCRYPTED_MAGIC))
+        if magic not in {_ENCRYPTED_MAGIC, _BOUND_ENCRYPTED_MAGIC}:
+            raise StorageError("Staged archive is not encrypted.")
+        source_nonce = source.read(_NONCE_BYTES)
+        source.seek(size - _TAG_BYTES)
+        source_tag = source.read(_TAG_BYTES)
+        source.seek(len(_ENCRYPTED_MAGIC) + _NONCE_BYTES)
+        remaining = size - len(_ENCRYPTED_MAGIC) - _NONCE_BYTES - _TAG_BYTES
+
+        decryptor = Cipher(
+            algorithms.AES(self._key()), modes.GCM(source_nonce, source_tag)
+        ).decryptor()
+        if magic == _BOUND_ENCRYPTED_MAGIC:
+            decryptor.authenticate_additional_data(self._associated_data(source_path))
+
+        destination_nonce = secrets.token_bytes(_NONCE_BYTES)
+        encryptor = Cipher(algorithms.AES(self._key()), modes.GCM(destination_nonce)).encryptor()
+        encryptor.authenticate_additional_data(self._associated_data(destination_path))
+        destination.write(_BOUND_ENCRYPTED_MAGIC)
+        destination.write(destination_nonce)
+        while remaining:
+            chunk = source.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise StorageError("Staged archive is incomplete.")
+            remaining -= len(chunk)
+            destination.write(encryptor.update(decryptor.update(chunk)))
+        destination.write(encryptor.update(decryptor.finalize()))
+        destination.write(encryptor.finalize())
+        destination.write(encryptor.tag)
+
+    def _encrypt_stream(self, source, destination, destination_path: Path) -> None:
+        """Encrypt a plaintext stream in the current path-bound envelope."""
+
+        nonce = secrets.token_bytes(_NONCE_BYTES)
+        encryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce)).encryptor()
+        encryptor.authenticate_additional_data(self._associated_data(destination_path))
+        destination.write(_BOUND_ENCRYPTED_MAGIC)
+        destination.write(nonce)
+        while chunk := source.read(1024 * 1024):
+            destination.write(encryptor.update(chunk))
+        destination.write(encryptor.finalize())
+        destination.write(encryptor.tag)
+
+    def _upgrade_legacy_envelope(self, encrypted_path: Path, plaintext_path: Path) -> None:
+        """Atomically rewrap a successfully decrypted legacy file when possible."""
+
+        temporary = encrypted_path.with_name(
+            f".{encrypted_path.name}.{secrets.token_hex(12)}.tmp"
+        )
+        try:
+            with self._open_private_input(plaintext_path) as source, self._open_private_output(
+                temporary
+            ) as output:
+                self._encrypt_stream(source, output, encrypted_path)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, encrypted_path)
+            os.chmod(encrypted_path, 0o600)
+            directory_fd = os.open(
+                encrypted_path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            LOGGER.warning("Legacy private-storage envelope upgrade was deferred.")
 
     @staticmethod
     def _remove_plaintext_file(path: Path) -> None:
@@ -426,16 +536,9 @@ class SessionStorage:
         if Path(name).name != name or not name:
             raise StorageError("Retained artifact name is invalid.")
         destination = self.directory(session_id, "retained") / f"{name}.enc"
-        nonce = secrets.token_bytes(_NONCE_BYTES)
-        encryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce)).encryptor()
         try:
             with self._open_private_input(Path(source_path)) as source, self._open_private_output(destination) as output:
-                output.write(_ENCRYPTED_MAGIC)
-                output.write(nonce)
-                while chunk := source.read(1024 * 1024):
-                    output.write(encryptor.update(chunk))
-                output.write(encryptor.finalize())
-                output.write(encryptor.tag)
+                self._encrypt_stream(source, output, destination)
             os.chmod(destination, 0o600)
             return destination
         except Exception as exc:
@@ -708,7 +811,13 @@ class SessionStorage:
 
         return self.extract_eeg_recordings(session_id, archive_path)
 
-    def cleanup_session(self, session_id: str, *, keep_retained: bool = False) -> None:
+    def cleanup_session(
+        self,
+        session_id: str,
+        *,
+        keep_retained: bool = False,
+        preserve_work_files: set[str] | None = None,
+    ) -> None:
         """Delete transient session files after processing.
 
         Parameters
@@ -723,8 +832,27 @@ class SessionStorage:
         if not keep_retained:
             self._remove_tree(session_dir)
             return
+        preserved = preserve_work_files or set()
         for name in ("original", "work", "extracted", "deidentified", "processed", "explanations"):
-            self._remove_tree(session_dir / name)
+            area = session_dir / name
+            if name != "work" or not preserved:
+                self._remove_tree(area)
+                continue
+            if area.is_symlink() or (area.exists() and not area.is_dir()):
+                raise StorageError("Private work storage is invalid.")
+            if area.exists():
+                for child in area.iterdir():
+                    if child.name in preserved:
+                        if child.is_symlink() or not child.is_file():
+                            raise StorageError("Preserved work file is invalid.")
+                        continue
+                    metadata = child.lstat()
+                    if stat.S_ISDIR(metadata.st_mode):
+                        self._remove_tree(child)
+                    elif stat.S_ISREG(metadata.st_mode):
+                        child.unlink()
+                    else:
+                        raise StorageError("Private work entry is invalid.")
 
     @staticmethod
     def _remove_tree(path: Path) -> None:

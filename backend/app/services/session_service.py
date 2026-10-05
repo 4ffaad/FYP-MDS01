@@ -22,7 +22,15 @@ from backend.app.core.config import (
     UPLOAD_DRAFT_TTL_SECONDS,
 )
 from backend.app.database.db import engine
-from backend.app.database.models.eeg import EEGRecording, EEGSession, UploadDraft, utc_now
+from backend.app.database.models.eeg import (
+    AnalysisStatus,
+    EEGRecording,
+    EEGSession,
+    ProcessingAttempt,
+    RecordingStatus,
+    UploadDraft,
+    utc_now,
+)
 from backend.app.database.models.video import VideoPrivacyJob
 from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.database.repository import (
@@ -276,8 +284,10 @@ def finalize_upload_draft(
 ) -> DraftFinalizationResult:
     """Convert one encrypted draft into a queued analysis session.
 
-    The staged archive is copied without decrypting it, so a failed database
-    commit leaves the encrypted draft available for a safe retry.
+    The staged archive is streamed through authenticated decryption and
+    re-encryption for its final session path, so a failed database commit
+    leaves the encrypted draft available for a safe retry without writing
+    plaintext during promotion.
     """
 
     draft = get_upload_draft(db, draft_id, owner_user_id, for_update=True)
@@ -482,7 +492,11 @@ def public_record(
             {"start_seconds": start, "end_seconds": end}
             for start, end in (alert_intervals or [])
         ],
-        "error_message": record.error_message,
+        "error_message": (
+            record.error_message
+            if record.status == RecordingStatus.FAILED
+            else None
+        ),
         "model_name": model_metadata.get("model_name") if model_metadata else None,
         "model_version": model_metadata.get("model_version") if model_metadata else None,
         "score_type": public_score_type(model_metadata.get("score_type")) if model_metadata else None,
@@ -530,7 +544,11 @@ def _public_session_payload(
         "current_stage": session.current_stage,
         "created_at": session.created_at.isoformat(),
         "completed_at": session.completed_at.isoformat() if session.completed_at else None,
-        "error_message": session.error_message,
+        "error_message": (
+            session.error_message
+            if session.status == AnalysisStatus.FAILED
+            else None
+        ),
         "progress": {
             "total_recordings": len(records),
             "finished_recordings": finished_count,
@@ -563,13 +581,47 @@ def public_session(db: Session, session: EEGSession, owner_user_id: int | None =
 
     records = list_recordings_for_session(db, session.id, owner_user_id) if session.id is not None else []
     record_ids = [record.id for record in records if record.id is not None]
-    return _public_session_payload(
+    payload = _public_session_payload(
         session,
         records,
         list_flagged_window_counts(db, record_ids),
         list_model_metadata(db, record_ids),
         list_flagged_prediction_windows(db, record_ids),
     )
+    recording_indexes = {
+        record.id: record.sequence_index
+        for record in records
+        if record.id is not None
+    }
+    attempts = db.exec(
+        select(ProcessingAttempt)
+        .where(ProcessingAttempt.session_db_id == session.id)
+        .order_by(ProcessingAttempt.id)
+    ).all()
+
+    def utc_timestamp(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        normalized = (
+            value.replace(tzinfo=timezone.utc)
+            if value.tzinfo is None
+            else value.astimezone(timezone.utc)
+        )
+        return normalized.isoformat()
+
+    payload["processing_attempts"] = [
+        {
+            "recording_sequence_index": recording_indexes.get(
+                attempt.recording_db_id
+            ),
+            "stage": attempt.stage.value,
+            "status": attempt.status.value,
+            "started_at": utc_timestamp(attempt.started_at),
+            "finished_at": utc_timestamp(attempt.finished_at),
+        }
+        for attempt in attempts
+    ]
+    return payload
 
 
 def public_session_list(db: Session, owner_user_id: int | None = None) -> list[dict]:

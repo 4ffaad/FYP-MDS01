@@ -26,29 +26,145 @@ from backend.app.video_detection.contract import DetectionError, load_contract, 
 from backend.app.video_detection.visualization import render_visualization
 
 
-def _patch_occlusion_evidence(model, patches, coordinates, score, patch_labels):
-    """Measure bounded model sensitivity to each anonymous VSViG input patch."""
+def _vsvig_gradcam(model, patches, coordinates, times, threshold):
+    """Project graph Grad-CAM relevance onto VSViG's 30 frame × 15 patch nodes."""
 
     import torch
 
-    parts = []
-    with torch.inference_mode():
-        for patch_index in range(patches.shape[2]):
-            occluded = patches.clone()
-            occluded[:, :, patch_index] = 0
-            alternate = model(occluded, coordinates)
-            if alternate.numel() != 1:
+    activations, logits = [], []
+    # Stage 1 is the last VSViG feature block with 15 sampled temporal positions;
+    # its graph axis is the same 15 keypoint patches exposed to the reviewer.
+    activation_hook = model.backbone[9].register_forward_hook(
+        lambda _module, _inputs, output: activations.append(output)
+    )
+    logit_hook = model.fc[-1].register_forward_hook(
+        lambda _module, _inputs, output: logits.append(output)
+    )
+    try:
+        with torch.inference_mode(False), torch.enable_grad():
+            patch_input = patches.detach().clone().requires_grad_(True)
+            coordinate_input = coordinates.detach().clone()
+            result = model(patch_input, coordinate_input)
+            if (
+                result.numel() != 1
+                or not activations
+                or not logits
+                or activations[-1].ndim != 5
+                or activations[-1].shape[0] != 1
+                or activations[-1].shape[1] != 15
+                or activations[-1].shape[3] != 15
+                or logits[-1].numel() != 1
+            ):
                 raise DetectionError("invalid_model_output")
-            parts.append({
-                "patch_index": patch_index,
-                "component": patch_labels[patch_index],
-                "score_change": float(score - alternate.item()),
-            })
+            score_value = float(result.detach().item())
+            target_class = "flagged" if score_value >= threshold else "below_threshold"
+            target = logits[-1].sum()
+            if target_class == "below_threshold":
+                target = -target
+            gradients, = torch.autograd.grad(target, activations[-1])
+            channel_weights = gradients.mean(dim=(1, 3, 4), keepdim=True)
+            cam = torch.relu(
+                (channel_weights * activations[-1]).sum(dim=2).squeeze(-1)
+            )
+            # The selected graph layer has 15 temporal positions. Interpolate its
+            # node scores to the 30 source samples used by this model window.
+            cam = torch.nn.functional.interpolate(
+                cam.transpose(1, 2),
+                size=len(times),
+                mode="linear",
+                align_corners=False,
+            ).transpose(1, 2)[0]
+            maximum = cam.amax()
+            cam = cam / maximum.clamp_min(1e-8)
+            if not torch.isfinite(cam).all():
+                raise DetectionError("invalid_model_output")
+            values = cam.detach().cpu().tolist()
+    finally:
+        activation_hook.remove()
+        logit_hook.remove()
+
     return {
-        "method": "patch-occlusion",
-        "note": "Research sensitivity: each anonymous model input patch was replaced with neutral pixels. This is not a clinical explanation.",
-        "patches": sorted(parts, key=lambda item: abs(item["score_change"]), reverse=True),
+        "method": "vsvig-graph-grad-cam",
+        "target_class": target_class,
+        "note": "Gradient-weighted VSViG graph features show relative contribution by sampled time and keypoint patch. Research evidence, not a clinical explanation.",
+        "gradcam_samples": [
+            {
+                "timestamp": round(timestamp, 4),
+                "patches": [
+                    {
+                        "patch_index": patch_index,
+                        "relevance": round(float(values[frame_index][patch_index]), 5),
+                    }
+                    for patch_index in range(15)
+                ],
+            }
+            for frame_index, timestamp in enumerate(times)
+        ],
     }
+
+
+def blur_rgb_patches(patches, strength_percent: int, cv2=None):
+    """Blur each extracted 32×32 RGB patch before it reaches VSViG."""
+
+    import numpy as np
+
+    if type(strength_percent) is not int or not 50 <= strength_percent <= 100:
+        raise DetectionError("invalid_blur_strength")
+    if cv2 is None:
+        import cv2
+    if (
+        not isinstance(patches, np.ndarray)
+        or patches.shape != (15, 32, 32, 3)
+        or not np.isfinite(patches).all()
+    ):
+        raise DetectionError("invalid_patch")
+    kernel = int(round(3 + 0.28 * strength_percent))
+    if kernel % 2 == 0:
+        kernel += 1
+    kernel = min(kernel, 31)
+    return np.stack(
+        [cv2.GaussianBlur(patch, (kernel, kernel), sigmaX=0) for patch in patches]
+    )
+
+
+def _validate_required_keypoints(keypoints, indices, width, height, minimum_score):
+    """Validate only the landmarks retained by the reviewed 15-point input."""
+
+    if keypoints.shape != (18, 3) or not indices or _missing_required_keypoints(
+        keypoints, indices, width, height, minimum_score
+    ):
+        raise DetectionError("incomplete_pose")
+
+
+def _last_model_sample_index(sample_count, window_frames, stride_frames):
+    """Return the last sample used by any complete strided model window."""
+
+    if sample_count < window_frames:
+        return -1
+    return (
+        ((sample_count - window_frames) // stride_frames) * stride_frames
+        + window_frames
+        - 1
+    )
+
+
+def _missing_required_keypoints(keypoints, indices, width, height, minimum_score):
+    """Return required landmark indexes that fail the inference gate."""
+
+    import numpy as np
+
+    if keypoints.shape != (18, 3):
+        return list(indices)
+    points = keypoints[np.asarray(indices, dtype=np.intp)]
+    invalid = (
+        ~np.isfinite(points).all(axis=1)
+        | (points[:, 2] < minimum_score)
+        | (points[:, 0] < 0)
+        | (points[:, 1] < 0)
+        | (points[:, 0] >= width)
+        | (points[:, 1] >= height)
+    )
+    return [int(index) for index, is_invalid in zip(indices, invalid) if is_invalid]
 
 
 def _track_single_pose(previous_poses, keypoints, pose_class, track_function):
@@ -121,8 +237,14 @@ def module_from_file(name, path):
     return module
 
 
-def run(source: Path, visualization_output: Path | None = None) -> dict:
-    """Run VSViG and OpenPose on the same protected video stream."""
+def run(
+    model_source: Path,
+    visualization_output: Path | None = None,
+    *,
+    pose_source: Path | None = None,
+    blur_strength_percent: int = 100,
+) -> dict:
+    """Run pose on source frames and VSViG on separately blurred RGB patches."""
 
     root, contract = load_contract()
     import cv2
@@ -152,19 +274,48 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
     pose.eval()
 
     p = contract["preprocessing"]
-    capture = cv2.VideoCapture(str(source))
-    fps = capture.get(cv2.CAP_PROP_FPS)
-    count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    if (not capture.isOpened() or fps < p["sample_fps"] or count <= 0
-        or int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)) != p["width"]
-        or int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)) != p["height"]):
-        capture.release()
+    required_keypoints = sorted(set(p["keypoint_order"]) | set(p["patch_order"]))
+    required_keypoint_set = set(required_keypoints)
+    model_capture = cv2.VideoCapture(str(model_source))
+    same_source = pose_source is None or pose_source == model_source
+    pose_capture = model_capture if same_source else cv2.VideoCapture(str(pose_source))
+    fps = model_capture.get(cv2.CAP_PROP_FPS)
+    count = int(model_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(model_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(model_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    pose_fps = pose_capture.get(cv2.CAP_PROP_FPS)
+    pose_count = int(pose_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    if (
+        not model_capture.isOpened()
+        or not pose_capture.isOpened()
+        or fps < p["sample_fps"]
+        or count <= 0
+        or (width, height) != (p["width"], p["height"])
+        or pose_count != count
+        or int(pose_capture.get(cv2.CAP_PROP_FRAME_WIDTH)) != width
+        or int(pose_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)) != height
+        or not math.isclose(pose_fps, fps, rel_tol=0.01, abs_tol=0.01)
+    ):
+        if pose_capture is not model_capture:
+            pose_capture.release()
+        model_capture.release()
         raise DetectionError("video_incompatible")
     duration = count / fps
+    sample_count = 0
+    while round(sample_count * fps / p["sample_fps"]) < count:
+        sample_count += 1
+    last_model_sample_index = _last_model_sample_index(
+        sample_count, p["frames"], p["stride_frames"]
+    )
+    if last_model_sample_index < 0:
+        model_capture.release()
+        if pose_capture is not model_capture:
+            pose_capture.release()
+        raise DetectionError("video_incompatible")
     patches, coordinates, times, rows = [], [], [], []
     pose_samples = []
     previous_poses = []
-    strongest_flagged = None
+    strongest_window = None
     frame_index, next_sample = 0, 0
     # The upstream extractor removes slots 1, 14, and 15. Place the reviewed
     # 15-point model order into its surviving slots before calling it.
@@ -172,19 +323,32 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
     try:
         with torch.inference_mode():
             while True:
-                ok, frame = capture.read()
-                if not ok:
+                model_ok, model_frame = model_capture.read()
+                if same_source:
+                    pose_ok, pose_frame = model_ok, model_frame
+                else:
+                    pose_ok, pose_frame = pose_capture.read()
+                if model_ok != pose_ok:
+                    raise DetectionError("truncated_video")
+                if not model_ok:
                     break
                 index = frame_index
                 frame_index += 1
-                timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
-                if abs(timestamp - index / fps) > max(0.05, 1 / fps):
+                timestamp = model_capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
+                pose_timestamp = pose_capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
+                if (
+                    abs(timestamp - index / fps) > max(0.05, 1 / fps)
+                    or abs(pose_timestamp - timestamp) > max(0.05, 1 / fps)
+                    or model_frame.shape != pose_frame.shape
+                ):
                     raise DetectionError("video_incompatible")
                 if index < round(next_sample * fps / p["sample_fps"]):
                     continue
                 next_sample += 1
+                if next_sample - 1 > last_model_sample_index:
+                    continue
                 heatmaps, pafs, scale, pad = infer_fast(
-                    pose, frame, int(p["pose_height"]), 8, 4, True
+                    pose, pose_frame, int(p["pose_height"]), 8, 4, True
                 )
                 by_type, total = [], 0
                 for k in range(18):
@@ -195,15 +359,32 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
                 if len(entries) != 1:
                     raise DetectionError("ambiguous_or_missing_pose")
                 keypoints = np.zeros((18, 3), dtype=np.float32)
+                keypoints[:, :2] = -1
                 for k, point_id in enumerate(entries[0][:18]):
                     if point_id < 0:
-                        raise DetectionError("incomplete_pose")
+                        continue
                     point = points[int(point_id)]
                     keypoints[k] = ((point[0] * 2 - pad[1]) / scale, (point[1] * 2 - pad[0]) / scale, point[2])
-                if (keypoints[:, 2] < p["min_keypoint_score"]).any():
-                    raise DetectionError("incomplete_pose")
-                if (keypoints[:, :2] < 0).any() or (keypoints[:, 0] >= frame.shape[1]).any() or (keypoints[:, 1] >= frame.shape[0]).any():
-                    raise DetectionError("incomplete_pose")
+                _validate_required_keypoints(
+                    keypoints,
+                    required_keypoints,
+                    pose_frame.shape[1],
+                    pose_frame.shape[0],
+                    p["min_keypoint_score"],
+                )
+                for keypoint_index in range(18):
+                    if keypoint_index in required_keypoint_set:
+                        continue
+                    point = keypoints[keypoint_index]
+                    if (
+                        not np.isfinite(point).all()
+                        or point[2] < p["min_keypoint_score"]
+                        or point[0] < 0
+                        or point[1] < 0
+                        or point[0] >= pose_frame.shape[1]
+                        or point[1] >= pose_frame.shape[0]
+                    ):
+                        keypoints[keypoint_index] = (-1, -1, 0)
                 previous_poses = _track_single_pose(
                     previous_poses,
                     keypoints,
@@ -214,9 +395,9 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
                 reordered = keypoints.copy()
                 reordered[kept] = keypoints[p["patch_order"]]
                 if p["color_order"] == "RGB":
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    model_frame = cv2.cvtColor(model_frame, cv2.COLOR_BGR2RGB)
                 patch = patches_module.extract_patches(
-                    frame,
+                    model_frame,
                     reordered,
                     kernel_size=int(p["patch_kernel_size"]),
                     kernel_sigma=float(p["patch_sigma"]),
@@ -225,6 +406,7 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
                 patch_shape = (15, 32, 32, 3)
                 if patch.shape != patch_shape or not np.isfinite(patch).all():
                     raise DetectionError("invalid_patch")
+                patch = blur_rgb_patches(patch, blur_strength_percent, cv2)
                 kpts = keypoints[p["keypoint_order"]].copy()
                 kpts[:, :2] *= p["coordinate_scale"]
                 patches.append(patch.transpose(0, 3, 1, 2).astype(np.float32) * p["pixel_scale"])
@@ -238,12 +420,20 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
                         raise DetectionError("invalid_model_output")
                     score = result.item()
                     rows.append({"start_time": times[0], "end_time": min(duration, times[-1] + 1 / p["sample_fps"]), "raw_score": score})
-                    if score >= contract["threshold"] and (strongest_flagged is None or score > strongest_flagged[0]):
-                        strongest_flagged = (score, len(rows) - 1, tensor, k_tensor)
+                    if strongest_window is None or score > strongest_window[0]:
+                        strongest_window = (
+                            score,
+                            len(rows) - 1,
+                            tensor,
+                            k_tensor,
+                            list(times),
+                        )
                     step = p["stride_frames"]
                     del patches[:step], coordinates[:step], times[:step]
     finally:
-        capture.release()
+        if pose_capture is not model_capture:
+            pose_capture.release()
+        model_capture.release()
 
     if frame_index != count:
         raise DetectionError("truncated_video")
@@ -260,21 +450,48 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
         "source_repository": contract.get("upstream_repository"),
         "pose_repository": contract.get("pose_repository"),
         "pose_model": "Lightweight OpenPose",
-        "privacy_input": "VSViG and OpenPose receive the same full-frame-blurred video",
+        "privacy_input": "OpenPose receives transient normalized frames; VSViG receives the resulting pose coordinates and 15 RGB patches extracted from each frame and blurred individually before inference",
+        "blur_strength_percent": blur_strength_percent,
         "postprocessing": "per-window threshold; score is not calibrated",
     }
-    if strongest_flagged is not None:
-        score, row_index, tensor, k_tensor = strongest_flagged
-        rows[row_index]["model_evidence"] = _patch_occlusion_evidence(
-            model, tensor, k_tensor, score, p["patch_labels"]
+    if strongest_window is not None:
+        score, row_index, tensor, k_tensor, evidence_times = strongest_window
+        evidence = _vsvig_gradcam(
+            model, tensor, k_tensor, evidence_times, contract["threshold"]
         )
+        width, height = p["width"], p["height"]
+        evidence["pose_samples"] = [
+            {
+                "timestamp": round(timestamp, 4),
+                "points": [
+                    {
+                        "patch_index": patch_index,
+                        "x": round(
+                            max(0.0, min(1.0, float(k_tensor[0, frame_index, patch_index, 0]) / width)),
+                            5,
+                        ),
+                        "y": round(
+                            max(0.0, min(1.0, float(k_tensor[0, frame_index, patch_index, 1]) / height)),
+                            5,
+                        ),
+                        "confidence": round(
+                            max(0.0, min(1.0, float(k_tensor[0, frame_index, patch_index, 2]))),
+                            4,
+                        ),
+                    }
+                    for patch_index in range(15)
+                ],
+            }
+            for frame_index, timestamp in enumerate(evidence_times)
+        ]
+        rows[row_index]["model_evidence"] = evidence
     result = validate_predictions(rows, duration, metadata)
     result["duration_seconds"] = frame_index / fps
     result["fps"] = fps
     result["frame_count"] = frame_index
     if visualization_output is not None:
         result["visualization"] = render_visualization(
-            source,
+            pose_source or model_source,
             visualization_output,
             pose_samples,
         )
@@ -283,11 +500,212 @@ def run(source: Path, visualization_output: Path | None = None) -> dict:
             "available": False,
             "media_type": "video/mp4",
             "audio_included": False,
-            "privacy_method": "full-frame-blur-and-skeleton-overlay",
+            "privacy_method": "tracked-face-blur-with-full-frame-fallback-and-skeleton-overlay",
             "overlay": {"skeleton": True, "model_score": False, "event_markers": False},
             "frontend_overlay": {"model_score": True, "event_markers": True},
         }
     return result
+
+
+def inspect_pose_readiness(
+    source_path: Path,
+    *,
+    allow_letterbox_adaptation: bool = False,
+) -> dict:
+    """Check the first VSViG window with the pinned pose model only."""
+
+    root, contract = load_contract()
+    import cv2
+    import numpy as np
+    import torch
+
+    _configure_torch_backend(torch)
+    torch.set_num_threads(2)
+    sys.path.insert(0, str(root / "openpose"))
+    from demo import infer_fast
+    from models.with_mobilenet import PoseEstimationWithMobileNet
+    from modules.keypoints import extract_keypoints, group_keypoints
+    from modules.pose import Pose, track_poses
+
+    pose = PoseEstimationWithMobileNet()
+    checkpoint = torch.load(root / "pose.pth", map_location="cpu", weights_only=True)
+    pose.load_state_dict(checkpoint.get("state_dict", checkpoint), strict=True)
+    pose.eval()
+
+    preprocessing = contract["preprocessing"]
+    if source_path.is_symlink() or not source_path.is_file():
+        raise DetectionError("video_incompatible")
+    capture = cv2.VideoCapture(str(source_path))
+    fps = float(capture.get(cv2.CAP_PROP_FPS) or 0)
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    required_frames = int(preprocessing["frames"])
+    sample_fps = float(preprocessing["sample_fps"])
+    needs_adaptation = (width, height) != (
+        preprocessing["width"],
+        preprocessing["height"],
+    )
+    if (
+        not capture.isOpened()
+        or not math.isfinite(fps)
+        or fps < sample_fps
+        or fps > VIDEO_MAX_FPS
+        or frame_count <= 0
+        or frame_count > VIDEO_MAX_FRAMES
+        or width <= 0
+        or height <= 0
+        or width > VIDEO_MAX_WIDTH
+        or height > VIDEO_MAX_HEIGHT
+        or width * height > VIDEO_MAX_WIDTH * VIDEO_MAX_HEIGHT
+        or (needs_adaptation and not allow_letterbox_adaptation)
+        or frame_count / fps < required_frames / sample_fps
+        or frame_count / fps > VIDEO_MAX_DURATION_SECONDS
+    ):
+        capture.release()
+        raise DetectionError("video_incompatible")
+
+    required_keypoints = sorted(
+        set(preprocessing["keypoint_order"]) | set(preprocessing["patch_order"])
+    )
+    label_by_index = dict(
+        zip(preprocessing["keypoint_order"], preprocessing["patch_labels"])
+    )
+    missing_landmarks = {label: 0 for label in preprocessing["patch_labels"]}
+    frames_without_person = 0
+    frames_with_multiple_people = 0
+    frames_with_tracking_break = 0
+    frames_with_incomplete_pose = 0
+    previous_poses = []
+    frame_index = 0
+    next_sample = 0
+    checked_frames = 0
+    timestamp_origin = None
+    resized_width = resized_height = pad_x = pad_y = 0
+    if needs_adaptation:
+        from backend.app.video_privacy.processor import model_frame_layout
+
+        resized_width, resized_height, pad_x, pad_y = model_frame_layout(width, height)
+
+    try:
+        with torch.inference_mode():
+            while checked_frames < required_frames:
+                ok, frame = capture.read()
+                if not ok:
+                    raise DetectionError("video_incompatible")
+                index = frame_index
+                frame_index += 1
+                timestamp = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000
+                if timestamp_origin is None:
+                    timestamp_origin = timestamp
+                if (
+                    not math.isfinite(timestamp)
+                    or not math.isfinite(timestamp_origin)
+                    or abs(timestamp - timestamp_origin - index / fps)
+                    > max(0.05, 1 / fps)
+                ):
+                    raise DetectionError("video_incompatible")
+                if index < round(next_sample * fps / sample_fps):
+                    continue
+                next_sample += 1
+                checked_frames += 1
+                if needs_adaptation:
+                    frame = cv2.resize(
+                        frame,
+                        (resized_width, resized_height),
+                        interpolation=(
+                            cv2.INTER_LINEAR
+                            if resized_width >= width and resized_height >= height
+                            else cv2.INTER_AREA
+                        ),
+                    )
+                    model_frame = np.zeros(
+                        (
+                            preprocessing["height"],
+                            preprocessing["width"],
+                            3,
+                        ),
+                        dtype=np.uint8,
+                    )
+                    model_frame[
+                        pad_y : pad_y + resized_height,
+                        pad_x : pad_x + resized_width,
+                    ] = frame
+                    frame = model_frame
+
+                heatmaps, pafs, scale, pad = infer_fast(
+                    pose, frame, int(preprocessing["pose_height"]), 8, 4, True
+                )
+                by_type, total = [], 0
+                for joint_index in range(18):
+                    total += extract_keypoints(
+                        heatmaps[:, :, joint_index], by_type, total
+                    )
+                entries, points = group_keypoints(by_type, pafs)
+                if len(entries) == 0:
+                    frames_without_person += 1
+                    previous_poses = []
+                    continue
+                if len(entries) != 1:
+                    frames_with_multiple_people += 1
+                    previous_poses = []
+                    continue
+
+                keypoints = np.zeros((18, 3), dtype=np.float32)
+                keypoints[:, :2] = -1
+                for joint_index, point_id in enumerate(entries[0][:18]):
+                    if point_id < 0:
+                        continue
+                    point = points[int(point_id)]
+                    keypoints[joint_index] = (
+                        (point[0] * 2 - pad[1]) / scale,
+                        (point[1] * 2 - pad[0]) / scale,
+                        point[2],
+                    )
+                missing = _missing_required_keypoints(
+                    keypoints,
+                    required_keypoints,
+                    frame.shape[1],
+                    frame.shape[0],
+                    preprocessing["min_keypoint_score"],
+                )
+                if missing:
+                    frames_with_incomplete_pose += 1
+                    for landmark_index in missing:
+                        missing_landmarks[label_by_index[landmark_index]] += 1
+                    previous_poses = []
+                    continue
+                try:
+                    previous_poses = _track_single_pose(
+                        previous_poses, keypoints, Pose, track_poses
+                    )
+                except DetectionError:
+                    frames_with_tracking_break += 1
+                    previous_poses = []
+    finally:
+        capture.release()
+
+    missing_landmarks = {
+        label: count for label, count in missing_landmarks.items() if count
+    }
+    ready = (
+        checked_frames == required_frames
+        and frames_without_person == 0
+        and frames_with_multiple_people == 0
+        and frames_with_tracking_break == 0
+        and frames_with_incomplete_pose == 0
+    )
+    return {
+        "ready": ready,
+        "checked_frames": checked_frames,
+        "required_frames": required_frames,
+        "window_seconds": required_frames / sample_fps,
+        "frames_without_person": frames_without_person,
+        "frames_with_multiple_people": frames_with_multiple_people,
+        "frames_with_tracking_break": frames_with_tracking_break,
+        "frames_with_incomplete_pose": frames_with_incomplete_pose,
+        "missing_landmarks": missing_landmarks,
+    }
 
 
 def run_pose_preview(
@@ -438,13 +856,35 @@ def run_pose_preview(
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) == 6 and sys.argv[1] == "--pose-preview":
+        if len(sys.argv) == 5 and sys.argv[1] == "--pose-readiness":
+            result_path = Path(sys.argv[3])
+            if sys.argv[4] not in {"0", "1"} or result_path.exists() or result_path.is_symlink():
+                raise DetectionError("runtime_incompatible")
+            result = inspect_pose_readiness(
+                Path(sys.argv[2]), allow_letterbox_adaptation=sys.argv[4] == "1"
+            )
+            descriptor = os.open(
+                result_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(result, output, allow_nan=False)
+        elif len(sys.argv) == 6 and sys.argv[1] == "--pose-preview":
             preview = run_pose_preview(
                 Path(sys.argv[2]), Path(sys.argv[4]), Path(sys.argv[5])
             )
             Path(sys.argv[3]).write_text(
                 json.dumps(preview, allow_nan=False), encoding="utf-8"
             )
+        elif len(sys.argv) in {5, 6}:
+            result = run(
+                Path(sys.argv[1]),
+                Path(sys.argv[3]),
+                pose_source=Path(sys.argv[4]),
+                blur_strength_percent=int(sys.argv[5]) if len(sys.argv) == 6 else 100,
+            )
+            Path(sys.argv[2]).write_text(json.dumps(result, allow_nan=False))
         elif len(sys.argv) == 4:
             visualization_output = Path(sys.argv[3])
             result = run(Path(sys.argv[1]), visualization_output)

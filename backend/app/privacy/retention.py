@@ -124,6 +124,8 @@ def write_model_window_npz(
     windows: np.ndarray,
     window_starts: np.ndarray,
     indexes: np.ndarray,
+    review_segments: list[tuple[float, np.ndarray]] | None = None,
+    review_labels: list[str] | None = None,
 ) -> Path:
     """Write selected, already-transformed model windows to a temporary NPZ.
 
@@ -148,11 +150,33 @@ def write_model_window_npz(
     validated_starts = validate_model_time_offsets(window_starts)
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        destination,
-        model_windows=windows[indexes].astype(np.float32, copy=False),
-        window_start_seconds=validated_starts[indexes],
-    )
+    retained = {
+        "model_windows": windows[indexes].astype(np.float32, copy=False),
+        "window_start_seconds": validated_starts[indexes],
+    }
+    if review_segments and review_labels:
+        if any(
+            samples.ndim != 2
+            or samples.shape[0] != len(review_labels)
+            or samples.shape[1] <= 0
+            or not np.isfinite(samples).all()
+            for _start, samples in review_segments
+        ):
+            raise ValueError("Auxiliary EEG review signals are invalid.")
+        starts = np.asarray([start for start, _samples in review_segments], dtype=np.float64)
+        validate_model_time_offsets(starts)
+        retained.update({
+            "review_signals": np.concatenate(
+                [samples.astype(np.float32, copy=False) for _start, samples in review_segments],
+                axis=1,
+            ),
+            "review_segment_starts": starts,
+            "review_segment_lengths": np.asarray(
+                [samples.shape[1] for _start, samples in review_segments], dtype=np.int64
+            ),
+            "review_channel_labels": np.asarray(review_labels, dtype="U32"),
+        })
+    np.savez_compressed(destination, **retained)
     return destination
 
 
@@ -171,6 +195,8 @@ def write_scrubbed_edf_clip(
     source_path: str | Path,
     output_path: str | Path,
     intervals: list[tuple[float, float]],
+    review_segments: list[tuple[float, np.ndarray]] | None = None,
+    review_labels: list[str] | None = None,
 ) -> Path:
     """Write selected ranges from a metadata-scrubbed EDF as a new EDF.
 
@@ -245,9 +271,46 @@ def write_scrubbed_edf_clip(
                 selected_samples[index],
             )
             signal_headers.append(scrubbed_header)
+        if review_segments and review_labels:
+            if set(review_labels) != {
+                "EOG Left-Ref",
+                "EOG Right-Ref",
+                "ECG",
+                "Chin 1-Chin 2",
+                "Photic",
+            }:
+                raise ValueError("Retained EDF auxiliary channel labels are invalid.")
+            review_signals = np.concatenate(
+                [samples for _start, samples in review_segments], axis=1
+            )
+            retained_samples = sum(end - start for start, end, _, _ in slices)
+            if (
+                review_signals.shape != (len(review_labels), retained_samples)
+                or not np.isfinite(review_signals).all()
+            ):
+                raise ValueError("Retained EDF auxiliary samples are invalid.")
+            for label, samples in zip(review_labels, review_signals, strict=True):
+                peak = max(float(np.max(np.abs(samples))), 1e-6)
+                header = {
+                    "label": label,
+                    "dimension": "V",
+                    "sample_frequency": int(round(frequency)),
+                    "physical_min": -peak,
+                    "physical_max": peak,
+                    "digital_min": -32768,
+                    "digital_max": 32767,
+                    "transducer": "",
+                    "prefilter": "",
+                }
+                signal_headers.append(scrub_signal_header(header, label))
+                selected_samples.append(
+                    np.rint(samples * (65535 / (2 * peak)))
+                    .clip(-32768, 32767)
+                    .astype(np.int16)
+                )
         writer = pyedflib.EdfWriter(
             str(destination),
-            len(MODEL_CHANNELS),
+            len(signal_headers),
             file_type=source.filetype,
         )
         writer.setHeader({

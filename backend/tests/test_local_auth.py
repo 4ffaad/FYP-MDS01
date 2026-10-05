@@ -113,7 +113,7 @@ class LocalAuthenticationTests(unittest.TestCase):
         ):
             admin = ensure_demo_admin(db)
             self.assertEqual(admin.email, "admin@mds01.local")
-            self.assertEqual(admin.display_name, "admin")
+            self.assertEqual(admin.display_name, "Dr. Aisha Rahman (Demo)")
             self.assertTrue(admin.is_admin)
             self.assertIs(ensure_demo_admin(db), admin)
             alice = register_user(db, "alice@example.test", "correct horse battery")

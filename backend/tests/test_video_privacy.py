@@ -40,6 +40,7 @@ from backend.app.video_privacy.processor import (
     VideoPrivacyProcessor,
     VideoProcessingResult,
     VideoProcessorError,
+    model_blur_sigma,
 )
 
 
@@ -75,6 +76,13 @@ class FakeProcessor(VideoPrivacyProcessor):
 
 
 class VideoPrivacyTests(unittest.TestCase):
+    def test_detection_blur_strength_scales_from_a_nonzero_privacy_floor(self) -> None:
+        self.assertEqual(model_blur_sigma(50), 9.5)
+        self.assertEqual(model_blur_sigma(100), 19.0)
+        for value in (49, 101, True, "50"):
+            with self.subTest(value=value), self.assertRaises(VideoProcessorError):
+                model_blur_sigma(value)
+
     def test_full_blur_pose_preview_can_retain_safe_low_coverage_for_review(self) -> None:
         redaction_flags, redaction_usable, redaction_needs_review = VideoPrivacyProcessor._quality_assessment(
             detected_frames=0,
@@ -382,7 +390,7 @@ class VideoPrivacyTests(unittest.TestCase):
             self.assertEqual(response["label"], "Video upload 01")
             self.assertEqual(
                 response["profile_description"],
-                "The full frame is blurred on every frame. Face-detection coverage is a quality signal for review; it does not change the blur extent.",
+                "A detected face is blurred. If detection is missing or ambiguous, the full frame is blurred.",
             )
             self.assertNotIn("patient-name.mov", serialized)
             self.assertNotIn("original_path", response)
@@ -449,8 +457,9 @@ class VideoPrivacyTests(unittest.TestCase):
                 VideoPrivacyProcessor.preflight(Path("/private/input.mp4"))
         self.preflight_patch.start()
 
-    def test_face_redaction_full_frame_blurs_detected_and_missed_faces(self) -> None:
+    def test_face_redaction_blurs_face_and_full_frame_falls_back_when_ambiguous(self) -> None:
         from backend.app.video_privacy.processor import VideoPrivacyProcessor
+        blur_parameters = []
 
         class Cv:
             COLOR_BGR2GRAY = 1
@@ -460,22 +469,25 @@ class VideoPrivacyTests(unittest.TestCase):
                 return frame
 
             @staticmethod
-            def GaussianBlur(frame, *_args, **_kwargs):
+            def GaussianBlur(frame, *_args, **kwargs):
+                blur_parameters.append((kwargs["sigmaX"], kwargs["sigmaY"]))
                 return np.full_like(frame, 255)
 
-        frame = np.zeros((4, 4, 3), dtype=np.uint8)
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
 
         class FaceDetector:
             @staticmethod
             def detectMultiScale(*_args, **_kwargs):
-                return [(0, 0, 2, 2)]
+                return [(24, 24, 24, 24)]
 
         transformed, detected = VideoPrivacyProcessor._transform_frame(
             Cv, frame, VideoPrivacyProfile.FACE_REDACTED, face_detector=FaceDetector(), pose=None,
         )
         self.assertTrue(detected)
-        self.assertEqual(int(transformed[0, 0, 0]), 255)
-        self.assertEqual(int(transformed[3, 3, 0]), 255)
+        self.assertEqual(int(transformed[24, 24, 0]), 255)
+        self.assertEqual(int(transformed[13, 13, 0]), 255)
+        self.assertEqual(int(transformed[80, 80, 0]), 0)
+        self.assertEqual(blur_parameters[-1], (19, 19))
 
         class MissingFace:
             @staticmethod
@@ -483,10 +495,16 @@ class VideoPrivacyTests(unittest.TestCase):
                 return []
 
         transformed, detected = VideoPrivacyProcessor._transform_frame(
-            Cv, frame, VideoPrivacyProfile.FACE_REDACTED, face_detector=MissingFace(), pose=None,
+            Cv,
+            frame,
+            VideoPrivacyProfile.FACE_REDACTED,
+            face_detector=MissingFace(),
+            pose=None,
+            blur_sigma=model_blur_sigma(50),
         )
         self.assertFalse(detected)
         self.assertTrue(np.all(transformed == 255))
+        self.assertEqual(blur_parameters[-1], (9.5, 9.5))
 
         class MultipleFaces:
             @staticmethod
@@ -844,6 +862,8 @@ class VideoPrivacyTests(unittest.TestCase):
 
             ffmpeg = calls[0]
             self.assertIn("-an", ffmpeg)
+            self.assertIn("libx264", ffmpeg)
+            self.assertIn("yuv420p", ffmpeg)
             self.assertNotIn("1:a:0?", ffmpeg)
             self.assertIn("-map_metadata", ffmpeg)
             self.assertIn("-sn", ffmpeg)

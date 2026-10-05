@@ -1,4 +1,4 @@
-"""Owner-scoped case list projections expose only reviewed safe summaries."""
+"""Owner-scoped case projections expose safe names and report summaries."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import os
 import unittest
 from unittest.mock import patch
 
+from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -39,7 +40,14 @@ class CaseSummaryProjectionTests(unittest.TestCase):
         self.engine.dispose()
         self.key_patch.stop()
 
-    def _add_case(self, owner_id: int, case_id: str, details: list[dict[str, str]]) -> None:
+    def _add_case(
+        self,
+        owner_id: int,
+        case_id: str,
+        details: list[dict[str, str]],
+        *,
+        verification_status: str = "reviewed",
+    ) -> None:
         nonce, ciphertext = encrypt_profile(
             owner_id,
             case_id,
@@ -61,8 +69,13 @@ class CaseSummaryProjectionTests(unittest.TestCase):
                     identity_nonce=nonce,
                     identity_ciphertext=ciphertext,
                     crypto_version=CRYPTO_VERSION,
-                    reviewed_by_user_id=owner_id,
-                    reviewed_at=utc_now(),
+                    verification_status=verification_status,
+                    reviewed_by_user_id=(
+                        owner_id if verification_status == "reviewed" else None
+                    ),
+                    reviewed_at=(
+                        utc_now() if verification_status == "reviewed" else None
+                    ),
                 )
             )
             db.commit()
@@ -131,6 +144,32 @@ class CaseSummaryProjectionTests(unittest.TestCase):
         self.assertIsNone(names_by_case["CASE-WXYZ9876"])
         self.assertNotIn("Synthetic Other Name", repr(listing))
 
+    def test_owner_summaries_show_auto_extracted_names_without_revealing_other_fields(self) -> None:
+        self._add_case(
+            7,
+            "CASE-A0701234",
+            [
+                {"label": "Patient Name", "value": "Synthetic Auto Patient"},
+                {"label": "Hospital ID", "value": "SYNTHETIC-HOSPITAL-42"},
+                {"label": "Diagnosis", "value": "Synthetic diagnosis."},
+            ],
+            verification_status="auto_extracted",
+        )
+
+        with Session(self.engine) as db:
+            listing = list_cases(db, owner_user_id=7)
+            detail = get_case(db, "CASE-A0701234", owner_user_id=7)
+            other_owner_view = list_cases(db, profile_owner_user_id=8)
+
+        self.assertEqual(listing[0]["patient_name"], "Synthetic Auto Patient")
+        self.assertEqual(
+            listing[0]["patient_name_verification_status"], "auto_extracted"
+        )
+        assert detail is not None
+        self.assertEqual(detail["patient_name"], "Synthetic Auto Patient")
+        self.assertNotIn("SYNTHETIC-HOSPITAL-42", repr((listing, detail)))
+        self.assertIsNone(other_owner_view[0]["patient_name"])
+
     def test_conclusion_with_contact_data_is_not_projected(self) -> None:
         self._add_case(
             7,
@@ -172,6 +211,36 @@ class CaseSummaryProjectionTests(unittest.TestCase):
         self.assertEqual(listing[0]["modalities"], ["video"])
         assert detail is not None
         self.assertEqual(detail["analyses"], [])
+
+    def test_case_list_uses_bounded_recording_summary_queries(self) -> None:
+        with Session(self.engine) as db:
+            for index in range(4):
+                db.add(
+                    EEGSession(
+                        session_id=f"SES-SYNTHETIC-{index}",
+                        owner_user_id=7,
+                        case_id=f"CASE-SYNTH{index:02d}",
+                        status=AnalysisStatus.COMPLETED,
+                    )
+                )
+            db.commit()
+
+        selects = 0
+
+        def count_selects(_connection, _cursor, statement, _parameters, _context, _executemany):
+            nonlocal selects
+            if statement.lstrip().upper().startswith("SELECT"):
+                selects += 1
+
+        event.listen(self.engine, "before_cursor_execute", count_selects)
+        try:
+            with Session(self.engine) as db:
+                listing = list_cases(db, owner_user_id=7)
+        finally:
+            event.remove(self.engine, "before_cursor_execute", count_selects)
+
+        self.assertEqual(len(listing), 4)
+        self.assertEqual(selects, 5)
 
 
 if __name__ == "__main__":

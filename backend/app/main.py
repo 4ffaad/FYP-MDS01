@@ -162,6 +162,9 @@ app.add_middleware(
         "X-Privacy-Methods",
         "X-Video-Format",
         "X-Video-Profile",
+        "X-Model-Blur-Percent",
+        "X-VEEG-Source-Name",
+        "X-VEEG-Source-Group",
         "Idempotency-Key",
     ],
 )

@@ -18,9 +18,11 @@ from backend.app.eeg.contracts import (
 )
 from backend.app.eeg.legacy_nicolet import (
     NicoletEvent,
+    NicoletVideoSyncSample,
     LEGACY_SOURCE_SAMPLING_RATE,
     coalesce_contiguous_segments,
     read_legacy_nicolet_events,
+    read_legacy_nicolet_video_sync,
     read_uniform_legacy_nicolet,
     read_uniform_legacy_nicolet_segments,
     select_legacy_montage_channels,
@@ -338,6 +340,20 @@ def read_legacy_eeg_events(path: str | Path) -> tuple[NicoletEvent, ...]:
         return read_legacy_nicolet_events(candidate)
     except Exception as exc:
         raise ValueError("Legacy Nicolet event data is unreadable or malformed.") from exc
+
+
+def read_legacy_eeg_video_sync(
+    path: str | Path, key: bytes, *, context: str = ""
+) -> tuple[NicoletVideoSyncSample, ...]:
+    """Read keyed video sync anchors only from a legacy Nicolet .e file."""
+
+    candidate = Path(path)
+    if detect_eeg_format(candidate) != "nicolet-e":
+        raise ValueError("Input is not a legacy Nicolet .e recording.")
+    try:
+        return read_legacy_nicolet_video_sync(candidate, key, context=context)
+    except Exception as exc:
+        raise ValueError("Legacy Nicolet video sync data is unreadable or malformed.") from exc
 
 
 def read_uniform_eeg(path: str | Path) -> tuple[np.ndarray, int, list[str]]:

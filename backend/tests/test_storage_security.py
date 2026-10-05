@@ -1,6 +1,7 @@
 """Public security contracts for private storage and opaque identifiers."""
 
 import asyncio
+import io
 import unittest
 from pathlib import Path
 import stat
@@ -8,6 +9,9 @@ import shutil
 import tempfile
 import zipfile
 from unittest.mock import patch
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from fastapi import UploadFile
 
 from backend.app.privacy.deidentify import generate_record_id
 from backend.app.services.session_service import new_draft_id, new_session_id
@@ -353,32 +357,92 @@ class StorageSecurityTests(unittest.TestCase):
             with self.assertRaises(StorageError):
                 storage.materialize_retained_artifact("VID-SAFE", symlink, "preview.mp4")
 
+    def test_ciphertext_cannot_be_replayed_under_another_session_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SessionStorage(Path(directory) / "sessions", storage_key=b"s" * 32)
+            source = asyncio.run(
+                storage.save_upload(
+                    "SES-SOURCE",
+                    UploadFile(filename="source.zip", file=io.BytesIO(b"private source")),
+                )
+            )
+            replay = storage.directory("SES-TARGET", "original") / "upload.zip.enc"
+            shutil.copy2(source, replay)
+
+            with self.assertRaises(StorageError):
+                storage.materialize_archive("SES-TARGET", replay)
+
+    def test_draft_promotion_reencrypts_for_the_final_session_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SessionStorage(Path(directory) / "sessions", storage_key=b"s" * 32)
+            payload = b"private staged archive"
+            asyncio.run(
+                storage.save_draft_upload(
+                    "UPL-DRAFT",
+                    UploadFile(filename="source.zip", file=io.BytesIO(payload)),
+                )
+            )
+
+            promoted = storage.promote_draft("UPL-DRAFT", "SES-FINAL")
+
+            self.assertTrue(promoted.read_bytes().startswith(b"MDS01GCM2"))
+            self.assertEqual(storage.materialize_archive("SES-FINAL", promoted).read_bytes(), payload)
+
+    def test_tampered_draft_promotion_leaves_no_partial_session_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SessionStorage(Path(directory) / "sessions", storage_key=b"s" * 32)
+            staged = asyncio.run(
+                storage.save_draft_upload(
+                    "UPL-TAMPER",
+                    UploadFile(filename="source.zip", file=io.BytesIO(b"private archive")),
+                )
+            )
+            with staged.open("r+b") as encrypted:
+                encrypted.seek(24)
+                byte = encrypted.read(1)
+                encrypted.seek(24)
+                encrypted.write(bytes([byte[0] ^ 0xFF]))
+
+            with self.assertRaises(StorageError):
+                storage.promote_draft("UPL-TAMPER", "SES-TAMPER")
+
+            self.assertTrue(staged.exists())
+            self.assertFalse((storage.root / "SES-TAMPER" / "original" / "upload.zip.enc").exists())
+
+    def test_legacy_ciphertext_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            key = b"s" * 32
+            storage = SessionStorage(Path(directory) / "sessions", storage_key=key)
+            payload = b"legacy encrypted archive"
+            nonce = b"n" * 12
+            legacy = b"MDS01GCM1" + nonce + AESGCM(key).encrypt(nonce, payload, None)
+            encrypted = storage.directory("SES-LEGACY", "original") / "upload.zip.enc"
+            encrypted.write_bytes(legacy)
+
+            self.assertEqual(storage.materialize_archive("SES-LEGACY", encrypted).read_bytes(), payload)
+            self.assertTrue(encrypted.read_bytes().startswith(b"MDS01GCM2"))
+
+    def test_legacy_draft_can_be_promoted_to_a_bound_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            key = b"s" * 32
+            storage = SessionStorage(Path(directory) / "sessions", storage_key=key)
+            payload = b"legacy staged archive"
+            nonce = b"n" * 12
+            legacy = b"MDS01GCM1" + nonce + AESGCM(key).encrypt(nonce, payload, None)
+            staged = storage.draft_path("UPL-LEGACY")
+            staged.write_bytes(legacy)
+
+            promoted = storage.promote_draft("UPL-LEGACY", "SES-LEGACY")
+
+            self.assertTrue(promoted.read_bytes().startswith(b"MDS01GCM2"))
+            self.assertEqual(storage.materialize_archive("SES-LEGACY", promoted).read_bytes(), payload)
+
     def test_video_visualization_path_is_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "sessions"
             path = VideoStorage(root).visualization_path("VID-MISSING")
             self.assertEqual(path, root / "VID-MISSING" / "retained" / "video.visualization.mp4.enc")
             self.assertFalse(root.exists())
-
-    def test_legacy_detection_visualization_cleanup_is_canonical(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            storage = VideoStorage(Path(directory) / "sessions", storage_key=b"s" * 32)
-            job_id = "VID-LEGACY"
-            visualization = storage.visualization_path(job_id)
-            visualization.parent.mkdir(parents=True)
-            visualization.write_bytes(b"encrypted legacy preview")
-            predictions = visualization.parent / "predictions.json.enc"
-            predictions.write_bytes(b"encrypted predictions")
-
-            storage.delete_legacy_visualization(job_id, visualization)
-
-            self.assertFalse(visualization.exists())
-            self.assertTrue(predictions.exists())
-            outside = Path(directory) / "outside.enc"
-            outside.write_bytes(b"protected")
-            with self.assertRaises(StorageError):
-                storage.delete_legacy_visualization(job_id, outside)
-            self.assertTrue(outside.exists())
 
     def test_cleanup_response_runs_when_stream_send_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

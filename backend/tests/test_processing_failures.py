@@ -735,6 +735,64 @@ class ProcessingFailureTests(unittest.TestCase):
                 self.assertEqual(attempt.status, ProcessingStatus.FAILED)
                 self.assertFalse(storage.root.joinpath("SES-INTERRUPTED").exists())
 
+    def test_periodic_sweep_does_not_interrupt_active_session(self) -> None:
+        """The retention loop leaves in-flight work and files untouched."""
+
+        database = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        self.addCleanup(database.dispose)
+        SQLModel.metadata.create_all(database)
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SessionStorage(Path(directory) / "sessions", b"s" * 32)
+            original = storage.directory("SES-ACTIVE", "original") / "archive.zip.enc"
+            extracted = storage.directory("SES-ACTIVE", "extracted") / "record.edf"
+            original.write_bytes(b"encrypted")
+            extracted.write_bytes(b"transient")
+            with Session(database) as db:
+                session = EEGSession(
+                    session_id="SES-ACTIVE",
+                    original_path=str(original),
+                    status=AnalysisStatus.INFERENCE,
+                    current_stage="inference",
+                )
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                record = EEGRecording(
+                    record_id="REC-ACTIVE",
+                    session_db_id=session.id,
+                    sequence_index=1,
+                    original_filename="record.edf",
+                    extracted_path=str(extracted),
+                    status=RecordingStatus.PROCESSING,
+                )
+                attempt = ProcessingAttempt(
+                    session_db_id=session.id,
+                    stage=ProcessingStage.INFERENCE,
+                    status=ProcessingStatus.RUNNING,
+                    started_at=datetime.now(timezone.utc),
+                )
+                db.add(record)
+                db.add(attempt)
+                db.commit()
+
+            with (
+                patch("backend.app.services.processing_service.engine", database),
+                patch("backend.app.services.processing_service.SessionStorage", return_value=storage),
+            ):
+                sweep_interrupted_sessions(reconcile_active=False)
+
+            with Session(database) as db:
+                session = get_session_by_public_id(db, "SES-ACTIVE")
+                record = list_recordings_for_session(db, session.id)[0]
+                attempt = db.exec(select(ProcessingAttempt)).one()
+                self.assertEqual(session.status, AnalysisStatus.INFERENCE)
+                self.assertIsNone(session.error_message)
+                self.assertEqual(record.status, RecordingStatus.PROCESSING)
+                self.assertIsNone(record.error_message)
+                self.assertEqual(attempt.status, ProcessingStatus.RUNNING)
+                self.assertTrue(original.exists())
+                self.assertTrue(extracted.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

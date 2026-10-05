@@ -183,7 +183,7 @@ class VideoPrivacyLifecycleTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     command,
                     0,
-                    b'{"streams":[{"codec_type":"video"}],"format":{"tags":{}}}',
+                    b'{"streams":[{"codec_type":"video","tags":{"language":"und","handler_name":"VideoHandler","vendor_id":"[0][0][0][0]","encoder":"Lavc61.19.101 libx264"}}],"format":{"tags":{"major_brand":"isom","minor_version":"512","compatible_brands":"isomiso2avc1mp41","encoder":"Lavf61.7.103"}}}',
                     b"",
                 )
 
@@ -195,6 +195,32 @@ class VideoPrivacyLifecycleTests(unittest.TestCase):
             self.assertTrue(all(call.get("timeout") is not None for call in calls))
             self.assertIn("-an", calls[0]["command"])
             self.assertNotIn("1:a:0?", calls[0]["command"])
+
+    def test_finalization_rejects_unexpected_stream_encoder_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.mp4"
+            visual = Path(directory) / "visual.mp4"
+            output = Path(directory) / "output.mp4"
+            source.write_bytes(b"source")
+            visual.write_bytes(b"visual")
+
+            def run(command, **_kwargs):
+                if command[0] == "/usr/bin/ffmpeg":
+                    output.write_bytes(b"output")
+                    return subprocess.CompletedProcess(command, 0, b"", b"")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    b'{"streams":[{"codec_type":"video","tags":{"encoder":"synthetic patient identifier"}}],"format":{"tags":{}}}',
+                    b"",
+                )
+
+            with patch.object(service.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), patch.object(
+                service.subprocess, "run", side_effect=run
+            ):
+                with self.assertRaises(VideoProcessorError):
+                    service.finalize_protected_video(source, visual, output)
+            self.assertFalse(output.exists())
 
     def test_cancelled_processing_is_terminal_and_cleans_private_work(self) -> None:
         """Cancellation cannot leave a privacy job looking runnable."""

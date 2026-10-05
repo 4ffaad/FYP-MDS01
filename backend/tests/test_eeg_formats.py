@@ -31,6 +31,8 @@ from backend.app.eeg.legacy_nicolet import (
     _EVENT_PACKET_GUID,
     _IndexEntry,
     coalesce_contiguous_segments,
+    parse_video_sync_section,
+    video_sync_name_token,
     _validate_segment_continuity,
     _validate_segment_order,
     select_legacy_montage_channels,
@@ -68,6 +70,61 @@ class NicoletFormatTests(unittest.TestCase):
         stem.with_suffix(".head").write_text(header, encoding="utf-8")
         stem.with_suffix(".data").write_bytes(values.tobytes())
         return stem.with_suffix(".data")
+
+    @staticmethod
+    def _video_sync_row(frame_index: int, clock_seconds: float, filename: str) -> bytes:
+        from backend.app.eeg.legacy_nicolet import _DAY_SECONDS, _NICOLET_EPOCH_OFFSET
+
+        row = bytearray(600)
+        absolute = clock_seconds + _NICOLET_EPOCH_OFFSET
+        day = int(absolute // _DAY_SECONDS)
+        fraction = absolute - day * _DAY_SECONDS
+        struct.pack_into("<Qdd", row, 0, frame_index, float(day), fraction)
+        encoded_name = filename.encode("utf-16le")
+        row[24 : 24 + len(encoded_name)] = encoded_name
+        return bytes(row)
+
+    def test_video_sync_section_returns_hmac_reference_and_eeg_relative_frame_times(self):
+        from backend.app.eeg.legacy_nicolet import _DAY_SECONDS, _NICOLET_EPOCH_OFFSET
+
+        key = b"k" * 32
+        first_segment_start = 45_000 * _DAY_SECONDS - _NICOLET_EPOCH_OFFSET
+        section = b"\x00" * 752 + b"".join(
+            (
+                self._video_sync_row(0, first_segment_start + 12.0, "C:\\camera\\clip-01.avi"),
+                self._video_sync_row(1500, first_segment_start + 72.0, "C:\\camera\\clip-01.avi"),
+            )
+        )
+
+        samples = parse_video_sync_section(section, first_segment_start, key)
+
+        self.assertEqual(len(samples), 2)
+        self.assertEqual(samples[0].source_name_token, video_sync_name_token("clip-01.avi", key))
+        self.assertEqual(samples[1].frame_index, 1500)
+        self.assertAlmostEqual(samples[0].eeg_clock_seconds, 12.0)
+        self.assertAlmostEqual(samples[1].eeg_clock_seconds, 72.0)
+        self.assertFalse(hasattr(samples[0], "filename"))
+
+    def test_video_sync_section_preserves_a_frame_anchor_before_eeg_start(self):
+        from backend.app.eeg.legacy_nicolet import _DAY_SECONDS, _NICOLET_EPOCH_OFFSET
+
+        key = b"k" * 32
+        first_segment_start = 45_000 * _DAY_SECONDS - _NICOLET_EPOCH_OFFSET
+        section = b"\x00" * 752 + b"".join(
+            (
+                self._video_sync_row(0, first_segment_start - 0.5, "clip.avi"),
+                self._video_sync_row(25, first_segment_start + 0.5, "clip.avi"),
+            )
+        )
+
+        samples = parse_video_sync_section(section, first_segment_start, key)
+
+        self.assertAlmostEqual(samples[0].eeg_clock_seconds, -0.5)
+        self.assertAlmostEqual(samples[1].eeg_clock_seconds, 0.5)
+
+    def test_video_sync_section_rejects_truncated_record_tables(self):
+        with self.assertRaisesRegex(LegacyNicoletError, "video sync section is invalid"):
+            parse_video_sync_section(b"\x00" * 753, 0.0, b"k" * 32)
 
     def test_nicolet_validation_and_reading_share_safe_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

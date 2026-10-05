@@ -19,6 +19,7 @@ from backend.app.core.config import MAX_VIDEO_UPLOAD_BYTES, SESSION_STORAGE_DIR
 from backend.app.services.storage_service import SessionStorage, StorageError
 
 PREFLIGHT_ORPHAN_MAX_AGE_SECONDS = 24 * 60 * 60
+PLAYBACK_CACHE_IDLE_SECONDS = 10 * 60
 PREFLIGHT_PREFIX = "VID-PREFLIGHT-"
 
 
@@ -103,26 +104,9 @@ class VideoStorage:
         return self._artifact_path(job_id, "video.preview.jpg.enc")
 
     def visualization_path(self, job_id: str) -> Path:
-        """Return the legacy encrypted detection-visualization path."""
+        """Return the encrypted detection review-video path."""
 
         return self._artifact_path(job_id, "video.visualization.mp4.enc")
-
-    def delete_legacy_visualization(self, job_id: str, encrypted_path: Path) -> None:
-        """Remove only the canonical legacy detection visualization artifact."""
-
-        expected = self.visualization_path(job_id)
-        self._require_canonical_path(encrypted_path, expected)
-        job_dir = self.root / self._validate_job_id(job_id)
-        retained_dir = job_dir / "retained"
-        if self.root.is_symlink() or job_dir.is_symlink() or retained_dir.is_symlink():
-            raise StorageError("Stored artifact path is not canonical.")
-        if not retained_dir.exists():
-            return
-        if not retained_dir.is_dir():
-            raise StorageError("Stored artifact path is not canonical.")
-        if expected.is_symlink() or (expected.exists() and not expected.is_file()):
-            raise StorageError("Stored artifact path is not canonical.")
-        expected.unlink(missing_ok=True)
 
     def work_path(self, job_id: str, name: str) -> Path:
         """Return a safe private plaintext work path."""
@@ -149,6 +133,85 @@ class VideoStorage:
             raise StorageError("Stored artifact path is not canonical.")
         return self._storage.materialize_retained_artifact(self._validate_job_id(job_id), encrypted_path, name)
 
+    @contextmanager
+    def _playback_lock(self, job_id: str) -> Iterator[None]:
+        job_root = self.root / self._validate_job_id(job_id)
+        if self.root.is_symlink() or job_root.is_symlink() or not job_root.is_dir():
+            raise StorageError("Video playback storage is invalid.")
+        lock_path = job_root / ".visualization-playback.lock"
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(lock_path, flags, 0o600)
+        except OSError as exc:
+            raise StorageError("Video playback storage is unavailable.") from exc
+        locked = False
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise StorageError("Video playback lock is invalid.")
+            os.fchmod(descriptor, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            locked = True
+            yield
+        finally:
+            if locked:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+    def materialize_visualization_for_playback(
+        self, job_id: str, encrypted_path: Path
+    ) -> Path:
+        """Decrypt once for efficient range playback, keeping a private idle cache."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        expected = self.visualization_path(safe_job_id)
+        self._require_canonical_path(encrypted_path, expected)
+        path = self.work_path(safe_job_id, "visualization-playback.mp4")
+        marker = self.work_path(safe_job_id, "visualization-playback.ready")
+        with self._playback_lock(safe_job_id):
+            if path.is_symlink() or marker.is_symlink():
+                raise StorageError("Video playback cache is invalid.")
+            if path.exists() and marker.is_file():
+                if not path.is_file():
+                    raise StorageError("Video playback cache is invalid.")
+                os.utime(path, None)
+                os.utime(marker, None)
+                return path
+            path.unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+            decrypted = self.materialize_artifact(
+                safe_job_id, expected, "visualization-playback.mp4"
+            )
+            descriptor = os.open(
+                marker,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            os.close(descriptor)
+            return decrypted
+
+    def cleanup_stale_playback(
+        self, job_id: str, *, now: float | None = None
+    ) -> None:
+        """Remove a decrypted playback cache after ten minutes without access."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        work_dir = self.root / safe_job_id / "work"
+        if work_dir.is_symlink() or not work_dir.is_dir():
+            return
+        path = work_dir / "visualization-playback.mp4"
+        marker = work_dir / "visualization-playback.ready"
+        if not path.exists() and not marker.exists():
+            return
+        current_time = time.time() if now is None else float(now)
+        cutoff = current_time - PLAYBACK_CACHE_IDLE_SECONDS
+        with self._playback_lock(safe_job_id):
+            for candidate in (path, marker):
+                if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+                    raise StorageError("Video playback cache is invalid.")
+            if not path.exists() or path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+                marker.unlink(missing_ok=True)
+
     def _artifact_path(self, job_id: str, filename: str, area: str = "retained") -> Path:
         return self.root / self._validate_job_id(job_id) / area / filename
 
@@ -169,10 +232,25 @@ class VideoStorage:
             raise StorageError("Video work path is invalid.")
         candidate.unlink(missing_ok=True)
 
-    def cleanup(self, job_id: str, *, keep_retained: bool = True) -> None:
+    def cleanup(
+        self,
+        job_id: str,
+        *,
+        keep_retained: bool = True,
+        preserve_playback: bool = False,
+    ) -> None:
         """Remove original and transient plaintext while retaining ciphertext."""
 
-        self._storage.cleanup_session(self._validate_job_id(job_id), keep_retained=keep_retained)
+        preserve = (
+            {"visualization-playback.mp4", "visualization-playback.ready"}
+            if preserve_playback
+            else None
+        )
+        self._storage.cleanup_session(
+            self._validate_job_id(job_id),
+            keep_retained=keep_retained,
+            preserve_work_files=preserve,
+        )
 
     def delete_job(self, job_id: str) -> None:
         """Remove all private media for a job."""
