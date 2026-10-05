@@ -1,491 +1,131 @@
-# Backend internals
+# Backend guide
 
-Use this after [setup](setup.md) and [architecture](architecture.md). It is the
-implementation reference for API, persistence, processing and EEG research
-tools. Video-detection runtime setup lives in [video-detection.md](video-detection.md).
-For a shorter request-by-request tour of every backend service, start with
-[Backend services explained](backend-services.md).
+This is the backend's practical map for changing or tracing a request. For a
+plain-language model walkthrough, start with
+[EEG and video inference](inference-walkthrough.md). API schemas are available
+from the running app at http://127.0.0.1:8000/docs.
 
-The backend is a FastAPI application backed by SQLite in native prototype mode
-or PostgreSQL in Docker/team mode, plus private session-scoped storage. Routes
-receive requests; services own the workflow; repositories own database queries.
+## How a request is handled
 
-```mermaid
-flowchart TD
-    Main[app/main.py] --> Routes[app/api/]
-    Routes --> Auth[api/auth.py]
-    Auth --> AuthService[services/auth_service.py]
-    AuthService --> AuthModels[database/models/auth.py]
-    AuthService --> AuthDB[(users and auth_sessions)]
-    Routes --> SessionService[services/session_service.py]
-    Routes --> Repository[database/repository.py]
-    Routes --> Processing[services/processing_service.py]
-    Processing --> Validation[services/validation_service.py]
-    Processing --> Storage[services/storage_service.py]
-    Processing --> Privacy[privacy/]
-    Processing --> EEG[eeg/]
-    Processing --> ML[ml/]
-    Repository --> Models[database/models/eeg.py]
-    Migrations[migrations/versions/] --> Models
-    Processing --> Database[(SQLite native / PostgreSQL Docker results)]
-    Storage --> Files[(Temporary private EEG files)]
-```
+FastAPI routes parse and validate HTTP input. Services own workflows.
+Repositories own database queries. Long EEG jobs run through FastAPI
+BackgroundTasks after the request returns.
 
-## Authentication and ownership
-
-The local account API is:
+The main EEG path is:
 
 ```text
-GET  /api/auth/session
-POST /api/auth/register
-POST /api/auth/login
-POST /api/auth/logout
+upload → encrypted draft → session → validate → de-identify → preprocess
+       → H5 or development stub → save per-window scores → clean temporary files
 ```
 
-`local-accounts` uses email/password accounts with 8-character minimum
-passwords, salted `hashlib.scrypt` records and eight-hour opaque sessions. In
-development, it can seed the demo administrator `admin@mds01.local` when
-`DEMO_ADMIN_PASSWORD` is set in the ignored `.env`; setup generates that local
-credential and the value is never documented or returned by the API. This
-account is disabled outside development and is for local demos only. The
-raw session token is sent only as an HttpOnly, SameSite=Lax cookie; PostgreSQL
-stores its SHA-256 hash. `require_api_auth` resolves the current user before
-protected routes run. EEG sessions, upload drafts and video jobs are filtered
-by `owner_user_id`; recordings inherit ownership through their session. A
-missing or foreign identifier returns `404`.
+Malformed recordings fail independently. A failed job means no supported score
+was produced; it is not a negative seizure result.
 
-Use `AUTH_MODE=local` only for isolated tests. It intentionally bypasses login
-and exposes legacy owner-null rows, so it is not a demo or deployment mode.
-Production still requires `AUTH_MODE=cloudflare`. Cloudflare Access validates
-the JWT issuer, audience and signing key before mapping its subject to a local
-ownership row; see [Cloudflare's JWT validation guidance](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/).
+## EEG files and model input
 
-## Request and processing flow
+Supported inputs are EDF/EDF+, the supported legacy Nicolet .e layout, and
+Nicolet .data with its matching .head sidecar.
 
-```mermaid
-flowchart TD
-    Upload[POST /api/uploads/drafts] --> Encrypt[Encrypt ZIP with AES-GCM]
-    Encrypt --> Draft[Return 201 draft_id and expiry]
-    Draft --> Select[Select privacy method]
-    Select --> Finalize[POST /api/uploads/drafts/{id}/finalize]
-    Finalize --> Queue[Create session, return 202, schedule BackgroundTasks]
-    Queue --> Validate[Validate archive and EDF/Nicolet EEG files]
-    Validate --> RecordLoop{Each recording independently}
-    RecordLoop --> Scrub[Convert to scrubbed EDF\nand blank identifying metadata]
-    Scrub --> Preprocess[Bandpass, notch, normalize, clip]
-    Preprocess --> Windows[(N, 1024, 18) float32<br/>4s windows / 2s step]
-    Windows --> Method{Privacy method}
-    Method --> Control[metadata-scrub\nRequired baseline\nPreserve waveform values]
-    Method --> Transform[metadata-scrub + signal-obfuscation\nOptional keyed lossy projection]
-    Control --> Detector[Inference adapter]
-    Transform --> Detector
-    Control --> PSD[PSD features for research evaluation]
-    Transform --> PSD
-    Detector --> Prediction[Prediction rows]
-    Prediction --> Explanation[Non-clinical explanation JSON]
-    Prediction --> Retain{Any model-positive windows?}
-    Retain -->|yes| Clip[Expand up to 10 minutes, merge, encrypt clip]
-    Retain -->|no| Delete[Delete recording temporary files]
-    Clip --> SafeResults[Public result endpoints]
-    Delete --> SafeResults
-    RecordLoop -->|Malformed EEG| Failed[Mark one recording failed]
-    Failed --> SafeResults
-    SafeResults --> Cleanup[Delete full transient files and archive]
-    Legacy[POST /api/sessions/upload] -. compatibility .-> Queue
-```
+The legacy .e adapter accepts the reviewed 33-channel, referential, 500 Hz
+delivery layout. It maps the reviewed electrode names to the configured
+montage, derives the required 18 bipolar channels, and resamples to 256 Hz.
+It then writes a separate scrubbed EDF for the common processing path; it
+doesn't rewrite the original .e file. Different layouts or ambiguous channels
+fail closed. For .e recordings with acquisition gaps, filtering and windows
+stay within each observed segment and preserve elapsed offsets.
 
-### Supported EEG inputs
+The model-input contract is:
 
-The encrypted EEG ZIP may contain EDF/EDF+ recordings, legacy single-file
-Nicolet `.e` recordings, or Nicolet recordings represented by a same-stem
-`.data` file and `.head` sidecar. The storage layer requires the `.data`/`.head`
-pair, extracts supported inputs into the private session boundary, and rejects
-unsupported or incomplete inputs before parsing. EDF remains on the existing
-`pyedflib` reader path. Legacy `.e` technical validation and signal decoding
-use the bounded in-repository adapter; `.data`/`.head` uses the pinned MNE
-reader. The delivered legacy `.e` layout is referential 500 Hz; its bounded
-adapter derives the reviewed bipolar montage and resamples to 256 Hz before
-converting to a scrubbed EDF. Both Nicolet paths convert to a scrubbed EDF
-with identifying metadata blanked before the shared preprocessing/model path.
-Embedded `.e` event timing is stored only as sanitized kind/onset/duration
-metadata and is marked for human review; raw annotation text, medication data,
-and `.doc` reports are not imported into public results. Original Nicolet
-files are transient encrypted inputs and are removed by the normal cleanup
-lifecycle. Each recording stores only the non-sensitive source format (`edf`,
-`nicolet`, or `nicolet-e`) for provenance.
-For private auditability, the recording also stores a SHA-256 checksum of the
-extracted source and JSON describing any reviewed format conversion; these
-fields are not returned by the public recording/session serializers.
+- 256 samples per second;
+- the exact configured 18 bipolar channels, in contract order;
+- four-second windows with a two-second stride;
+- float32, shape (N, 1024, 18).
 
-For legacy `.e` files with non-overlapping acquisition gaps, private conversion
-metadata preserves each segment's model-sample range and elapsed offset. The
-scrubbed EDF stores observed samples without inserting gap samples; the worker
-resamples and filters each segment independently, creates windows within each
-segment, and maps predictions back to the elapsed timeline. Positive gapped
-recordings retain encrypted model windows with their source-relative timestamps,
-not a continuous EDF clip that could conceal the original gaps.
+Identifying EDF metadata is removed from the derived model input. Relative
+event timing may be retained in sanitized form for human review; raw annotation
+text is not returned by the public API. Scrubbing metadata does not anonymize
+the EEG waveform.
 
-For every model-input EDF, de-identification requires the full reviewed
-18-channel bipolar montage, writes those channels in the contract's exact
-order, and drops all other channels and their labels. Missing or duplicate
-required channels fail closed; unknown labels are never treated as equivalent.
-Patient/operator/equipment/sex/birthdate metadata is cleared, the source
-calendar timestamp is replaced with `1970-01-01 00:00:00`, annotation text is
-blanked, and relative event timing is retained for review. The generated EDF is
-reopened and checked before preprocessing. This rewrites only a private derived
-copy: the source upload remains encrypted until the cleanup stage and is never
-modified in place. Metadata scrubbing does not remove identity information
-that may be present in the EEG waveform itself.
+The configured review policy retains the complete waveform as an encrypted
+artifact after successful inference, even when no model window is flagged.
+For legacy `.e` files, the viewer uses the reviewed 18-channel bipolar montage
+and, when present at the common source rate, the five EOG/ECG/chin-difference/
+photic traces. The uploaded `.e` and transient plaintext are removed during
+session cleanup. Signal reads remain bounded by time range and owner-scoped.
 
-The projection method is intentionally shape-preserving so the same transformed
-windows feed both downstream branches:
+## Model runtimes and result meaning
 
-```mermaid
-flowchart LR
-    Raw[Preprocessed private windows] --> Projection[Keyed rank-reduced projection\nand quantization]
-    Projection --> Detector[Seizure detector]
-    Projection --> Attacker[Patient-ID attacker]
-    Detector --> Utility[Detection utility]
-    Attacker --> Leakage[Identity leakage]
-```
+- **Development stub:** deterministic synthetic scores for workflow testing;
+  it is not seizure inference.
+- **H5:** local Keras artifact and reviewed contract are mounted read-only.
+  Startup validates the artifact hash and input/output contract and fails
+  closed if either is missing or mismatched.
+- **Current output:** research score per EEG window. The supplied local
+  contract is uncalibrated; do not describe its score as a probability,
+  confidence, accuracy, or recording-level risk. SHAP is optional and appears
+  only when enabled with its approved background data.
 
-`metadata-scrub` performs metadata de-identification but does not change the
-numeric signal. `signal-obfuscation` is experimental risk reduction, not a
-formal anonymity guarantee. Encryption protects storage; neither encryption
-nor metadata scrubbing removes every possible EEG biometric signal.
+The H5 model, contract, and SHAP backgrounds are local-only assets. Do not put
+them in Git or the Docker image. See [setup](setup.md) for the runtime choice.
 
-## H5 runtime boundary
+## Storage, ownership, and cleanup
 
-The tracked base Compose file defaults to the deterministic development stub.
-The setup-generated local command (`npm run dev`, then `docker compose up
---build`) selects the exact H5 candidate through the local research overlay.
-The overlay mounts the ignored artifact and reviewed contract read-only and
-pins the expected contract hash; a startup guard requires development mode and
-local accounts. Use `docker compose -f docker-compose.yml up --build` to choose
-the stub explicitly. Do not copy model files into Git/the image.
-The image is built as `linux/amd64` because the normal
-Apple Silicon host environment may not provide the required TensorFlow wheel.
-The adapter loads the model once, validates `(None, 1024, 18)` input and
-`(None, 1)` sigmoid output, and runs batched float32 predictions.
+PostgreSQL stores accounts, job/session state, safe metadata, and predictions.
+Encrypted EEG/video bytes remain in private filesystem-backed storage. Do not
+store patient binaries in PostgreSQL or expose private paths in API responses.
+Patient profiles are encrypted and owner-scoped. The patient-folder intake
+extracts report text locally and does not retain the source document.
 
-The external contract is reviewed for its mounted artifact, including its hash,
-output semantics, threshold, and training preprocessing. If the H5 file or
-contract changes, record a new independent contract hash, rerun the verifier,
-and set `reviewed` to false until the replacement has been reviewed.
-The local H5 contract starts as an uncalibrated research score. Public EEG
-responses call it `uncalibrated_model_score` and do not expose a `probability`
-field for that output. It must not be presented as confidence, accuracy, or a
-probability. After separate
-patient-disjoint temperature scaling has been fitted for both privacy
-profiles, the contract can explicitly activate `calibrated_probability`; the
-UI then labels each value as an estimated probability for one four-second
-window. The notebook's reported
-metrics are also preliminary because its random window split allows adjacent
-windows from the same recordings and patients to cross train/test boundaries.
+Protected routes filter records by owner. The API does not return original
+filenames, patient references, cryptographic keys, or raw source files.
+Temporary source and processing files are cleaned up after completion; only
+artifacts allowed by the configured retention policy remain encrypted.
 
-The training notebook uses four-second windows with a two-second step. MDS01
-keeps the input tensor unchanged but uses that same 50% overlap when generating
-prediction windows. `signal-obfuscation` remains shape-compatible but needs a
-separate utility evaluation because the H5 model was trained on the
-preprocessed, non-obfuscated signal distribution.
+New EEG and video file envelopes bind AES-GCM authentication to their
+storage-relative session, job, and artifact path. Draft promotion re-encrypts
+for the final session path. Legacy envelopes remain readable and are atomically
+rewrapped after successful materialization when possible. Until every existing
+legacy file has been read or explicitly migrated, keep write access to the
+private storage volume trusted. Patient profile and source-report encryption
+also bind ciphertext to the owner and case.
 
-### Profile-specific calibration
+Signal preview is disabled by default and is limited to policy-approved
+retained EEG. Never log patient-identifying values or raw upload contents.
+For metadata-scrubbed legacy `.e` recordings, the encrypted positive-signal
+artifact may also include EOG right/left, ECG, chin 1–chin 2, and photic review
+traces over the same bounded source-time ranges. These traces share the EEG
+artifact's owner checks, expiry, and deletion; signal-obfuscation profiles omit
+them. They are visual review channels and are not model inputs.
 
-Fit calibration only on the fixed `chb07`–`chb08` calibration patients. Run the
-command once for each privacy profile and inspect both reports before activating
-calibrated output. These are optional research commands for a research-enabled
-image, not teammate setup steps. Replace `/absolute/private/chb-mit` below with
-your external dataset directory (POSIX shell examples):
+## Routes and code locations
 
-```bash
-mkdir -p reports
-docker compose run --rm --no-deps \
-  -v "/absolute/private/chb-mit:/app/chb-mit:ro" \
-  -v "/absolute/private/eeg-model:/opt/eeg-model" \
-  -v "$(pwd)/reports:/app/reports" \
-  backend python backend/scripts/fit_calibration.py /app/chb-mit \
-  --privacy-method metadata-scrub \
-  --output /app/reports/calibration-metadata-scrub.json \
-  --write-contract /opt/eeg-model/model-contract.json
+Use Swagger for the current complete route schemas. Main route groups:
 
-docker compose run --rm --no-deps \
-  -v "/absolute/private/chb-mit:/app/chb-mit:ro" \
-  -v "/absolute/private/eeg-model:/opt/eeg-model" \
-  -v "$(pwd)/reports:/app/reports" \
-  backend python backend/scripts/fit_calibration.py /app/chb-mit \
-  --privacy-method metadata-scrub+signal-obfuscation \
-  --output /app/reports/calibration-obfuscated.json \
-  --write-contract /opt/eeg-model/model-contract.json
-```
+- /api/auth/ — registration, login, session, logout;
+- /api/uploads/ and /api/sessions/ — drafts, EEG sessions, status, deletion;
+- /api/recordings/ — predictions, sanitized annotations, explanations, signal;
+- /api/cases/ — owner-scoped cases and reviewed profiles;
+- /api/video-detection/ — separate VSViG jobs and review playback;
+- /api/video-privacy/ — separate protected-video transform.
 
-These commands store candidates, not reviewed probabilities. The explicit
-`--activate` option is for a separate review decision; it is not a substitute
-for checking training provenance, exclusions and calibration quality. Do not
-activate metadata just to make the UI show a percentage. Rebuild the backend
-after changing its bundled contract.
+`DELETE /api/cases/{case_id}` removes the owner's linked EEG and video jobs,
+encrypted retained media, patient profile, and source report. It returns `409`
+while any linked processing job is active.
 
-Activation requires both profiles and records the fitted temperature,
-calibration subjects, Brier score, ECE, and negative log-likelihood in the
-contract. Run the test split evaluator separately for each profile; never use
-the test report to fit or select calibration.
+`GET /api/cases` includes safe workload totals for EEG recordings and video
+clips, flagged EEG windows, processing state, and results readiness. Patient
+names and short report conclusions appear only from reviewed, owner-scoped
+profiles; original filenames and source metadata stay private.
 
-## Privacy profile contract
+| Start here | Responsibility |
+| --- | --- |
+| backend/app/main.py | FastAPI setup, routers, startup checks and cleanup |
+| backend/app/api/ | HTTP parsing and safe responses |
+| backend/app/services/ | Upload, processing, storage, auth and cleanup workflows |
+| backend/app/eeg/, backend/app/ml/, backend/app/privacy/ | EEG reading, tensor creation, privacy and inference |
+| backend/app/video_detection/ | VSViG/pose runtime and video contract |
+| backend/app/database/ | Models, engine, session helper and repositories |
+| backend/migrations/versions/ | Alembic schema history |
 
-Every upload is protected by encrypted storage and the required metadata scrub.
-The optional signal transformation is selected as an ordered list:
-
-```json
-["metadata-scrub"]
-```
-
-or:
-
-```json
-["metadata-scrub", "signal-obfuscation"]
-```
-
-The database stores the compact canonical profile
-`metadata-scrub` or `metadata-scrub+signal-obfuscation`. The legacy
-`privacy_method` form field remains accepted for current canonical values;
-historical names are migrated internally and are not returned by the public
-API. “None” in the frontend means no optional signal transformation, never
-that metadata protection or encrypted storage is disabled.
-
-## Model alerts and timestamps
-
-The model writes one prediction row per four-second window. A recording is
-model-positive only when persisted rows have `seizure_detected=true`.
-Calibrated output is profile-specific and stored with its calibration version
-and dataset. `recording_probability_available` remains `false`: the maximum,
-mean, or flagged-window fraction is not a calibrated probability that the
-recording contains a seizure.
-Optional `.edf.seizures` sidecars and summary files are stored only as private
-research metadata; they cannot create, remove, count, color, retain, or label a
-model alert.
-
-Positive windows are merged when they overlap or touch. The public recording
-response exposes the resulting recording-relative `alert_intervals`, for
-example `3560–3576` seconds, plus the flagged-window count. The complete
-prediction timeline covers the entire recording. Raw waveform access remains
-restricted to bounded retained positive clips and is disabled by default.
-
-## Offline accuracy and research attribution
-
-Live uploads do not have trusted labels, so the routine API never reports an
-accuracy percentage. The research evaluator is a separate command:
-
-```bash
-PYTHONPATH=. .venv/bin/python backend/scripts/evaluate_chb_mit.py /path/to/chbmit \
-  --privacy-method metadata-scrub \
-  --split test \
-  --output reports/metadata-scrub.json \
-  --plots reports/metadata-scrub.png
-```
-
-Run it again with
-`--privacy-method metadata-scrub+signal-obfuscation` to measure the optional
-transformation separately. The evaluator uses the fixed `chb01`–`chb10`
-patient manifest, keeps patients disjoint between train/calibration/test
-groups, and scores windows only after the recording has been assigned to a
-split. `.edf.seizures` sidecars supply labels for this report only; they never
-change a live alert. The JSON report includes confusion matrix, ROC/AUC,
-precision-recall, sensitivity, specificity, precision, recall, F1, false
-alarms per hour, Brier score, ECE, negative log-likelihood, threshold sweep, exclusions, and a
-patient-level bootstrap interval.
-
-SHAP attribution is an optional H5-only research feature. Generate the two
-profile-specific backgrounds from calibration subjects `chb07` and `chb08`:
-
-```bash
-PYTHONPATH=. .venv/bin/python backend/scripts/create_shap_background.py \
-  /path/to/chb-mit-scalp-eeg-database-1.0.0
-```
-
-The command creates the private, Git-ignored files
-`backend/model/shap-background-metadata.npy` and
-`backend/model/shap-background-obfuscated.npy`. Set
-`ENABLE_SHAP_EXPLANATIONS=true` only after checking both are `(32, 1024, 18)`
-`float32` tensors. Docker deliberately excludes these private tensors from its
-build context: mount them read-only with a local Compose override and configure
-the two `SHAP_*_BACKGROUND_PATH` variables to their container paths. Do not bake
-them into an image. The pipeline selects the background matching the final
-privacy profile, explains at most the highest-scoring flagged windows, and
-returns only channel-level and time-binned aggregates. Missing backgrounds or
-SHAP errors fail closed to the normal score-only result. The UI labels this
-output “Research attribution — not a clinical explanation.”
-
-## Status lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> queued
-    queued --> validating
-    validating --> deidentifying
-    validating --> failed
-    deidentifying --> preprocessing
-    preprocessing --> inference
-    inference --> explaining
-    explaining --> completed
-    explaining --> completed_with_errors
-    deidentifying --> completed_with_errors
-    preprocessing --> completed_with_errors
-    inference --> completed_with_errors
-```
-
-`processing_attempts` records stage, status, start/end times, and bounded safe
-errors. A failed recording does not stop its siblings.
-
-## API surface
-
-Sessions:
-
-- `POST /api/sessions/upload`
-- `GET /api/sessions`
-- `GET /api/sessions/{session_id}`
-- `GET /api/sessions/{session_id}/status`
-- `GET /api/sessions/{session_id}/recordings`
-- `DELETE /api/sessions/{session_id}` (completed sessions only)
-
-Upload drafts:
-
-- `POST /api/uploads/drafts`
-- `GET /api/uploads/drafts/{draft_id}`
-- `POST /api/uploads/drafts/{draft_id}/finalize`
-- `DELETE /api/uploads/drafts/{draft_id}`
-
-Recordings:
-
-- `GET /api/recordings/{record_id}`
-- `GET /api/recordings/{record_id}/annotations`
-- `GET /api/recordings/{record_id}/prediction`
-- `GET /api/recordings/{record_id}/explanation`
-- `GET /api/recordings/{record_id}/signal`
-
-Responses expose generated IDs, safe technical metadata, statuses, processing
-progress, recording-level model alert counts, predictions, and explanation JSON.
-The annotations endpoint exposes only sanitized embedded-event timing and kind
-metadata for owner-scoped human review; raw text and sensitive reports are not
-returned.
-Optional CHB-MIT sidecars are stored only as internal research metadata and are
-never returned by normal API responses. Stub results expose a peak window
-development score and score timeline, not model confidence or accuracy. A
-whole-recording accuracy requires labelled evaluation data. Calibrated
-probability is returned only when a reviewed model contract says calibration is
-available. The signal route remains `404` unless local preview is explicitly
-enabled; even then it only returns bounded retained model-positive clips.
-Hidden macOS
-archive entries such as `__MACOSX/._*.edf` are ignored before recording rows
-are created. A direct recording response also includes its safe
-owning `session_id`, `session_created_at`, and `privacy_method` so a recording
-result can show when its upload was submitted. They do not expose patient
-references, original names, filesystem paths, original files, or cryptographic
-hashes.
-
-## Video seizure detection boundary
-
-Video seizure review is an independent owner-filtered workflow. Its implementation
-is `app/services/video_detection_service.py`, `app/video_detection/runtime.py`,
-and `app/video_detection/contract.py`; the asset installation, exact VSViG
-contract, privacy lifecycle, and troubleshooting steps are in
-[`video-detection.md`](video-detection.md). `POST
-/api/video-detection/preflight` creates a temporary encrypted upload, checks safe
-technical metadata, deletes it, and runs no inference. VSViG uses native
-1920×1080 geometry; the local H5 profile enables an experimental
-aspect-preserving transform for smaller input. Other profiles can enable it
-with `VSVIG_ALLOW_LETTERBOX_ADAPTATION=true`. The jobs route
-independently enforces the configured admission policy.
-The detection runtime is
-`encrypt → timestamp validation/geometry adaptation → full-frame-blurred
-model input → shared Lightweight OpenPose keypoints → { VSViG patches → scores;
-full-frame-blurred skeleton overlay } → evidence`
-The visual model does not consume the privacy visualization or audio. The
-original and temporary full-frame-blurred model-input video are deleted after job
-completion or failure. The audio-free visualization is transient and deleted
-after validation; only encrypted predictions and provenance are retained for
-the job retention period. No source-video or visualization endpoint exists.
-
-## Video privacy boundary
-
-Patient-video processing is a separate subsystem, not another EEG recording
-stage. Its flow is `video → full-frame blur on every frame → metadata removal →
-audio-free encrypted output`; face-detection coverage supplies quality flags and
-a minimum-coverage gate, not a selective blur mask. It runs no H5 inference,
-action analysis, or clinical model call.
-The encrypted transient source may still contain audio while queued; it is
-deleted during cleanup. Audio is not retained in the protected output.
-
-## Database tables
-
-```mermaid
-erDiagram
-    SESSIONS ||--o{ RECORDINGS : contains
-    SESSIONS ||--o{ PROCESSING_ATTEMPTS : audits
-    RECORDINGS ||--o{ PROCESSING_ATTEMPTS : has
-    RECORDINGS ||--o{ PREDICTIONS : produces
-    PREDICTIONS ||--o{ EXPLANATIONS : explains
-
-    SESSIONS {
-        int id PK
-        string session_id
-        string privacy_method
-        string status
-        string current_stage
-    }
-    RECORDINGS {
-        int id PK
-        string record_id
-        int session_db_id FK
-        string status
-        int sampling_rate
-        int channel_count
-        string reference_annotation_source_internal
-        text reference_intervals_json_internal
-        string retained_artifact_path_internal
-    }
-    PROCESSING_ATTEMPTS {
-        int id PK
-        int session_db_id FK
-        int recording_db_id FK
-        string stage
-        string status
-        datetime started_at
-        datetime finished_at
-    }
-    PREDICTIONS {
-        int id PK
-        int recording_db_id FK
-        float threshold
-        float probability
-        string score_type
-        string calibration_method
-        string calibration_version
-        string calibration_dataset
-        string privacy_method
-        boolean seizure_detected
-    }
-    EXPLANATIONS {
-        int id PK
-        int prediction_db_id FK
-        string method
-        boolean is_clinical
-        string explanation_data
-    }
-```
-
-Alembic owns schema changes. Add a new migration instead of changing old
-migrations or using `create_all()` in the Docker runtime.
-
-## Backend reading order
-
-1. `app/main.py` — application and routers.
-2. `app/api/sessions.py` — upload and session endpoints.
-3. `app/services/processing_service.py` — the complete coordinator.
-4. `app/services/storage_service.py` — encryption, extraction, cleanup.
-5. `app/privacy/deidentify.py` — EDF metadata scrubbing.
-6. `app/privacy/signal_projection.py` — shared research transformation and
-   PSD attacker features.
-7. `app/privacy/retention.py` — positive-window selection and clip creation.
-8. `app/eeg/preprocessing.py` and `app/eeg/model_input.py` — model tensor.
-9. `app/ml/` — stub and reviewed H5 adapter.
-10. `app/database/models/eeg.py` and `app/database/repository.py` — persistence.
-11. `migrations/versions/` — database history.
+Use a new Alembic migration for schema changes. Do not rely on create_all()
+for runtime schema management.

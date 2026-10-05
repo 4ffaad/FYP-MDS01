@@ -1,45 +1,20 @@
-# Documentation map
+# Read this first
 
-Start with the document that matches the task. The README is the short project
-overview; this page is the maintained map for teammates.
+If you only need to understand the project, read [EEG and video inference](inference-walkthrough.md). It explains the two model paths in plain language.
 
-| If you need to…                                     | Read                                                      | Skip unless needed       |
-| --------------------------------------------------- | --------------------------------------------------------- | ------------------------ |
-| Run the application or tests                        | [Setup](setup.md)                                         | Research/runtime options |
-| Run one-patient local intake                        | [One-patient research/demo](one-patient-research-demo.md) | Dataset evaluation       |
-| Understand system boundaries and find code          | [Architecture](architecture.md)                           | Implementation details   |
-| Follow backend requests and understand each service | [Backend services explained](backend-services.md)         | Research internals       |
-| Change browser screens or API calls                 | [Frontend guide](frontend.md)                             | Backend internals        |
-| Change API, processing or persistence               | [Backend internals](backend.md)                           | Browser implementation   |
-| Set up or review VSViG detection                    | [Video detection](video-detection.md)                     | EEG calibration material |
-| Prepare the demo/presentation                       | [Presentation readiness](presentation-readiness.md)       | Deployment runbooks      |
-| Understand visual rules                             | [Design rules](../DESIGN.md)                              | Component implementation |
+| Need to… | Read |
+| --- | --- |
+| Run or test the local Docker app | [Setup](setup.md) |
+| See how the parts fit together | [Architecture](architecture.md) |
+| Change or trace backend behavior | [Backend guide](backend.md) |
+| Change the browser app | [Frontend guide](frontend.md), then [frontend instructions](../frontend/AGENTS.md) |
+| Run or troubleshoot VSViG video inference | [Video runbook](video-detection.md) |
+| Change visual styling | [Design rules](../DESIGN.md) |
 
-For the shortest handoff, read [Setup](setup.md) first, then use the
-architecture guide only when you need to change code. `npm run format` keeps
-frontend formatting consistent; `npm run lint` and the test commands are the
-checks used before handoff.
+## What to trust
 
-## Evidence and limitations
-
-These are supporting records, not setup instructions or proof of clinical
-performance:
-
-- [EEG confidence research](eeg-viewing-and-confidence-research.md) explains
-  the per-window calibration design.
-- [Privacy research](privacy-research.md) records de-identification limits and
-  evaluation questions.
-- [Security audit](security-audit.md) is a deployment-risk checklist.
-- [VSViG research](vsvig-research.md) records the upstream source facts used by
-  the pinned runtime contract.
-
-## Source of truth
-
-- Runtime behavior: code and tests.
-- API and EEG model contracts: the mounted H5 contract at
-  `/opt/eeg-model/model-contract.json`, pinned by the explicit local research
-  profile, and the route schemas. Video model provenance and preprocessing:
-  [video detection](video-detection.md) plus the generated external `contract.json`.
-- Database schema: current Alembic migrations.
-- Patient data, model weights, calibration backgrounds, `.env`, and reports:
-  local only, never Git.
+Runtime behavior comes from the code and tests. The EEG model contract and
+artifact must be reviewed and mounted locally. The video source, checkpoints,
+and preprocessing contract are pinned in the [video runbook](video-detection.md).
+All outputs are for research review; they are not a diagnosis or proof of
+clinical accuracy or anonymity.

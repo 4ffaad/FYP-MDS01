@@ -36,9 +36,10 @@ model assets remain outside Git.
 
 - EEG follows `privacy → model` with metadata scrubbing and optional signal
   obfuscation before research-only model review.
-- Video detection follows `face redaction → shared Lightweight OpenPose keypoints →
-  { VSViG visual inference → evidence timeline; privacy-safe masked video →
-  skeleton overlay }`; it publishes owner-scoped encrypted prediction results
+- Video detection follows `unblurred transient source → Lightweight OpenPose
+  keypoints → 15 extracted RGB patches → per-patch blur → VSViG inference`,
+  while a separate path creates `face blur with full-frame fallback → skeleton
+  overlay` for the retained review video. It publishes owner-scoped encrypted prediction results
   and an encrypted privacy-safe review artifact, never source playback. The
   separate video privacy utility may retain audio only in its encrypted
   owner-only output.
@@ -50,10 +51,11 @@ model assets remain outside Git.
 
 ## Brand Commitments
 
-The product name is MDS01. The interface is light-only, evidence-led, calm,
-and direct. Apple Liquid Glass is inspiration for material and motion, not an
-official web design system; the existing MDS01 blue accent, system sans, and
-Hugeicons wrapper remain the visual foundation.
+The product name is MDS01. The interface is light-only, evidence-led, and
+direct, with a neumorphic visual language: soft raised panels, inset controls,
+rounded corners, neutral dividers, and the existing MDS01 blue accent. Keep the
+system sans and Hugeicons wrapper. Visual weight must
+support scanning and must not obscure research limitations or evidence status.
 
 ## Evidence on Hand
 

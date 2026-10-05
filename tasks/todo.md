@@ -121,3 +121,69 @@ Dependencies: User registration/login.
 - [x] Real-backend Playwright setup reuses its generated project namespace across config reloads; workflow assertions match the current intake and processing screen.
 - [x] Provide a separate whole-profile review action after processing; default case summaries omit auto-extracted patient/report values until the owner explicitly reviews them. This records data review, not clinical validation.
 - [x] Distinguish expired and not-submitted video outcomes from processing failures, while showing terminal issues accurately.
+
+## Follow-up: Synchronized VEEG Review Completion (2026-10-02)
+
+### Task 7 — Show all case video synchronization outcomes
+
+Description: The EEG result page currently filters to clips linked to the selected recording. Show every same-case clip's safe synchronization state so unmatched or ambiguous clips are not invisible.
+
+Acceptance criteria:
+- [x] Clips linked to the selected EEG remain available in the synchronized player; clips linked to another EEG and unresolved clips appear in a compact status list.
+- [x] Statuses distinguish linked, linked to another recording, pending, unavailable, unmatched, and ambiguous without exposing filenames, paths, or cross-case records.
+- [x] Show a fixed, privacy-safe reason when the resolver can identify one; otherwise use a generic “metadata did not establish a unique match” explanation.
+- [x] No manual pairing or guessed offset is added; only the existing unique metadata matcher can create a link.
+
+Verification:
+- [x] Focused frontend tests cover all sync states and a same-case clip linked to another EEG recording.
+- [x] Browser test verifies no other case's video job is rendered.
+
+Dependencies: Existing sync API and encrypted mapping; no migration planned.
+Files likely touched: `frontend/src/components/ResultScreen.tsx`, a focused video-sync status component, `frontend/src/lib/video-detection.ts`, `frontend/tests/e2e/mds01.spec.ts`.
+Scope: Medium.
+
+### Task 8 — Connect EEG and video timelines on the source clock
+
+Description: Present EEG score windows, imported markers, and linked clip coverage against one EEG source-clock ruler, with seeking only where the encrypted mapping confirms coverage.
+
+Acceptance criteria:
+- [x] The overview preserves acquisition gaps and makes uncovered periods visible.
+- [x] Selecting a source marker or score time seeks the selected linked clip only when that time maps to a video frame; unmapped times show no false seek.
+- [x] Existing model score semantics and source-marker provenance remain distinct. The default waveform privacy gate is unchanged.
+
+Verification:
+- [x] Add a focused browser regression for score/marker seek and a gap between EEG segments.
+- [x] Existing backend sync tests for negative offsets, chunk overlaps, frame counts, and acquisition gaps pass.
+
+Dependencies: Task 7.
+Files likely touched: `frontend/src/components/ResultScreen.tsx`, `frontend/src/components/PredictionTimeline.tsx`, `frontend/src/components/SyncedVideoReview.tsx`, focused frontend tests.
+Scope: Medium.
+
+### Checkpoint — Synthetic synchronized review
+
+- [x] All same-case sync outcomes render without cross-case leakage.
+- [x] Marker and score seeking lands only within verified mapped segments; acquisition gaps remain visible.
+- [x] Relevant frontend format, lint, type, and production-build checks pass.
+
+### Task 9 — Run a bounded selected-case acceptance check
+
+Description: Once the review UI is complete and an owner account is available, verify the previously audited case through the normal app workflow. Use the same selected folders; the prior inventory found 26 video clips, 17 unique metadata links, and 9 unresolved clips.
+
+Acceptance criteria:
+- [ ] Every accepted EEG and video upload has a visible final outcome; the same folder selection reproduces the prior link/unresolved counts or records a safe explanation for any difference.
+- [ ] Linked clips seek from EEG source-marker time and preserve acquisition gaps; unresolved clips remain separate.
+- [ ] Readable clips can show their protected review even when the pose/model gate produces no score; adapted 640×480 input is labeled experimental and research-only.
+- [ ] No database reset, broad media batch, patient identifiers, filenames, or raw report details are included in the demo evidence.
+
+Verification:
+- [ ] Run the owner-scoped browser workflow and inspect only aggregate statuses and sync timing.
+- [ ] Record the final demo steps and limitations in `docs/video-detection.md`.
+
+Dependencies: Tasks 7–8; authenticated owner account.
+Files likely touched: `docs/video-detection.md` and only focused fixes found by the acceptance run.
+Scope: Medium.
+
+### Checkpoint — Supervisor demo ready
+
+- [ ] One review flow shows the EEG result, source markers, linked video timeline, all unresolved clip statuses, and protected review playback.
+- [ ] Demo claims describe synchronization and research outputs only; no clinical performance or diagnosis claim is made.
