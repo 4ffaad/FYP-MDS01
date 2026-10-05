@@ -1,12 +1,7 @@
-import { VideoPrivacyJobScreen } from "@/components/VideoPrivacyScreen";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "Protected video job" };
+export const metadata = { title: "Video reviews" };
 
-export default async function VideoPrivacyJobPage({
-  params,
-}: {
-  params: Promise<{ jobId: string }>;
-}) {
-  const { jobId } = await params;
-  return <VideoPrivacyJobScreen jobId={decodeURIComponent(jobId)} />;
+export default function VideoPrivacyJobPage() {
+  redirect("/video-reviews");
 }

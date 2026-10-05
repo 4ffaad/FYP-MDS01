@@ -10,6 +10,7 @@ type NavLinkProps = {
   children: ReactNode;
   onNavigate?: () => void;
   className?: string;
+  exact?: boolean;
 };
 
 /** Render a top-level navigation link with a route-aware active state. */
@@ -18,23 +19,25 @@ export function NavLink({
   children,
   onNavigate,
   className,
+  exact = false,
 }: NavLinkProps) {
   const pathname = usePathname();
   const matchesSection = (route: string) =>
     route === "/"
       ? pathname === "/"
-      : pathname === route || pathname.startsWith(`${route}/`);
+      : pathname === route || (!exact && pathname.startsWith(`${route}/`));
   const active =
-    href === "/dashboard"
-      ? ["/", "/dashboard", "/sessions", "/results"].some(matchesSection)
-      : matchesSection(href);
+    matchesSection(href) ||
+    (href === "/dashboard" && pathname === "/") ||
+    (href === "/upload/eeg" &&
+      (matchesSection("/sessions") || matchesSection("/results")));
 
   return (
     <Link
       className={cn(
-        "relative inline-flex min-h-11 w-full items-center gap-2 rounded-lg px-3.5 text-[0.8rem] font-semibold text-ink-muted transition-colors hover:bg-surface-soft hover:text-ink focus-visible:bg-surface-soft lg:min-h-10 lg:w-auto",
+        "relative inline-flex min-h-11 w-full items-center gap-3 rounded-xl border border-transparent px-3 text-sm font-medium text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink focus-visible:bg-surface-soft active:translate-y-px",
         active &&
-          "bg-teal-soft text-teal-dark lg:bg-surface-muted lg:text-ink lg:after:absolute lg:after:inset-x-3 lg:after:-bottom-[1px] lg:after:h-0.5 lg:after:rounded-full lg:after:bg-teal",
+          "border-teal-dark bg-teal-dark font-semibold text-white shadow-hard-sm hover:bg-teal-dark hover:text-white",
         className,
       )}
       href={href}

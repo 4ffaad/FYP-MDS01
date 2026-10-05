@@ -37,8 +37,8 @@ export function PatientDetailsSummary({
         </div>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-muted">
           All extracted values are saved to this case&apos;s encrypted,
-          owner-only profile when processing starts. Automatically extracted
-          details stay unverified until you review them on the case page.
+          owner-only profile when processing starts. They appear in the patient
+          review automatically.
         </p>
       </header>
 
@@ -56,13 +56,13 @@ export function PatientDetailsSummary({
             )}
           </div>
         ) : completeFields.length > 0 ? (
-          <details className="border-y border-rule">
+          <details className="border-y border-rule" open>
             <summary className="cursor-pointer py-4 text-sm font-semibold text-ink">
-              View extracted details
+              Extracted details
             </summary>
             <p className="pb-3 text-xs leading-5 text-ink-muted">
-              Report details can contain sensitive identifiers. Review the
-              source report before relying on these unverified values.
+              These fields are shown automatically from the report. Extraction
+              can make mistakes, so use the source report when checking a value.
             </p>
             <dl className="divide-y divide-rule">
               {completeFields.map((field) => (
@@ -86,7 +86,8 @@ export function PatientDetailsSummary({
             role="status"
           >
             No patient details were extracted. EEG and video processing can
-            still continue; add the patient name in Patient History if needed.
+            still continue; the patient review will use the case reference as
+            its label.
           </p>
         )}
 
@@ -94,8 +95,7 @@ export function PatientDetailsSummary({
           <div className="mt-4 border-l-2 border-amber bg-amber-soft/40 px-4 py-3">
             <p className="text-xs leading-5 text-ink-muted" role="status">
               Some source text exceeded the extraction limit. Only the fields
-              shown above are included; review the complete report on the case
-              page before relying on the profile.
+              shown above are included in this case.
             </p>
           </div>
         )}

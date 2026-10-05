@@ -77,11 +77,11 @@ test("registration, refresh, readable errors, login and logout use the backend s
   expect(registerRequestUrl).toMatch(
     /^http:\/\/localhost:8000\/api\/auth\/register/,
   );
-  await expect(page.getByTitle("teammate@example.test")).toBeVisible();
+  await expect(page.getByTitle("teammate@example.test").first()).toBeVisible();
 
   await page.reload();
   await expect(
-    page.getByRole("heading", { name: "VEEG analysis" }),
+    page.getByRole("heading", { name: /Welcome back/ }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login/);

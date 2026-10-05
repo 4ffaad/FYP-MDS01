@@ -6,11 +6,7 @@ import { Icon } from "@/components/Icon";
 import type { DetectionJob } from "@/lib/video-detection";
 
 type StageIcon = "video" | "shield" | "activity" | "list";
-type StageId =
-  | "preflight"
-  | "privacy-transform"
-  | "pose-and-inference"
-  | "complete";
+type StageId = "queued" | "normalization" | "pose-and-inference" | "complete";
 
 type StageDefinition = {
   id: StageId;
@@ -22,30 +18,32 @@ type StageDefinition = {
 
 const stages: StageDefinition[] = [
   {
-    id: "preflight",
-    label: "Check video",
-    detail: "Validate the file, duration and frame rate.",
+    id: "queued",
+    label: "Queued",
+    detail:
+      "Accepted clips run on one worker; EEG processing runs independently.",
     icon: "video",
-    checkpoint: 16,
+    checkpoint: 0,
   },
   {
-    id: "privacy-transform",
-    label: "Face redaction",
-    detail: "Encrypt the source and protect frames before model input.",
+    id: "normalization",
+    label: "Prepare input",
+    detail: "Check the source frames; no blur is applied before OpenPose.",
     icon: "shield",
-    checkpoint: 44,
+    checkpoint: 24,
   },
   {
     id: "pose-and-inference",
     label: "Pose + VSViG",
-    detail: "Extract pose keypoints and score the protected visual windows.",
+    detail:
+      "Extract 15 patches and pose points, blur the patches, then score them.",
     icon: "activity",
-    checkpoint: 78,
+    checkpoint: 72,
   },
   {
     id: "complete",
-    label: "Evidence timeline",
-    detail: "Assemble scores, flagged intervals and model evidence.",
+    label: "Review video",
+    detail: "Save scores and the face-blurred review video.",
     icon: "list",
     checkpoint: 100,
   },
@@ -68,6 +66,13 @@ function getJobStage(job: DetectionJob): StageDefinition {
 
   if (knownStageIds.has(job.current_stage)) {
     return stages[stages.findIndex((stage) => stage.id === job.current_stage)];
+  }
+
+  if (job.status === "failed") {
+    const error = job.error?.toLocaleLowerCase("en-US") ?? "";
+    if (error.includes("landmark") || error.includes("pose")) {
+      return stages[stageIndex("pose-and-inference")];
+    }
   }
 
   return stages[0];
@@ -106,7 +111,7 @@ export function VideoJobLoadingState() {
             <Spinner size="medium" srText="Loading video review" />
           </span>
           <div>
-            <p className="eyebrow">Secure review queue</p>
+            <p className="eyebrow">Video processing</p>
             <h2 className="mt-1 text-lg font-semibold">
               Connecting to the job
             </h2>
@@ -118,7 +123,7 @@ export function VideoJobLoadingState() {
         </p>
         <ProgressTrack
           progress={8}
-          label="Connecting to the video review queue"
+          label="Connecting to video analysis"
           valueText="Starting"
           animated
         />
@@ -132,11 +137,13 @@ export function VideoUploadStatus({
   phase = "uploading",
 }: {
   progress: number;
-  phase?: "preparing" | "uploading";
+  phase?: "preparing" | "uploading" | "checking-pose";
 }) {
   const currentProgress = clampProgress(progress);
   const preparing = phase === "preparing";
-  const uploadAcknowledged = !preparing && currentProgress >= 100;
+  const checkingPose = phase === "checking-pose";
+  const uploadAcknowledged =
+    !preparing && !checkingPose && currentProgress >= 100;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -152,32 +159,40 @@ export function VideoUploadStatus({
             <h2 className="mt-1 text-xl font-semibold tracking-tight">
               {preparing
                 ? "Preparing the paired review"
-                : uploadAcknowledged
-                  ? "Waiting for the private API"
-                  : "Sending video securely"}
+                : checkingPose
+                  ? "Checking pose readiness"
+                  : uploadAcknowledged
+                    ? "Waiting for the private API"
+                    : "Sending video securely"}
             </h2>
             <p className="mt-2 max-w-xl text-sm leading-6 text-ink-muted">
               {preparing
-                ? "The selected EEG analysis is being handed off first. Video upload begins next."
-                : uploadAcknowledged
-                  ? "The upload is complete. The backend is acknowledging the file and creating the processing job."
-                  : "The selected video is moving from your browser to the private backend. Audio is not used by the visual model."}
+                ? "The EEG session is being created so both results can share this patient case. EEG and video inference run independently."
+                : checkingPose
+                  ? "The upload is complete. OpenPose checks the first five-second window for one trackable person and all 15 required landmarks. Later frames are checked again during inference."
+                  : uploadAcknowledged
+                    ? "The upload is complete. The backend is acknowledging the file and creating the processing job."
+                    : "The selected video is moving from your browser to the private backend. Audio is not used by the visual model."}
             </p>
           </div>
           <StatusMark
             label={
               preparing
                 ? "Preparing"
-                : uploadAcknowledged
-                  ? "Received"
-                  : "Uploading"
+                : checkingPose
+                  ? "Checking"
+                  : uploadAcknowledged
+                    ? "Received"
+                    : "Uploading"
             }
             variant={
               preparing
                 ? "attention"
-                : uploadAcknowledged
-                  ? "success"
-                  : "accent"
+                : checkingPose
+                  ? "attention"
+                  : uploadAcknowledged
+                    ? "success"
+                    : "accent"
             }
             spinning={!uploadAcknowledged}
           />
@@ -199,14 +214,28 @@ export function VideoUploadStatus({
             title="Browser transfer"
             detail="Upload bytes"
             state={
-              preparing ? "pending" : uploadAcknowledged ? "complete" : "active"
+              preparing
+                ? "pending"
+                : currentProgress >= 100
+                  ? "complete"
+                  : "active"
             }
           />
           <UploadStep
             index="02"
             title="Private receipt"
-            detail="Encrypt and validate"
-            state={preparing || !uploadAcknowledged ? "pending" : "active"}
+            detail={
+              checkingPose ? "OpenPose readiness" : "Encrypt and validate"
+            }
+            state={
+              preparing
+                ? "pending"
+                : checkingPose
+                  ? "active"
+                  : uploadAcknowledged
+                    ? "complete"
+                    : "pending"
+            }
           />
           <UploadStep
             index="03"
@@ -228,15 +257,19 @@ export function VideoProcessingStatus({ job }: { job: DetectionJob }) {
   const progress = complete
     ? 100
     : terminal
-      ? 0
+      ? job.status === "failed"
+        ? activeStage.checkpoint
+        : 0
       : Math.min(activeStage.checkpoint, 99);
   const stagePosition = complete ? stages.length : Math.max(activeIndex + 1, 1);
   const statusLabel = getStatusLabel(job);
   const statusDescription = complete
     ? "The protected video has been scored and the evidence timeline is ready for review."
-    : terminal
-      ? "No active processing remains. Review the message below before submitting another clip."
-      : activeStage.detail;
+    : job.status === "failed"
+      ? `Processing stopped during ${activeStage.label}. No detection result was published.`
+      : job.status === "expired"
+        ? "This video's retention period ended; its result is no longer available."
+        : activeStage.detail;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -257,12 +290,18 @@ export function VideoProcessingStatus({ job }: { job: DetectionJob }) {
               >
                 {complete
                   ? "Video review is ready"
-                  : "Building your video review"}
+                  : job.status === "failed"
+                    ? "Video processing stopped"
+                    : job.status === "expired"
+                      ? "Video review expired"
+                      : "Building your video review"}
               </h2>
               <p className="mt-2 text-sm leading-6 text-ink-muted">
                 {complete
-                  ? "Review the timeline below. Scores remain uncalibrated research evidence and require human review."
-                  : "The server reports each handoff as it completes. This percentage represents pipeline checkpoints; model inference does not currently expose frame-by-frame progress."}
+                  ? "The timeline shows the flagged windows. Scores are uncalibrated research output."
+                  : terminal
+                    ? "The last completed processing stage is shown below. See the error message for the reason."
+                    : "The server reports each handoff as it completes. This percentage represents pipeline checkpoints; model inference does not currently expose frame-by-frame progress."}
               </p>
             </div>
             <StatusMark
@@ -275,14 +314,20 @@ export function VideoProcessingStatus({ job }: { job: DetectionJob }) {
           <ProgressTrack
             progress={progress}
             label="Video review completion"
-            valueText={terminal ? "Unavailable" : `${progress}%`}
+            valueText={
+              job.status === "failed"
+                ? `Stopped at ${progress}%`
+                : job.status === "expired"
+                  ? "Expired"
+                  : `${progress}%`
+            }
             animated={!complete && !terminal}
           />
 
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
               key={`${job.status}-${activeStage.id}`}
-              className="mt-5 flex items-start gap-3 rounded-xl border border-teal/20 bg-teal-soft/45 px-4 py-3"
+              className={`mt-5 flex items-start gap-3 rounded-xl border px-4 py-3 ${job.status === "failed" ? "border-red/30 bg-red-soft" : "border-teal/20 bg-teal-soft/45"}`}
               role="status"
               aria-live="polite"
               initial={{ opacity: 0, x: 8 }}
@@ -294,7 +339,7 @@ export function VideoProcessingStatus({ job }: { job: DetectionJob }) {
                 name={
                   complete ? "check" : terminal ? "alert" : activeStage.icon
                 }
-                className="mt-0.5 size-5 shrink-0 text-teal"
+                className={`mt-0.5 size-5 shrink-0 ${job.status === "failed" ? "text-red" : "text-teal"}`}
                 weight="bold"
               />
               <div className="min-w-0">
@@ -302,13 +347,13 @@ export function VideoProcessingStatus({ job }: { job: DetectionJob }) {
                   {complete
                     ? "Evidence timeline assembled"
                     : terminal
-                      ? statusLabel
+                      ? job.status === "failed"
+                        ? `Stopped during ${activeStage.label}`
+                        : statusLabel
                       : activeStage.label}
                 </p>
                 <p className="mt-1 text-xs leading-5 text-ink-muted">
-                  {terminal
-                    ? "The server did not publish a detection result."
-                    : statusDescription}
+                  {statusDescription}
                 </p>
               </div>
               {!terminal && (
@@ -334,9 +379,11 @@ export function VideoProcessingStatus({ job }: { job: DetectionJob }) {
             const state =
               complete || index < activeIndex
                 ? "complete"
-                : !terminal && index === activeIndex
-                  ? "active"
-                  : "pending";
+                : job.status === "failed" && index === activeIndex
+                  ? "failed"
+                  : !terminal && index === activeIndex
+                    ? "active"
+                    : "pending";
 
             return (
               <ProcessingStep
@@ -453,12 +500,12 @@ function ProcessingStep({
   index,
 }: {
   stage: StageDefinition;
-  state: "active" | "complete" | "pending";
+  state: "active" | "complete" | "failed" | "pending";
   index: number;
 }) {
   return (
     <motion.li
-      className={`relative rounded-xl border px-3 py-3 ${state === "active" ? "border-teal/35 bg-teal-soft/45" : state === "complete" ? "border-teal/20 bg-surface" : "border-rule bg-surface-soft"}`}
+      className={`relative rounded-xl border px-3 py-3 ${state === "active" ? "border-teal/35 bg-teal-soft/45" : state === "complete" ? "border-teal/20 bg-surface" : state === "failed" ? "border-red/30 bg-red-soft" : "border-rule bg-surface-soft"}`}
       variants={{
         hidden: { opacity: 0, y: 8 },
         visible: { opacity: 1, y: 0 },
@@ -467,10 +514,12 @@ function ProcessingStep({
     >
       <div className="flex items-start gap-3">
         <span
-          className={`grid size-8 shrink-0 place-items-center rounded-lg ${state === "active" ? "bg-teal text-white" : state === "complete" ? "bg-teal-soft text-teal-dark" : "bg-surface text-ink-faint"}`}
+          className={`grid size-8 shrink-0 place-items-center rounded-lg ${state === "active" ? "bg-teal text-white" : state === "complete" ? "bg-teal-soft text-teal-dark" : state === "failed" ? "bg-red-soft text-red" : "bg-surface text-ink-faint"}`}
         >
           {state === "complete" ? (
             <Icon name="check" className="size-4" weight="bold" />
+          ) : state === "failed" ? (
+            <Icon name="alert" className="size-4" weight="bold" />
           ) : state === "active" ? (
             <motion.span
               animate={{ scale: [1, 1.08, 1] }}
@@ -491,10 +540,15 @@ function ProcessingStep({
             {stage.label}
           </span>
           <span className="mt-1 block text-xs leading-5 text-ink-muted">
-            {stage.detail}
+            {state === "failed" ? "Stopped here" : stage.detail}
           </span>
         </span>
       </div>
+      {state === "failed" && (
+        <span className="mt-3 block text-[0.65rem] font-bold tracking-[0.08em] text-red uppercase">
+          Failed
+        </span>
+      )}
       {state === "active" && (
         <span className="mt-3 block text-[0.65rem] font-bold tracking-[0.08em] text-teal-dark uppercase">
           In progress

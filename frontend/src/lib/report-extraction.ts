@@ -10,9 +10,21 @@ const MAX_DETAIL_LABEL = 80;
 const MAX_DETAIL_VALUE = 6_000;
 const MAX_DETAIL_TOTAL = 25_000;
 const FIELD_SEPARATOR = /[:：\t]/;
-const LABEL_PATTERN = /^[A-Za-z][A-Za-z0-9 ._()/-]{0,79}$/;
+const LABEL_PATTERN = /^[A-Za-z][A-Za-z0-9 ._()&/-]{0,79}$/;
 const KNOWN_LABELS = [
   "patient name",
+  "patient age",
+  "patient sex",
+  "eeg no",
+  "eeg number",
+  "ic no",
+  "types of test",
+  "test type",
+  "date and time",
+  "date & time",
+  "hand dominance",
+  "interictal record",
+  "ictal record",
   "technical summary",
   "technical findings",
   "technical description",
@@ -27,6 +39,7 @@ const KNOWN_LABELS = [
   "medical record number",
   "medical record no.",
   "medical record id",
+  "mrn no",
   "hospital number",
   "hospital no.",
   "hospital id",
@@ -49,17 +62,26 @@ const KNOWN_LABELS = [
   "attacks",
   "diagnosis",
   "physician",
+  "technologist",
+  "race",
+  "sex",
+  "gender",
+  "date",
   "treatment",
   "national id",
-  "gender",
-  "patient age",
-  "sex",
   "dob",
   "age",
   "mrn",
   "name",
   "plan",
 ];
+const SECTION_HEADINGS = new Set([
+  "patient details",
+  "patient detials",
+  "test information",
+  "electroencephalograpy eeg report",
+  "electroencephalography eeg report",
+]);
 const KNOWN_LABEL_PATTERN = new RegExp(
   `(?:^|\\s)(${KNOWN_LABELS.sort((left, right) => right.length - left.length)
     .map((label) =>
@@ -88,7 +110,7 @@ function parseInlineKnownFields(line: string): PatientProfileDetail[] {
   });
 }
 
-/** Extracts visible report fields as editable drafts; it never approves or stores them. */
+/** Extracts report fields for automatic owner-only display; storage happens after intake. */
 export function extractPatientReportDraft(text: string): PatientReportDraft {
   const lines = text
     .replace(/\u0000/g, "")
@@ -141,6 +163,32 @@ export function extractPatientReportDraft(text: string): PatientReportDraft {
         activeValue = [line.slice(separator + 1).trim()];
         continue;
       }
+    }
+
+    const heading = line
+      .trim()
+      .toLocaleLowerCase("en-US")
+      .replace(/[’']/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .replace(/\s+/g, " ");
+    if (SECTION_HEADINGS.has(heading)) {
+      finishActive();
+      finishUnlabelled();
+      continue;
+    }
+
+    if (
+      activeLabel &&
+      ["eeg no", "eeg number"].includes(
+        activeLabel.toLocaleLowerCase("en-US").trim(),
+      ) &&
+      /^\s*unit\b/i.test(line)
+    ) {
+      finishActive();
+      activeLabel = "Institution";
+      activeValue = [line];
+      continue;
     }
 
     const bareLabel = line.match(BARE_KNOWN_LABEL_PATTERN)?.[1]?.trim();

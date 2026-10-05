@@ -193,7 +193,7 @@ test("combined report explains terminal EEG failure and links to the session @re
   expect(sessionReads).toBeGreaterThanOrEqual(1);
 });
 
-test("combined report reports when privacy quality flags are empty @report-api", async ({
+test("combined report shows protected video status @report-api", async ({
   page,
 }) => {
   test.skip(
@@ -242,6 +242,16 @@ test("combined report reports when privacy quality flags are empty @report-api",
             quality_flags: [],
             review_required: false,
           },
+          visualization: {
+            available: true,
+            media_type: "video/mp4",
+            audio_included: false,
+            privacy_method:
+              "face-blur-with-full-frame-fallback-and-skeleton-overlay",
+            face_detection_coverage: 1,
+            full_frame_fallback_frames: 0,
+            quality_flags: [],
+          },
         },
       });
     if (url.pathname.endsWith(`/jobs/${videoJobId}`))
@@ -252,9 +262,7 @@ test("combined report reports when privacy quality flags are empty @report-api",
   await page.goto(`/analysis?videoJobId=${videoJobId}`);
 
   await expect(
-    page.getByText("No privacy quality flags reported", { exact: true }),
+    page.getByText("Face-redacted video", { exact: true }),
   ).toBeVisible();
-  await expect(
-    page.getByText("Review quality flags", { exact: true }),
-  ).toHaveCount(0);
+  await expect(page.getByText("Face blur", { exact: true })).toBeVisible();
 });

@@ -10,7 +10,7 @@ function requireBackendProjection() {
   );
 }
 
-test("patient history uses the accessible orb while cases are loading", async ({
+test("workspace shows a loading state while patients load", async ({
   page,
 }) => {
   requireBackendProjection();
@@ -27,25 +27,28 @@ test("patient history uses the accessible orb while cases are loading", async ({
     await heldResponse;
     await route.fulfill({ json: [] });
   });
+  await page.route("**/api/video-detection/jobs", (route) =>
+    route.fulfill({ json: { jobs: [] } }),
+  );
 
-  await page.goto("/cases");
+  await page.goto("/dashboard");
   try {
     await requestStarted;
-    const loadingStatus = page
+    const recent = page.getByRole("region", {
+      name: "Recent patients / sessions",
+    });
+    const loadingStatus = recent
       .getByRole("status")
-      .filter({ hasText: "Loading patient history…" });
+      .filter({ hasText: "Loading records…" });
     await expect(loadingStatus).toBeVisible();
-    await expect(loadingStatus.locator("canvas")).toBeVisible();
     releaseResponse();
-    await expect(
-      page.getByRole("heading", { name: "No patient reviews yet" }),
-    ).toBeVisible();
+    await expect(recent.getByText(/No patient cases yet/)).toBeVisible();
   } finally {
     releaseResponse();
   }
 });
 
-test("patient history shows a retry state instead of empty state when loading fails", async ({
+test("workspace offers a retry instead of showing an empty patient list on failure", async ({
   page,
 }) => {
   requireBackendProjection();
@@ -60,116 +63,64 @@ test("patient history shows a retry state instead of empty state when loading fa
         })
       : route.fulfill({ json: [] });
   });
+  await page.route("**/api/video-detection/jobs", (route) =>
+    route.fulfill({ json: { jobs: [] } }),
+  );
 
-  await page.goto("/cases");
+  await page.goto("/dashboard");
   await expect.poll(() => attempts).toBeGreaterThan(0);
 
   await expect(
     page
       .locator('[role="alert"]')
-      .filter({ hasText: "Synthetic temporary failure" }),
+      .filter({ hasText: "Dashboard records could not be loaded" }),
   ).toBeVisible();
   const failedAttemptCount = attempts;
-  await expect(
-    page.getByRole("heading", { name: "No patient reviews yet" }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("link", { name: /Create first patient review/ }),
-  ).toHaveCount(0);
+  await expect(page.getByText(/No patient cases yet/)).toHaveCount(0);
   shouldFail = false;
-  await page.getByRole("button", { name: "Retry loading patients" }).click();
-  await expect(
-    page.getByRole("heading", { name: "No patient reviews yet" }),
-  ).toBeVisible();
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByText(/No patient cases yet/)).toBeVisible();
   expect(attempts).toBeGreaterThan(failedAttemptCount);
 });
 
-test("case history hides unverified names from default summaries", async ({
-  page,
-}) => {
+test("patient case workspace opens from its route", async ({ page }) => {
   requireBackendProjection();
-  await page.route("**/api/cases", (route) =>
-    route.fulfill({
-      json: [
-        {
-          case_id: CASE_ID,
-          patient_name: null,
-          patient_name_verification_status: null,
-          report_summary: null,
-          modalities: ["eeg", "video"],
-          analysis_count: 3,
-          latest_created_at: REVIEWED_AT,
-          status: "needs_review",
-          flagged_interval_count: 0,
-          explanation_ready: true,
-        },
-      ],
-    }),
-  );
-
+  await page.route("**/api/cases", (route) => route.fulfill({ json: [] }));
   await page.goto("/cases");
 
+  await expect(page).toHaveURL(/\/cases$/);
   await expect(
-    page.getByRole("heading", { name: "Patient review" }),
+    page.getByRole("heading", { name: "Patient cases", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("Synthetic Case Patient")).toHaveCount(0);
-  await expect(page.getByText(CASE_ID, { exact: true })).toHaveCount(0);
-  await expect(
-    page.getByRole("link", { name: /Patient review/ }),
-  ).toHaveAttribute("href", `/cases/${CASE_ID}`);
-  await expect(page.getByText("Synthetic report preview only.")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Patient History" })).toHaveCount(
+    0,
+  );
 });
 
-test("case detail groups report sections and keeps contact identifiers out of the summary", async ({
+test("case detail shows extracted report sections without an approval step", async ({
   page,
 }) => {
   requireBackendProjection();
-  type ProfileReviewPayload = {
-    details: Array<{ label: string; value: string }>;
-    review_confirmed: boolean;
-  };
-  const profileReviewPayloads: ProfileReviewPayload[] = [];
   const extractedProfileFields = [
     { label: "Patient Name", value: "Synthetic Case Patient" },
     { label: "Test Type", value: "Routine EEG" },
     { label: "Technical summary", value: "Synthetic technical summary." },
+    { label: "Interictal record", value: "Synthetic interictal finding." },
+    { label: "Ictal record", value: "Synthetic ictal finding." },
     { label: "Event description", value: "Synthetic observed event." },
     { label: "Conclusion", value: "Synthetic conclusion." },
+    { label: "Specialist names", value: "Synthetic specialist." },
     { label: "Address", value: "42 Synthetic Street" },
     { label: "Contact phone", value: "555-0100" },
     { label: "Medical Record Number", value: "SYNTHETIC-MRN-1" },
     { label: "Date & Time", value: "13/1/2026 6:46:30 AM" },
-    { label: "Field label 20", value: "Synthetic safe extra detail" },
-    {
-      label: "Field label 21",
-      value: "Unit 42, Jalan Synthetic; 012-3456789",
-    },
+    { label: "Other report field", value: "Synthetic extra detail" },
   ];
-  await page.route(`**/api/cases/${CASE_ID}/patient-profile`, async (route) => {
-    if (route.request().method() === "PUT") {
-      const reviewPayload = route
-        .request()
-        .postDataJSON() as ProfileReviewPayload;
-      profileReviewPayloads.push(reviewPayload);
-      return route.fulfill({
-        json: {
-          profile: {
-            name: "",
-            hospital_id: "",
-            age: "",
-            findings: "",
-            details: reviewPayload.details,
-            reviewed: true,
-            verification_status: "reviewed",
-            reviewed_at: REVIEWED_AT,
-          },
-        },
-      });
-    }
-    return route.fulfill({
+  await page.route(`**/api/cases/${CASE_ID}/patient-profile`, (route) =>
+    route.fulfill({
       json: {
         profile: {
-          name: "",
+          name: "Synthetic Case Patient",
           hospital_id: "",
           age: "",
           findings: "",
@@ -179,37 +130,14 @@ test("case detail groups report sections and keeps contact identifiers out of th
           reviewed_at: null,
         },
       },
-    });
-  });
-  await page.route("**/api/cases", (route) =>
-    route.fulfill({
-      json: [
-        {
-          case_id: CASE_ID,
-          patient_name: profileReviewPayloads[0]?.review_confirmed
-            ? "Synthetic Case Patient"
-            : null,
-          patient_name_verification_status: profileReviewPayloads[0]
-            ?.review_confirmed
-            ? "reviewed"
-            : null,
-          report_summary: null,
-          modalities: ["eeg"],
-          analysis_count: 1,
-          latest_created_at: REVIEWED_AT,
-          status: "needs_review",
-          flagged_interval_count: 0,
-          explanation_ready: true,
-        },
-      ],
     }),
   );
   await page.route(`**/api/cases/${CASE_ID}`, (route) =>
     route.fulfill({
       json: {
         case_id: CASE_ID,
-        patient_name: null,
-        patient_name_verification_status: null,
+        patient_name: "Synthetic Case Patient",
+        patient_name_verification_status: "auto_extracted",
         analyses: [
           {
             id: "SES-SYNTHETIC",
@@ -225,152 +153,43 @@ test("case detail groups report sections and keeps contact identifiers out of th
   await page.route(`**/api/video-privacy/jobs?case_id=${CASE_ID}`, (route) =>
     route.fulfill({ json: { jobs: [] } }),
   );
-  const sourcePdf = Buffer.from(
-    "%PDF-1.7\n% synthetic fixture\n%%EOF",
-    "ascii",
-  );
-  let uploadedPdfContentType = "";
-  await page.route(`**/api/cases/${CASE_ID}/report`, async (route) => {
-    if (route.request().method() === "PUT") {
-      uploadedPdfContentType = route.request().headers()["content-type"] ?? "";
-      await route.fulfill({ json: { available: true } });
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/pdf",
-      body: sourcePdf,
-    });
-  });
 
   await page.goto(`/cases/${CASE_ID}`);
 
   await expect(
-    page.getByRole("heading", { name: "Patient review" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Synthetic Case Patient" }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByText("Synthetic Case Patient", { exact: true }),
-  ).toBeHidden();
-  await expect(
-    page.getByText("Name auto-extracted · not verified", { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText(CASE_ID, { exact: true })).toHaveCount(0);
-  await expect(
-    page.getByText(/No VSViG player is attached to this case yet/),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Technical summary" }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("heading", { name: "Events", exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("heading", { name: "Conclusion", exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByText("Synthetic technical summary.", { exact: true }),
-  ).toBeHidden();
-  await expect(
-    page.getByText("Synthetic observed event.", { exact: true }),
-  ).toBeHidden();
-  await expect(
-    page.getByText("Synthetic conclusion.", { exact: true }),
-  ).toBeHidden();
-  const extractedDetails = page
-    .locator("details")
-    .filter({ hasText: "All extracted report details" });
-  await expect(extractedDetails).toHaveCount(1);
-  await expect(extractedDetails).not.toHaveAttribute("open");
-  await expect(
-    page.getByRole("button", { name: "Mark details reviewed" }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByText("42 Synthetic Street", { exact: true }),
-  ).toBeHidden();
-  await expect(page.getByText("555-0100", { exact: true })).toBeHidden();
-  await expect(page.getByText("SYNTHETIC-MRN-1", { exact: true })).toBeHidden();
-  await expect(
-    page.getByText("Unit 42, Jalan Synthetic; 012-3456789", { exact: true }),
-  ).toBeHidden();
-
-  const otherReportDetails = page
-    .locator("details")
-    .filter({ hasText: /Other report details/ });
-  await otherReportDetails.locator("summary").click();
-  await expect(
-    otherReportDetails.getByText("Synthetic safe extra detail", {
-      exact: true,
-    }),
-  ).toBeVisible();
-  await expect(
-    otherReportDetails.getByText("13/1/2026 6:46:30 AM", { exact: true }),
-  ).toBeVisible();
-  await expect(extractedDetails).not.toHaveAttribute("open");
-
-  await extractedDetails.locator("summary").click();
-  await expect(
-    page.getByRole("button", { name: "Mark details reviewed" }),
-  ).toBeVisible();
-  await expect(
-    extractedDetails.getByText("42 Synthetic Street", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    extractedDetails.getByText("Synthetic technical summary.", {
-      exact: true,
-    }),
-  ).toBeVisible();
-
-  await expect(
-    page.getByRole("button", { name: /View original report PDF/ }),
-  ).toBeVisible();
-
-  await page.getByLabel("Attach source report PDF").setInputFiles({
-    name: "synthetic.pdf",
-    mimeType: "application/pdf",
-    buffer: sourcePdf,
-  });
-  await expect(
-    page.getByText("PDF report attached and stored encrypted for this case."),
-  ).toBeVisible();
-  expect(uploadedPdfContentType).toBe("application/pdf");
-
-  await page.getByRole("button", { name: "View original report PDF" }).click();
-  await expect(page.getByTitle("Original source report PDF")).toBeVisible();
-
-  page.once("dialog", (dialog) => void dialog.accept());
-  await page.getByRole("button", { name: "Mark details reviewed" }).click();
-  await expect(
-    page.getByRole("button", { name: "Mark details reviewed" }),
-  ).toHaveCount(0);
-  await expect(page.getByText(/^Details reviewed/)).toBeVisible();
-  await expect(
     page.getByRole("heading", { name: "Synthetic Case Patient" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Technical summary" }),
+    page.getByRole("heading", { name: "Patient and recording details" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Events", exact: true }),
+    page.getByRole("heading", { name: "Interictal EEG" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Conclusion", exact: true }),
+    page.getByRole("heading", { name: "Ictal EEG", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Attacks" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "EEG findings" }),
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Conclusion" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Report sign-off" }),
   ).toBeVisible();
   await expect(
-    page.getByText("Name auto-extracted · not verified", { exact: true }),
+    page.getByText("Synthetic extra detail", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("SYNTHETIC-MRN-1", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Mark details reviewed" }),
   ).toHaveCount(0);
-  expect(profileReviewPayloads).toHaveLength(1);
-  expect(profileReviewPayloads[0]?.review_confirmed).toBe(true);
-  expect(profileReviewPayloads[0]?.details).toEqual(extractedProfileFields);
-
-  await page.goto("/cases");
   await expect(
-    page.getByRole("link", { name: /Synthetic Case Patient/ }),
-  ).toBeVisible();
+    page.getByRole("button", { name: /Attach source report|Replace report/ }),
+  ).toHaveCount(0);
   await expect(
-    page.getByText("Synthetic conclusion.", { exact: true }),
+    page.getByText("Not available in the structured report details."),
   ).toHaveCount(0);
 });
 
@@ -614,8 +433,8 @@ test("a source PDF response arriving after navigation does not create an object 
   await page.getByRole("button", { name: "View original report PDF" }).click();
   await pdfStarted;
   await page.route("**/api/cases", (route) => route.fulfill({ json: [] }));
-  await page.getByRole("link", { name: "Back to Patient History" }).click();
-  await expect(page).toHaveURL(/\/cases$/);
+  await page.getByRole("link", { name: "Back to Workspace" }).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
   releasePdf();
   await pdfHandlerFinished;
 
@@ -735,9 +554,44 @@ test("case history warns when video clips were rejected before VSViG", async ({
   ).toHaveCount(0);
 });
 
-test("navigation highlights only the active screen and labels cases as Patient History", async ({
+test("ready EEG and video reviews keep separate links until a sync match is available", async ({
   page,
 }) => {
+  await page.route(`**/api/cases/${CASE_ID}`, (route) =>
+    route.fulfill({
+      json: {
+        case_id: CASE_ID,
+        analyses: [
+          {
+            id: "SES-SYNTHETIC",
+            modality: "eeg",
+            status: "complete",
+            created_at: REVIEWED_AT,
+            review_ready: true,
+          },
+          {
+            id: "VID-SYNTHETIC",
+            modality: "video",
+            status: "complete",
+            created_at: REVIEWED_AT,
+            review_ready: true,
+          },
+        ],
+      },
+    }),
+  );
+  await page.route(`**/api/cases/${CASE_ID}/patient-profile`, (route) =>
+    route.fulfill({ json: { profile: null } }),
+  );
+
+  await page.goto(`/cases/${CASE_ID}`);
+
+  await expect(
+    page.getByRole("link", { name: "Open EEG/video sync review" }),
+  ).toHaveAttribute("href", "/analysis?videoJobId=VID-SYNTHETIC");
+});
+
+test("navigation exposes workspace, EEG, and video tools", async ({ page }) => {
   async function openPrimaryNavigation() {
     if (test.info().project.name === "mobile") {
       await page.getByRole("button", { name: "Open navigation menu" }).click();
@@ -750,43 +604,74 @@ test("navigation highlights only the active screen and labels cases as Patient H
   await expect(primaryNavigation.locator('[aria-current="page"]')).toHaveCount(
     1,
   );
+  await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
   await expect(
     primaryNavigation.getByRole("link", { name: "New patient review" }),
   ).toHaveAttribute("aria-current", "page");
   await expect(
-    primaryNavigation.getByRole("link", { name: "Workspace" }),
+    primaryNavigation.getByRole("link", { name: "Patient cases" }),
   ).not.toHaveAttribute("aria-current", "page");
 
   await page.goto("/dashboard");
   primaryNavigation = await openPrimaryNavigation();
   await expect(
-    primaryNavigation.getByRole("link", { name: "Workspace" }),
+    primaryNavigation.getByRole("link", { name: "Patient cases" }),
   ).toHaveAttribute("aria-current", "page");
   await expect(
     primaryNavigation.getByRole("link", { name: "New patient review" }),
   ).not.toHaveAttribute("aria-current", "page");
-
-  await page.goto("/cases");
-  primaryNavigation = await openPrimaryNavigation();
+  await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
   await expect(
-    primaryNavigation.getByRole("link", { name: "Patient History" }),
-  ).toHaveAttribute("aria-current", "page");
-  await expect(
-    primaryNavigation.getByRole("link", { name: "Cases" }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("heading", { name: "All patient reviews" }),
+    primaryNavigation.getByRole("link", { name: "EEG workspace" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Patients", exact: true }),
+    primaryNavigation.getByRole("link", { name: "Video workspace" }),
+  ).toBeVisible();
+  await expect(
+    primaryNavigation.getByRole("link", { name: "EEG upload" }),
   ).toHaveCount(0);
+  await expect(
+    primaryNavigation.getByRole("link", { name: "Video privacy" }),
+  ).toHaveCount(0);
+  await expect(
+    primaryNavigation.getByRole("link", { name: "Patient History" }),
+  ).toHaveCount(0);
+
+  await page.goto("/upload/eeg");
+  primaryNavigation = await openPrimaryNavigation();
+  await expect(
+    primaryNavigation.getByRole("link", { name: "EEG workspace" }),
+  ).toHaveAttribute("aria-current", "page");
+  const eegWorkspace = page.getByRole("navigation", { name: "EEG workspace" });
+  await expect(
+    eegWorkspace.getByRole("link", { name: "New EEG analysis" }),
+  ).toHaveAttribute("aria-current", "page");
+  await eegWorkspace.getByRole("link", { name: "EEG reviews" }).click();
+  await expect(page).toHaveURL(/\/upload\/eeg\?view=reviews$/);
+  await expect(
+    page.getByRole("heading", { name: "EEG reviews" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("navigation", { name: "EEG workspace" })
+      .getByRole("link", { name: "EEG reviews" }),
+  ).toHaveAttribute("aria-current", "page");
+  await page
+    .getByRole("navigation", { name: "EEG workspace" })
+    .getByRole("link", { name: "New EEG analysis" })
+    .click();
+  await expect(page).toHaveURL(/\/upload\/eeg$/);
 });
 
-test("workspace shows only reviewed names without exposing report text or case IDs", async ({
+test("dashboard shows privacy-safe patient rows and workspace links", async ({
   page,
 }) => {
   requireBackendProjection();
-  await page.route("**/api/sessions**", (route) => route.fulfill({ json: [] }));
+  let sessionRequests = 0;
+  await page.route("**/api/sessions**", (route) => {
+    sessionRequests += 1;
+    return route.fulfill({ json: [] });
+  });
   await page.route("**/api/cases", (route) =>
     route.fulfill({
       json: [
@@ -797,6 +682,7 @@ test("workspace shows only reviewed names without exposing report text or case I
           report_summary: null,
           modalities: ["eeg", "video"],
           analysis_count: 3,
+          privacy_preview_count: 1,
           latest_created_at: "2026-09-27T00:00:00Z",
           status: "needs_review",
           flagged_interval_count: 2,
@@ -809,6 +695,7 @@ test("workspace shows only reviewed names without exposing report text or case I
           report_summary: "Another private report summary.",
           modalities: ["eeg"],
           analysis_count: 1,
+          privacy_preview_count: 0,
           latest_created_at: "2026-09-26T00:00:00Z",
           status: "processing",
           flagged_interval_count: 0,
@@ -817,41 +704,142 @@ test("workspace shows only reviewed names without exposing report text or case I
       ],
     }),
   );
+  await page.route("**/api/video-detection/jobs", (route) =>
+    route.fulfill({ json: { jobs: [] } }),
+  );
 
   await page.goto("/dashboard");
 
-  await expect(
-    page.getByRole("heading", { name: "Recent patient history" }),
-  ).toBeVisible();
-  const recentHistory = page.getByRole("region", {
-    name: "Recent patient history",
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  const workspaces = page.getByRole("region", {
+    name: "Analysis workspaces",
   });
-  await expect(
-    recentHistory.getByRole("link", { name: /Patient name unavailable/ }),
-  ).toHaveAttribute("href", "/cases/CASE-RECENT-1");
-  await expect(
-    recentHistory.getByRole("link", { name: /Another Synthetic Name/ }),
-  ).toHaveAttribute("href", "/cases/CASE-RECENT-2");
-  await expect(recentHistory.getByText("Synthetic Private Name")).toHaveCount(
-    0,
+  await expect(workspaces.getByRole("link")).toHaveCount(3);
+  await expect(workspaces.getByRole("link", { name: /VEEG/ })).toHaveAttribute(
+    "href",
+    "/cases",
   );
-  await expect(recentHistory.getByText("Another Synthetic Name")).toBeVisible();
-  await expect(page.getByText("Synthetic private report summary.")).toHaveCount(
-    0,
+  const recent = page.getByRole("region", {
+    name: "Recent patients / sessions",
+  });
+  await expect(recent.getByRole("row")).toHaveCount(3);
+  await expect(recent.getByText("PT-RECENT-1")).toBeVisible();
+  await expect(recent.getByText("PT-RECENT-2")).toBeVisible();
+  await expect(recent.getByText("Another Synthetic Name")).toHaveCount(0);
+  await expect(recent.getByText(/private report summary/i)).toHaveCount(0);
+  await expect(recent.getByText("EEG · Video")).toBeVisible();
+  await expect(recent.getByText("Issues")).toBeVisible();
+  const totals = page.locator(
+    'dl[aria-label="Patient processing totals"] > div',
   );
-  await expect(page.getByText("Another private report summary.")).toHaveCount(
-    0,
-  );
-  await expect(recentHistory.getByText(/3 analyses/)).toHaveCount(0);
-  await expect(recentHistory.getByText(/1 analysis/)).toHaveCount(0);
-  await expect(page.getByText("CASE-RECENT-1", { exact: true })).toHaveCount(0);
-  await expect(
-    page
-      .getByRole("region", { name: "Recent patient history" })
-      .getByRole("link", { name: "Patient History" }),
-  ).toHaveAttribute("href", "/cases");
+  await expect(totals.nth(0)).toContainText("2");
+  expect(sessionRequests).toBe(1);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.locator(".animate-enter-up").evaluate(async (element) => {
+    await Promise.all(
+      element.getAnimations().map((animation) => animation.finished),
+    );
+  });
   await page.screenshot({
-    path: test.info().outputPath("workspace-recent-history.png"),
+    path: test.info().outputPath("workspace-patients.png"),
     fullPage: true,
   });
+});
+
+test("deleting a patient case requires confirmation and removes its queue row", async ({
+  page,
+}) => {
+  requireBackendProjection();
+  let deletionCount = 0;
+  await page.route("**/api/cases", (route) =>
+    route.fulfill({
+      json: [
+        {
+          case_id: "CASE-DELETE01",
+          patient_name: "Synthetic Delete Patient",
+          patient_name_verification_status: "reviewed",
+          modalities: ["eeg", "video"],
+          analysis_count: 2,
+          privacy_preview_count: 1,
+          latest_created_at: "2026-09-27T00:00:00Z",
+          status: "complete",
+          flagged_interval_count: 0,
+          explanation_ready: true,
+        },
+      ],
+    }),
+  );
+  await page.route("**/api/cases/CASE-DELETE01", async (route) => {
+    if (route.request().method() === "DELETE") {
+      deletionCount += 1;
+      return route.fulfill({ status: 204, body: "" });
+    }
+    return route.fulfill({ status: 200, json: {} });
+  });
+
+  await page.goto("/cases");
+  const patients = page.getByRole("region", { name: "All patient cases" });
+  const deleteButton = page.getByRole("button", {
+    name: "Delete case for Synthetic Delete Patient",
+  });
+  await deleteButton.click();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("all linked EEG sessions and results");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect.poll(() => deletionCount).toBe(0);
+
+  await deleteButton.click();
+  await dialog.getByRole("button", { name: "Delete case" }).click();
+  await expect.poll(() => deletionCount).toBe(1);
+  await expect(patients.getByText("No patient cases yet")).toBeVisible();
+});
+
+test("a rejected active-case deletion keeps the case visible and explains why", async ({
+  page,
+}) => {
+  requireBackendProjection();
+  await page.route("**/api/cases", (route) =>
+    route.fulfill({
+      json: [
+        {
+          case_id: "CASE-BUSY001",
+          patient_name: "Synthetic Busy Patient",
+          patient_name_verification_status: "reviewed",
+          modalities: ["eeg"],
+          analysis_count: 1,
+          privacy_preview_count: 0,
+          latest_created_at: "2026-09-27T00:00:00Z",
+          status: "processing",
+          flagged_interval_count: 0,
+          explanation_ready: false,
+        },
+      ],
+    }),
+  );
+  await page.route("**/api/cases/CASE-BUSY001", (route) =>
+    route.fulfill({
+      status: 409,
+      json: {
+        detail:
+          "This case has processing work. Wait until it finishes before deleting the case.",
+      },
+    }),
+  );
+
+  await page.goto("/cases");
+  await page
+    .getByRole("button", { name: "Delete case for Synthetic Busy Patient" })
+    .click();
+  const dialog = page.getByRole("alertdialog");
+  await dialog.getByRole("button", { name: "Delete case" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("processing work");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(
+    page.getByRole("link", { name: /Synthetic Busy Patient/ }),
+  ).toBeVisible();
 });

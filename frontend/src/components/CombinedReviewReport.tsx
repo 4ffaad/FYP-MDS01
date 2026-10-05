@@ -1,22 +1,17 @@
 "use client";
-/* eslint-disable @next/next/no-img-element -- Authenticated protected media must bypass Next's optimizer/cache. */
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getPatientProfile, getResult, getVideoPrivacyJobs } from "@/lib/api";
+import { getPatientProfile, getResult } from "@/lib/api";
 import {
   getDetectionResults,
   type DetectionJob,
   type DetectionResult,
+  type VideoEegSync,
 } from "@/lib/video-detection";
 import { formatRelativeTime } from "@/lib/format";
 import { reportDetails } from "@/lib/patient-profile-privacy";
-import type {
-  AnalysisResult,
-  PatientProfile,
-  Session,
-  VideoPrivacyJob,
-} from "@/lib/types";
+import type { AnalysisResult, PatientProfile, Session } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { EegAnnotationList } from "./EegAnnotationList";
 
@@ -30,10 +25,6 @@ type LoadedVideoResult =
 type LoadedPatientProfile =
   | { caseId: string; status: "ready"; profile: PatientProfile | null }
   | { caseId: string; status: "error" };
-type LoadedVideoPrivacyJobs =
-  | { caseId: string; status: "ready"; jobs: VideoPrivacyJob[] }
-  | { caseId: string; status: "error" };
-
 /** Compose independently authorized modality results into a local print view. */
 export function CombinedReviewReport({
   session,
@@ -63,15 +54,43 @@ export function CombinedReviewReport({
   const [profileLoad, setProfileLoad] = useState<LoadedPatientProfile | null>(
     null,
   );
-  const [privacyLoad, setPrivacyLoad] = useState<LoadedVideoPrivacyJobs | null>(
-    null,
+  const sync = videoJob?.sync;
+  const linkedRecordId = sync?.status === "linked" ? sync.record_id : null;
+  const effectiveRecordId =
+    sync?.status === "linked"
+      ? linkedRecordId && readyRecordIds.includes(linkedRecordId)
+        ? linkedRecordId
+        : ""
+      : readyRecordIds.includes(selectedRecordId)
+        ? selectedRecordId
+        : readyRecordIds.length === 1
+          ? readyRecordIds[0]
+          : "";
+  const linkedRecording = session?.recordings.find(
+    (recording) => recording.recordId === linkedRecordId,
   );
-  const [offsetInput, setOffsetInput] = useState("0");
-  const effectiveRecordId = readyRecordIds.includes(selectedRecordId)
-    ? selectedRecordId
-    : readyRecordIds.length === 1
-      ? readyRecordIds[0]
-      : "";
+  const pairedForSync = Boolean(
+    hasEegLink &&
+      hasVideoLink &&
+      sync?.status === "linked" &&
+      linkedRecordId &&
+      effectiveRecordId === linkedRecordId &&
+      session?.caseId === videoJob?.case_id,
+  );
+  const verifiedSourceOffset =
+    pairedForSync &&
+    typeof sync?.eeg_source_start_seconds === "number" &&
+    Number.isFinite(sync.eeg_source_start_seconds)
+      ? sync.eeg_source_start_seconds
+      : null;
+  const partialSyncCoverage = Boolean(
+    pairedForSync &&
+      sync?.video_duration_seconds !== null &&
+      sync?.video_duration_seconds !== undefined &&
+      sync.eeg_coverage_seconds !== null &&
+      sync.eeg_coverage_seconds !== undefined &&
+      sync.eeg_coverage_seconds + 0.5 < sync.video_duration_seconds,
+  );
   const activeVideoJobId = videoJob?.status === "ready" ? videoJob.job_id : "";
   const sessionCaseId = hasEegLink ? session?.caseId : null;
   const videoCaseId = hasVideoLink ? videoJob?.case_id : null;
@@ -93,42 +112,6 @@ export function CombinedReviewReport({
           setProfileLoad({ caseId: profileCaseId, status: "error" });
       });
     return () => controller.abort();
-  }, [profileCaseId]);
-
-  useEffect(() => {
-    if (!profileCaseId) return;
-    const controller = new AbortController();
-    let retry: ReturnType<typeof setTimeout> | undefined;
-
-    async function loadPrivacyJobs() {
-      try {
-        const jobs = await getVideoPrivacyJobs(
-          profileCaseId,
-          controller.signal,
-        );
-        if (controller.signal.aborted) return;
-        setPrivacyLoad({ caseId: profileCaseId, status: "ready", jobs });
-        if (
-          jobs.some(
-            (job) =>
-              !["ready", "needs_review", "failed", "expired"].includes(
-                job.status,
-              ),
-          )
-        ) {
-          retry = setTimeout(() => void loadPrivacyJobs(), 1500);
-        }
-      } catch (error: unknown) {
-        if (!(error instanceof DOMException && error.name === "AbortError"))
-          setPrivacyLoad({ caseId: profileCaseId, status: "error" });
-      }
-    }
-
-    void loadPrivacyJobs();
-    return () => {
-      controller.abort();
-      if (retry) clearTimeout(retry);
-    };
   }, [profileCaseId]);
 
   useEffect(() => {
@@ -186,12 +169,6 @@ export function CombinedReviewReport({
       ? Object.values(reportDetails(currentProfileLoad.profile)).flat()
       : [];
 
-  const offsetSeconds = offsetInput.trim() === "" ? null : Number(offsetInput);
-  const offsetIsValid =
-    offsetSeconds !== null &&
-    Number.isFinite(offsetSeconds) &&
-    Math.abs(offsetSeconds) <= 86_400;
-  const pairedForDemo = hasEegLink && hasVideoLink;
   const videoDurationSeconds =
     videoResult?.duration_seconds ?? videoJob?.duration_seconds ?? null;
 
@@ -220,55 +197,37 @@ export function CombinedReviewReport({
         </Button>
       </div>
 
-      {pairedForDemo && (
-        <section className="rounded-xl border border-amber/40 bg-amber-soft p-4 sm:p-5">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-bold">
-              Assumed pairing — not verified
-            </h3>
-            <span className="rounded-full border border-amber/40 px-2.5 py-1 text-[0.68rem] font-bold uppercase tracking-[0.08em] text-amber">
-              Demo assumption
-            </span>
-          </div>
-          <p className="mt-2 max-w-4xl text-sm leading-6 text-ink-muted">
-            These analyses are shown together for demonstration only. The
-            application has not verified that the recordings belong together or
-            are synchronized. The offset below is local to this page and is not
-            saved to the case.
-          </p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,15rem)_1fr] sm:items-end">
-            <label
-              className="no-print block text-sm font-semibold"
-              htmlFor="video-start-offset"
-            >
-              Video starts after EEG (seconds)
-              <input
-                id="video-start-offset"
-                aria-label="Video starts after EEG (seconds)"
-                className="mt-2 block min-h-11 w-full rounded-lg border border-rule bg-white px-3 font-mono text-sm tabular-nums text-ink outline-none focus-visible:ring-2 focus-visible:ring-teal"
-                type="number"
-                min="-86400"
-                max="86400"
-                step="0.1"
-                value={offsetInput}
-                onChange={(event) => setOffsetInput(event.target.value)}
-              />
-            </label>
-            <p className="text-xs leading-5 text-ink-muted">
-              Positive values mean the video begins later. The default 0s is an
-              assumption, not a measured clock offset.
+      {hasVideoLink && (
+        <section
+          className={`rounded-xl border p-4 sm:p-5 ${pairedForSync ? "border-teal/35 bg-teal-soft/40" : "border-amber/40 bg-amber-soft"}`}
+          aria-live="polite"
+        >
+          <h3 className="text-sm font-bold">
+            {pairedForSync
+              ? "Unique metadata match among uploaded clips"
+              : sync?.status === "pending"
+                ? "Checking Nicolet video synchronization"
+                : sync?.status === "ambiguous"
+                  ? "Video synchronization is ambiguous"
+                  : "No verified EEG/video link"}
+          </h3>
+          {pairedForSync ? (
+            <p className="mt-2 text-sm leading-6 text-ink-muted">
+              The sync-table filename, frame counts, and timestamp anchors
+              uniquely match the uploaded clips for{" "}
+              {linkedRecording?.displayName ?? "this EEG"}. The first aligned
+              frame is at EEG time{" "}
+              {formatRelativeTime(sync?.eeg_source_start_seconds ?? 0)}. This is
+              a metadata match; it does not prove the uploaded video bytes are
+              the original acquisition.
+              {partialSyncCoverage &&
+                ` Only ${formatRelativeTime(sync?.eeg_coverage_seconds ?? 0)} of ${formatRelativeTime(sync?.video_duration_seconds ?? 0)} is covered by EEG signal; footage outside EEG segments is omitted from the aligned timeline.`}
             </p>
-          </div>
-          {!offsetIsValid && (
-            <p className="mt-2 text-sm text-red" role="alert">
-              Enter an offset from −86,400 to +86,400 seconds to show mapped
-              times.
-            </p>
-          )}
-          {offsetIsValid && (
-            <p className="print-only mt-2 text-xs">
-              Assumed clock offset: {formatSignedSeconds(offsetSeconds)}. Video
-              time = EEG time − offset.
+          ) : (
+            <p className="mt-2 text-sm leading-6 text-ink-muted">
+              {sync?.status === "pending"
+                ? "Waiting for EEG processing or the video folder upload to finish."
+                : "The source metadata did not establish one unique recording and camera stream. EEG and video remain separate."}
             </p>
           )}
         </section>
@@ -312,72 +271,6 @@ export function CombinedReviewReport({
         </p>
       )}
 
-      {privacyLoad?.status === "error" &&
-        privacyLoad.caseId === profileCaseId && (
-          <p
-            className="rounded-lg border border-amber/30 bg-amber-soft p-3 text-sm text-amber"
-            role="status"
-          >
-            Owner-linked video privacy evidence could not be loaded.
-          </p>
-        )}
-      {privacyLoad?.status === "ready" &&
-        privacyLoad.caseId === profileCaseId &&
-        privacyLoad.jobs.length > 0 && (
-          <section
-            className="panel overflow-hidden"
-            aria-labelledby="video-privacy-evidence-heading"
-          >
-            <div className="border-b border-rule px-5 py-5 sm:px-6">
-              <h3
-                id="video-privacy-evidence-heading"
-                className="text-base font-bold"
-              >
-                Video privacy and keypoint evidence
-              </h3>
-              <p className="mt-1 text-sm leading-6 text-ink-muted">
-                This preview is separate from the model output. Facial Action
-                Units remain unavailable until a reviewed AU model and input
-                contract are selected.
-              </p>
-            </div>
-            <div className="divide-y divide-rule">
-              {privacyLoad.jobs.map((job) => (
-                <article
-                  key={job.jobId}
-                  className="grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_minmax(240px,0.8fr)]"
-                >
-                  <div>
-                    <h4 className="text-sm font-bold">{job.profileLabel}</h4>
-                    <p className="mt-1 text-xs leading-5 text-ink-muted">
-                      {job.status.replaceAll("_", " ")} ·{" "}
-                      {job.profileDescription}
-                    </p>
-                    {job.poseEvidence && (
-                      <p className="mt-3 text-xs leading-5 text-ink-muted">
-                        {job.poseEvidence.detectedFrames} of{" "}
-                        {job.poseEvidence.sampledFrames} sampled frames produced
-                        body-pose keypoints. Action Units: not configured.
-                      </p>
-                    )}
-                  </div>
-                  {job.previewUrl ? (
-                    <img
-                      className="aspect-video w-full rounded-lg border border-rule bg-black object-contain"
-                      src={job.previewUrl}
-                      alt="Protected, full-frame-blurred video frame with body-joint overlay when detected"
-                    />
-                  ) : (
-                    <div className="grid aspect-video place-items-center rounded-lg border border-rule bg-surface-soft px-4 text-center text-xs text-ink-muted">
-                      Protected preview is being prepared.
-                    </div>
-                  )}
-                </article>
-              ))}
-            </div>
-          </section>
-        )}
-
       {hasEegLink && (
         <section
           className="panel p-5 sm:p-6"
@@ -389,8 +282,7 @@ export function CombinedReviewReport({
                 EEG model output
               </h3>
               <p className="mt-1 text-sm leading-6 text-ink-muted">
-                Window-level technical output only. Threshold flags are not a
-                diagnosis or a recording-level probability.
+                Window scores, threshold, and model sensitivity.
               </p>
             </div>
             {readyRecordings.length > 1 && (
@@ -417,6 +309,12 @@ export function CombinedReviewReport({
             </p>
           ) : eegResult ? (
             <>
+              <Link
+                className="mt-4 inline-flex text-sm font-semibold text-teal-dark underline underline-offset-4"
+                href={`/results/${encodeURIComponent(eegResult.recordId)}`}
+              >
+                Open EEG timeline and explanation
+              </Link>
               <dl className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <ReportValue
                   label="Model"
@@ -445,7 +343,7 @@ export function CombinedReviewReport({
               </dl>
               <div className="mt-5 border-t border-rule pt-4">
                 <h4 className="text-xs font-bold uppercase tracking-[0.08em] text-ink-muted">
-                  Threshold-crossing intervals · review only
+                  Threshold-crossing intervals
                 </h4>
                 {eegResult.alertIntervals.length > 0 ? (
                   <ol className="mt-2 flex flex-wrap gap-2">
@@ -502,6 +400,12 @@ export function CombinedReviewReport({
             <p className="mt-4 text-sm text-ink-muted" role="status">
               Loading EEG result details…
             </p>
+          ) : pairedForSync && linkedRecording ? (
+            <p className="mt-4 text-sm text-ink-muted" role="status">
+              This video is linked to {linkedRecording.displayName}, whose EEG
+              status is {linkedRecording.status}. No completed EEG model result
+              is available for that recording.
+            </p>
           ) : (
             <p className="mt-4 text-sm text-ink-muted">
               Select one completed recording to include its result.
@@ -514,11 +418,16 @@ export function CombinedReviewReport({
         <EegAnnotationList
           events={eegResult.annotationEvents}
           source={eegResult.annotationSource}
-          reviewRequired={eegResult.annotationReviewRequired}
-          videoStartMinusEegStartSeconds={
-            pairedForDemo && offsetIsValid ? offsetSeconds : undefined
+          recordingDurationSeconds={eegResult.recordingDurationSeconds}
+          videoMappedSegments={
+            pairedForSync ? sync?.mapped_segments : undefined
           }
-          videoDurationSeconds={pairedForDemo ? videoDurationSeconds : null}
+          videoDurationSeconds={pairedForSync ? videoDurationSeconds : null}
+          videoReviewHref={
+            pairedForSync && videoJob
+              ? `/video-detection/${encodeURIComponent(videoJob.job_id)}`
+              : undefined
+          }
         />
       )}
 
@@ -532,10 +441,16 @@ export function CombinedReviewReport({
               Video model output
             </h3>
             <p className="mt-1 text-sm leading-6 text-ink-muted">
-              Model scores are uncalibrated and are not probabilities or
-              diagnoses. A protected preview, when available, remains in the
-              authenticated video review.
+              Uncalibrated model scores and movement sensitivity.
             </p>
+            {videoJob?.job_id && (
+              <Link
+                className="mt-4 inline-flex text-sm font-semibold text-teal-dark underline underline-offset-4"
+                href={`/video-detection/${encodeURIComponent(videoJob.job_id)}`}
+              >
+                Open video timeline and protected player
+              </Link>
+            )}
           </div>
           {videoError ? (
             <p className="mt-4 text-sm text-red" role="status">
@@ -553,6 +468,15 @@ export function CombinedReviewReport({
                   value="Uncalibrated · not a probability"
                 />
                 <ReportValue
+                  label="VSViG model-input blur"
+                  value={
+                    typeof videoResult.privacy?.blur_strength_percent ===
+                    "number"
+                      ? `${videoResult.privacy.blur_strength_percent}% of default strength`
+                      : "Not reported"
+                  }
+                />
+                <ReportValue
                   label="Threshold-crossing windows"
                   value={String(
                     videoResult.predictions.filter(
@@ -561,16 +485,8 @@ export function CombinedReviewReport({
                   )}
                 />
                 <ReportValue
-                  label="Privacy review"
-                  value={
-                    videoResult.privacy?.review_required
-                      ? "Human review required"
-                      : videoResult.privacy
-                        ? videoResult.privacy.quality_flags.length > 0
-                          ? "Review quality flags"
-                          : "No privacy quality flags reported"
-                        : "Metadata unavailable"
-                  }
+                  label="Face-redacted video"
+                  value={videoRedactionSummary(videoResult)}
                 />
               </dl>
               {videoResult.privacy?.model_input_adaptation === "letterbox" && (
@@ -582,7 +498,7 @@ export function CombinedReviewReport({
               )}
               <div className="mt-5 border-t border-rule pt-4">
                 <h4 className="text-xs font-bold uppercase tracking-[0.08em] text-ink-muted">
-                  Threshold-crossing intervals · review only
+                  Threshold-crossing intervals
                 </h4>
                 {videoResult.intervals.length > 0 ? (
                   <ol className="mt-2 space-y-2">
@@ -593,19 +509,29 @@ export function CombinedReviewReport({
                           className="flex flex-wrap justify-between gap-x-4 gap-y-1 rounded-lg bg-surface-soft px-3 py-2 text-sm"
                           key={`${interval.start_time}-${interval.end_time}-${index}`}
                         >
-                          <span className="font-mono tabular-nums">
-                            Video {formatRelativeTime(interval.start_time)}–
-                            {formatRelativeTime(interval.end_time)}
-                          </span>
-                          {pairedForDemo && offsetIsValid && (
+                          {pairedForSync && videoJob ? (
+                            <Link
+                              className="font-mono tabular-nums text-teal-dark underline underline-offset-2"
+                              href={`/video-detection/${encodeURIComponent(videoJob.job_id)}?time=${interval.start_time.toFixed(3)}`}
+                            >
+                              Video {formatRelativeTime(interval.start_time)}–
+                              {formatRelativeTime(interval.end_time)}
+                            </Link>
+                          ) : (
+                            <span className="font-mono tabular-nums">
+                              Video {formatRelativeTime(interval.start_time)}–
+                              {formatRelativeTime(interval.end_time)}
+                            </span>
+                          )}
+                          {pairedForSync && verifiedSourceOffset !== null && (
                             <span className="font-mono text-xs tabular-nums text-ink-muted">
-                              Assumed EEG{" "}
+                              EEG source clock{" "}
                               {formatRelativeTime(
-                                interval.start_time + (offsetSeconds ?? 0),
+                                interval.start_time + verifiedSourceOffset,
                               )}
                               –
                               {formatRelativeTime(
-                                interval.end_time + (offsetSeconds ?? 0),
+                                interval.end_time + verifiedSourceOffset,
                               )}
                             </span>
                           )}
@@ -620,7 +546,7 @@ export function CombinedReviewReport({
               </div>
               <div className="mt-5 border-t border-rule pt-4">
                 <h4 className="text-xs font-bold uppercase tracking-[0.08em] text-ink-muted">
-                  Video sensitivity evidence
+                  Video Grad-CAM evidence
                 </h4>
                 <p className="mt-2 text-sm leading-6 text-ink-muted">
                   {videoEvidenceSummary(videoResult)}
@@ -630,8 +556,9 @@ export function CombinedReviewReport({
           ) : videoJob?.status === "failed" ||
             videoJob?.status === "expired" ? (
             <p className="mt-4 text-sm text-ink-muted">
-              No video inference result is available because the job did not
-              complete successfully.
+              {videoJob.video_available
+                ? "This clip has no VSViG score. Its privacy-safe video remains available for synchronized visual review."
+                : "No video inference result or privacy-safe review copy is available for this clip."}
             </p>
           ) : videoJob?.status === "ready" ? (
             <p className="mt-4 text-sm text-ink-muted" role="status">
@@ -645,10 +572,19 @@ export function CombinedReviewReport({
         </section>
       )}
 
+      {pairedForSync && eegResult && videoResult && sync?.mapped_segments && (
+        <PairedModelTimeline
+          eegResult={eegResult}
+          videoResult={videoResult}
+          mappedSegments={sync.mapped_segments}
+          eegResultHref={`/results/${encodeURIComponent(eegResult.recordId)}`}
+          videoResultHref={`/video-detection/${encodeURIComponent(activeVideoJobId)}`}
+        />
+      )}
+
       <p className="text-xs leading-5 text-ink-muted">
-        Research and demonstration output only · not a diagnosis · source event
-        markers are separate from model predictions · no pairing or clock offset
-        has been verified.
+        Research output · not a diagnosis · EEG and video scores remain
+        separate.
       </p>
     </section>
   );
@@ -667,15 +603,194 @@ function ReportValue({ label, value }: { label: string; value: string }) {
 
 function formatSignedSeconds(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "not set";
-  return `${value > 0 ? "+" : ""}${value}s`;
+  const sign = value < 0 ? "−" : "+";
+  return `${sign}${formatRelativeTime(Math.abs(value))}`;
+}
+
+function videoRedactionSummary(result: DetectionResult): string {
+  const visualization = result.visualization;
+  if (!visualization?.available) return "Not available";
+  const selectiveBlur = visualization.privacy_method.includes("patient-blur")
+    ? "Legacy patient-region blur"
+    : "Face blur";
+  return visualization.full_frame_fallback_frames > 0
+    ? `${selectiveBlur} · full-frame fallback on ${visualization.full_frame_fallback_frames} frames`
+    : selectiveBlur;
+}
+
+function PairedModelTimeline({
+  eegResult,
+  videoResult,
+  mappedSegments,
+  eegResultHref,
+  videoResultHref,
+}: {
+  eegResult: AnalysisResult;
+  videoResult: DetectionResult;
+  mappedSegments: VideoEegSync["mapped_segments"];
+  eegResultHref: string;
+  videoResultHref: string;
+}) {
+  const start = 0;
+  const mappedEnd = mappedSegments.reduce(
+    (latest, segment) =>
+      Math.max(
+        latest,
+        segment.eeg_source_start_seconds +
+          segment.video_end_seconds -
+          segment.video_start_seconds,
+      ),
+    0,
+  );
+  const end = Math.max(eegResult.recordingDurationSeconds, mappedEnd);
+  const span = end;
+  if (!Number.isFinite(span) || span <= 0) return null;
+
+  const eegIntervals = eegResult.predictionWindows
+    .filter((window) => window.seizureDetected)
+    .map((window) => ({ start: window.startSeconds, end: window.endSeconds }));
+  const videoIntervals = videoResult.intervals.flatMap((interval) =>
+    mappedSegments.flatMap((segment) => {
+      const videoStart = Math.max(
+        interval.start_time,
+        segment.video_start_seconds,
+      );
+      const videoEnd = Math.min(interval.end_time, segment.video_end_seconds);
+      if (videoEnd <= videoStart) return [];
+      return [
+        {
+          start:
+            segment.eeg_source_start_seconds +
+            videoStart -
+            segment.video_start_seconds,
+          end:
+            segment.eeg_source_start_seconds +
+            videoEnd -
+            segment.video_start_seconds,
+        },
+      ];
+    }),
+  );
+  const ticks = Array.from(
+    { length: 5 },
+    (_, index) => start + (span * index) / 4,
+  );
+
+  return (
+    <section
+      className="panel p-5 sm:p-6"
+      aria-labelledby="paired-timeline-heading"
+    >
+      <h3 id="paired-timeline-heading" className="text-base font-bold">
+        EEG and video timeline
+      </h3>
+      <p className="mt-1 text-sm leading-6 text-ink-muted">
+        The unique camera metadata match is mapped onto the EEG source clock.
+        Footage during EEG gaps is omitted from this aligned view. Model scores
+        remain separate.
+      </p>
+      <div className="mt-5 space-y-4">
+        <TimelineLane
+          label="EEG flagged windows"
+          intervals={eegIntervals}
+          start={start}
+          span={span}
+          tone="bg-amber"
+          href={eegResultHref}
+        />
+        <TimelineLane
+          label="Video flagged windows"
+          intervals={videoIntervals}
+          start={start}
+          span={span}
+          tone="bg-teal-dark"
+          href={videoResultHref}
+        />
+      </div>
+      <div className="mt-2 grid grid-cols-5 font-mono text-[0.68rem] tabular-nums text-ink-muted">
+        {ticks.map((tick, index) => (
+          <span
+            className={
+              index === 0
+                ? "text-left"
+                : index === ticks.length - 1
+                  ? "text-right"
+                  : "text-center"
+            }
+            key={index}
+          >
+            {formatSignedSeconds(tick)}
+          </span>
+        ))}
+      </div>
+      <p className="mt-2 text-xs text-ink-faint">Time relative to EEG start</p>
+    </section>
+  );
+}
+
+function TimelineLane({
+  label,
+  intervals,
+  start,
+  span,
+  tone,
+  href,
+}: {
+  label: string;
+  intervals: Array<{ start: number; end: number }>;
+  start: number;
+  span: number;
+  tone: string;
+  href: string;
+}) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-[12rem_minmax(0,1fr)] sm:items-center">
+      <Link
+        className="text-xs font-semibold text-ink hover:text-teal-dark"
+        href={href}
+      >
+        {label}
+      </Link>
+      <div
+        className="relative h-7 overflow-hidden rounded-md bg-surface-muted"
+        role="img"
+        aria-label={`${label}: ${intervals.length} threshold-crossing intervals`}
+      >
+        {[25, 50, 75].map((position) => (
+          <span
+            key={position}
+            className="absolute inset-y-0 border-l border-white/80"
+            style={{ left: `${position}%` }}
+            aria-hidden="true"
+          />
+        ))}
+        {intervals.map((interval, index) => {
+          const clippedStart = Math.max(start, interval.start);
+          const clippedEnd = Math.min(start + span, interval.end);
+          if (clippedEnd <= clippedStart) return null;
+          const left = ((clippedStart - start) / span) * 100;
+          const width = ((clippedEnd - clippedStart) / span) * 100;
+          return (
+            <span
+              key={`${interval.start}-${interval.end}-${index}`}
+              className={`absolute inset-y-1 rounded-sm ${tone}`}
+              style={{ left: `${left}%`, width: `${width}%` }}
+              title={`${formatRelativeTime(interval.start)}–${formatRelativeTime(interval.end)}`}
+              aria-hidden="true"
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function videoEvidenceSummary(result: DetectionResult): string {
   const evidence = result.predictions.find(
     (item) => item.model_evidence,
   )?.model_evidence;
-  if (!evidence)
-    return "No patch-occlusion sensitivity artifact was returned for this output.";
-  const patchCount = evidence.patches.length;
-  return `${patchCount} patch-occlusion sensitivity change(s) were returned. This indicates model sensitivity to altered input regions; it is not a clinical or causal explanation.`;
+  if (!evidence) return "No Grad-CAM evidence was returned for this output.";
+  if (evidence.method === "vsvig-graph-grad-cam")
+    return "Relative model contribution across the strongest score window's 30 samples and 15 keypoint patches. This is not pixel-level localization or a clinical explanation.";
+  return `${evidence.patches?.length ?? 0} legacy patch-sensitivity values are available. They are not a clinical or causal explanation.`;
 }

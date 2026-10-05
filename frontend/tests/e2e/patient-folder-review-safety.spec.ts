@@ -25,6 +25,7 @@ function syntheticSession({
   currentStage,
   completedAt,
   errorMessage,
+  processingAttempts = [],
 }: {
   sessionId: string;
   caseId: string;
@@ -34,6 +35,13 @@ function syntheticSession({
   currentStage?: string;
   completedAt?: string | null;
   errorMessage?: string | null;
+  processingAttempts?: Array<{
+    recording_sequence_index: number | null;
+    stage: string;
+    status: "pending" | "running" | "succeeded" | "failed";
+    started_at: string | null;
+    finished_at: string | null;
+  }>;
 }) {
   const terminal = status !== "processing";
   return {
@@ -60,6 +68,7 @@ function syntheticSession({
         : errorMessage,
     progress,
     summary: { model_alert_recordings: 0 },
+    processing_attempts: processingAttempts,
     recordings: [],
   };
 }
@@ -532,7 +541,7 @@ test("EEG progress separates completed recordings from failures", async ({
   }
 });
 
-test("retryable rejection resumes later clips without resubmitting completed clips", async ({
+test("video intake waits for queue capacity and automatically submits later clips", async ({
   page,
 }) => {
   test.skip(
@@ -544,6 +553,9 @@ test("retryable rejection resumes later clips without resubmitting completed cli
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   let detectionPosts = 0;
   let acceptedJobs = 0;
+  let firstJobTerminalObserved = false;
+  let retriedAfterCapacityOpened = false;
+  let capacityRejected = false;
   const jobs = new Map<string, Record<string, unknown>>();
 
   await page.route("**/api/patient-report", (route) =>
@@ -593,6 +605,15 @@ test("retryable rejection resumes later clips without resubmitting completed cli
           failed_recordings: 0,
           percent: 100,
         },
+        processingAttempts: [
+          {
+            recording_sequence_index: 1,
+            stage: "inference",
+            status: "running",
+            started_at: new Date(Date.now() - 2_000).toISOString(),
+            finished_at: null,
+          },
+        ],
       }),
     }),
   );
@@ -618,12 +639,15 @@ test("retryable rejection resumes later clips without resubmitting completed cli
     if (route.request().method() !== "POST")
       return route.fulfill({ json: { jobs: Array.from(jobs.values()) } });
     detectionPosts += 1;
-    if (detectionPosts === 2) {
+    if (detectionPosts === 2 && !capacityRejected) {
+      capacityRejected = true;
       return route.fulfill({
         status: 429,
         json: { detail: "Video processing is temporarily busy." },
       });
     }
+    if (detectionPosts > 2 && firstJobTerminalObserved)
+      retriedAfterCapacityOpened = true;
     acceptedJobs += 1;
     const jobId = `VID-RETRY-SYNTHETIC-${acceptedJobs}`;
     const job = {
@@ -645,6 +669,8 @@ test("retryable rejection resumes later clips without resubmitting completed cli
   await page.route("**/api/video-detection/jobs/*", (route) => {
     const jobId = route.request().url().split("/").pop() ?? "";
     const job = jobs.get(jobId);
+    if (jobId === "VID-RETRY-SYNTHETIC-1" && job?.status === "ready")
+      firstJobTerminalObserved = true;
     return job
       ? route.fulfill({ json: { job } })
       : route.fulfill({ status: 404, json: { detail: "Job not found." } });
@@ -667,40 +693,29 @@ test("retryable rejection resumes later clips without resubmitting completed cli
       .setInputFiles(folder);
     await page.getByRole("button", { name: "Start processing" }).click();
 
-    const retryButton = page.getByRole("button", {
-      name: "Retry eligible video uploads",
-    });
-    await expect(retryButton).toBeVisible();
-    await expect(
-      page.getByRole("status").filter({
-        hasText:
-          "Some video clips were not submitted. Retry eligible uploads to continue.",
-      }),
-    ).toBeVisible();
-    expect(detectionPosts).toBe(2);
-    expect(acceptedJobs).toBe(1);
-    expect([...jobs.values()].map((job) => job.label)).toEqual(["Video 1"]);
-    const videoProgress = page.getByRole("region", {
-      name: "Video processing",
-    });
-    await expect(
-      videoProgress.getByText("Complete", { exact: true }),
-    ).toHaveCount(1);
-    await expect(
-      videoProgress.getByText("Not submitted", { exact: true }),
-    ).toHaveCount(1);
-
-    await retryButton.click();
     await expect(
       page.getByRole("heading", { name: "Processing complete" }),
     ).toBeVisible();
     expect(detectionPosts).toBe(4);
     expect(acceptedJobs).toBe(3);
+    expect(firstJobTerminalObserved).toBe(true);
+    expect(retriedAfterCapacityOpened).toBe(true);
     expect([...jobs.values()].map((job) => job.label)).toEqual([
       "Video 1",
       "Video 2",
       "Video 3",
     ]);
+    const videoProgress = page.getByRole("region", {
+      name: "Video processing",
+    });
+    const eegProgress = page.getByRole("region", {
+      name: "Recording analysis",
+    });
+    await eegProgress
+      .getByText("Show EEG processing stages · 1 recorded")
+      .click();
+    await expect(eegProgress).toContainText("Recording 01 · Run H5 model");
+    await expect(eegProgress).toContainText("running");
     await expect(
       videoProgress.getByText("Complete", { exact: true }),
     ).toHaveCount(3);
@@ -791,7 +806,7 @@ test("shows issues when an EEG session fails before creating recordings", async 
   }
 });
 
-test("canceling an accepted video upload leaves it unconfirmed and links to history", async ({
+test("canceling an accepted video upload leaves it unconfirmed and links to the patient review", async ({
   page,
 }) => {
   test.skip(
@@ -932,7 +947,7 @@ test("canceling an accepted video upload leaves it unconfirmed and links to hist
     await expect(videoProgress.getByText("Status unconfirmed")).toBeVisible();
     await expect(
       page.getByRole("link", {
-        name: "Open Patient History to check status",
+        name: "Open patient review to check status",
       }),
     ).toHaveAttribute("href", "/cases/CASE-CANCEL-SYNTHETIC");
     await expect(

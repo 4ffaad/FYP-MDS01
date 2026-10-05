@@ -174,7 +174,6 @@ export function LoginScreen() {
             transition={{ delay: 0.12, duration: 0.5 }}
             aria-label="MDS01 workflow preview"
           >
-            <div className="login-preview-glow" aria-hidden="true" />
             <div className="relative z-10 flex h-full flex-col justify-between p-7 sm:p-10">
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -220,7 +219,7 @@ function WorkflowDiagram() {
     >
       <div className="workflow-nodes relative grid w-full max-w-[38rem] grid-cols-4 gap-3">
         <motion.div
-          className="workflow-connector absolute left-[8%] right-[8%] top-10 h-px bg-gradient-to-r from-teal/10 via-teal/70 to-teal/10"
+          className="workflow-connector absolute left-[8%] right-[8%] top-10 h-1 bg-teal/50"
           initial={{ opacity: 0, scaleX: 0 }}
           animate={{ opacity: 1, scaleX: 1 }}
           transition={{

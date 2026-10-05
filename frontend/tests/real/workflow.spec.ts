@@ -27,10 +27,6 @@ test("synthetic VEEG upload is analyzed without exposing owner-only report detai
   await expect(
     page.getByRole("heading", { name: "Patient details", exact: true }),
   ).toBeVisible({ timeout: 20_000 });
-  await page
-    .getByRole("region", { name: "Patient details" })
-    .getByText("View extracted details", { exact: true })
-    .click();
   await expect(page.getByText(SYNTHETIC_DETAIL)).toBeVisible();
   const finalizedResponse = page.waitForResponse((response) => {
     const pathname = new URL(response.url()).pathname;

@@ -11,7 +11,7 @@ if (!/^mds01-security-[a-f0-9]{32}$/.test(SECURITY_PROJECT ?? "")) {
   throw new Error("A unique security Compose project is required");
 }
 
-test("real cookies isolate encrypted prediction-only video review", async ({
+test("real cookies isolate encrypted video review playback", async ({
   page,
   playwright,
 }) => {
@@ -49,26 +49,33 @@ test("real cookies isolate encrypted prediction-only video review", async ({
     `${API}/api/video-detection/jobs/${id}`,
   );
   expect(ownerJobResponse.ok()).toBeTruthy();
-  expect((await ownerJobResponse.json()).job.video_available).toBe(false);
+  expect((await ownerJobResponse.json()).job.video_available).toBe(true);
   const predictions = await page.request.get(
     `${API}/api/video-detection/jobs/${id}/predictions`,
   );
   expect(predictions.ok()).toBeTruthy();
   expect((await predictions.json()).predictions).toHaveLength(2);
+  const playback = await page.request.get(
+    `${API}/api/video-detection/jobs/${id}/visualization`,
+    { headers: { Range: "bytes=0-8" } },
+  );
+  expect(playback.status()).toBe(206);
+  expect(playback.headers()["content-range"]).toMatch(/^bytes 0-8\//);
+  expect(await playback.body()).toHaveLength(9);
 
   await page.goto(`/video-detection/${id}`);
   await expect(
-    page.getByRole("heading", { name: "Potential seizure activity detected" }),
+    page.getByRole("heading", { name: "VSViG score and protected video" }),
   ).toBeVisible();
-  await expect(
-    page.getByText("Video not retained", { exact: true }),
-  ).toBeVisible();
-  await expect(page.locator("video")).toHaveCount(0);
+  await expect(page.locator("video")).toBeVisible();
 
-  const removedArtifact = await page.request.get(
+  const laterRange = await page.request.get(
     `${API}/api/video-detection/jobs/${id}/visualization`,
+    { headers: { Range: "bytes=9-17" } },
   );
-  expect(removedArtifact.status()).toBe(404);
+  expect(laterRange.status()).toBe(206);
+  expect(laterRange.headers()["content-range"]).toMatch(/^bytes 9-17\//);
+  expect(await laterRange.body()).toHaveLength(9);
 
   const stranger = await playwright.request.newContext();
   try {
@@ -78,6 +85,13 @@ test("real cookies isolate encrypted prediction-only video review", async ({
     expect(
       (
         await stranger.get(`${API}/api/video-detection/jobs/${id}/predictions`)
+      ).status(),
+    ).toBe(401);
+    expect(
+      (
+        await stranger.get(
+          `${API}/api/video-detection/jobs/${id}/visualization`,
+        )
       ).status(),
     ).toBe(401);
     const registration = await stranger.post(`${API}/api/auth/register`, {
@@ -94,6 +108,13 @@ test("real cookies isolate encrypted prediction-only video review", async ({
     expect(
       (
         await stranger.get(`${API}/api/video-detection/jobs/${id}/predictions`)
+      ).status(),
+    ).toBe(404);
+    expect(
+      (
+        await stranger.get(
+          `${API}/api/video-detection/jobs/${id}/visualization`,
+        )
       ).status(),
     ).toBe(404);
   } finally {

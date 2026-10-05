@@ -1,8 +1,18 @@
 import type { PatientProfile, PatientProfileDetail } from "@/lib/types";
 
 const NAME_LABELS = new Set(["name", "patient name", "full name"]);
-const PRIVATE_LABEL =
-  /\b(address|phone|telephone|mobile|contact|email|mrn|medical record|record number|hospital|organization|institution|clinic|department|national id|patient id|id number|ic number|ssn|date of birth|dob|birth date|passport|ward|location|specialist|physician|operator)\b/i;
+const PROFILE_FIELD_LABELS = {
+  name: NAME_LABELS,
+  hospitalId: new Set(["hospital id", "hospital identifier", "hospital no"]),
+  age: new Set(["age"]),
+  findings: new Set([
+    "report findings",
+    "findings",
+    "conclusion",
+    "conclusions",
+    "impression",
+  ]),
+} as const;
 const PRIVATE_VALUE =
   /(?:@|\b(?:phone|telephone|mobile|address|street|road|avenue|postcode|postal code|zip|unit|block|apartment|suite|district|city|town|jalan|jln|taman|kampung)\b)/i;
 const PRIVATE_ID_VALUE = /\b[A-Z]*\d{6,}\b|\b\d{6,}[-/.]\d{1,}[-/.]?\d*\b/i;
@@ -36,10 +46,14 @@ const CONCLUSION_LABELS = new Set([
 ]);
 
 export type PatientReportDetailGroups = {
-  technical: PatientProfileDetail[];
-  events: PatientProfileDetail[];
+  patientRecording: PatientProfileDetail[];
+  interictal: PatientProfileDetail[];
+  ictal: PatientProfileDetail[];
+  attacks: PatientProfileDetail[];
+  findings: PatientProfileDetail[];
   conclusion: PatientProfileDetail[];
-  additional: PatientProfileDetail[];
+  reportSignoff: PatientProfileDetail[];
+  other: PatientProfileDetail[];
 };
 
 export function normalizedLabel(label: string): string {
@@ -64,21 +78,37 @@ function containsPrivateValue(value: string, label = ""): boolean {
 function patientProfileDetails(
   profile: PatientProfile,
 ): PatientProfileDetail[] {
-  const details = profile.details?.filter(
-    (detail) => detail.label.trim() && detail.value.trim(),
-  );
-  if (details?.length) return details;
-
+  const details =
+    profile.details?.filter(
+      (detail) => detail.label.trim() && detail.value.trim(),
+    ) ?? [];
+  const fields = [
+    { key: "name", label: "Name", value: profile.name },
+    { key: "hospitalId", label: "Hospital ID", value: profile.hospitalId },
+    { key: "age", label: "Age", value: profile.age },
+    { key: "findings", label: "Report findings", value: profile.findings },
+  ] as const;
+  const normalizedValue = (value: string) =>
+    value.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
+  const missingProfileFields = fields.filter(({ key, value }) => {
+    if (!value.trim()) return false;
+    const normalized = normalizedValue(value);
+    return !details.some(
+      (detail) =>
+        PROFILE_FIELD_LABELS[key].has(normalizedLabel(detail.label)) &&
+        normalizedValue(detail.value) === normalized,
+    );
+  });
   return [
-    { label: "Name", value: profile.name },
-    { label: "Age", value: profile.age },
-    { label: "Report findings", value: profile.findings },
-  ].filter((detail) => detail.value.trim());
+    ...details,
+    ...missingProfileFields.map(({ label, value }) => ({ label, value })),
+  ];
 }
 
 export function patientDisplayName(
   profile: PatientProfile | null,
   apiName: string | null | undefined,
+  fallback = "Patient review",
 ): string {
   if (profile?.name.trim() && !containsPrivateValue(profile.name))
     return profile.name.trim();
@@ -88,35 +118,50 @@ export function patientDisplayName(
       )?.value
     : null;
   const candidate = detailName?.trim() || apiName?.trim() || "";
-  return candidate && !containsPrivateValue(candidate)
-    ? candidate
-    : "Patient review";
+  return candidate && !containsPrivateValue(candidate) ? candidate : fallback;
 }
 
 export function reportDetails(
   profile: PatientProfile | null,
 ): PatientReportDetailGroups {
   const groups: PatientReportDetailGroups = {
-    technical: [],
-    events: [],
+    patientRecording: [],
+    interictal: [],
+    ictal: [],
+    attacks: [],
+    findings: [],
     conclusion: [],
-    additional: [],
+    reportSignoff: [],
+    other: [],
   };
   if (!profile) return groups;
 
   for (const detail of patientProfileDetails(profile)) {
     const label = normalizedLabel(detail.label);
-    if (
-      !label ||
-      PRIVATE_LABEL.test(label) ||
-      containsPrivateValue(detail.value, label) ||
-      NAME_LABELS.has(label)
-    )
-      continue;
-    if (TECHNICAL_LABELS.has(label)) groups.technical.push(detail);
-    else if (EVENT_LABELS.has(label)) groups.events.push(detail);
+    if (!label) continue;
+    if (label.includes("interictal")) groups.interictal.push(detail);
+    else if (label.includes("ictal")) groups.ictal.push(detail);
     else if (CONCLUSION_LABELS.has(label)) groups.conclusion.push(detail);
-    else groups.additional.push(detail);
+    else if (
+      EVENT_LABELS.has(label) ||
+      /\b(?:attack|event|seizure)s?\b/.test(label)
+    ) {
+      groups.attacks.push(detail);
+    } else if (TECHNICAL_LABELS.has(label)) groups.findings.push(detail);
+    else if (
+      /\b(?:specialist|consultant|report date|sign.?off)\b/.test(label)
+    ) {
+      groups.reportSignoff.push(detail);
+    } else if (
+      /\b(?:patient|recording|eeg|test|diagnosis|hospital|institution|medical record|mrn|ic|age|sex|gender|race|physician|technologist|dominance|date|time)\b/.test(
+        label,
+      ) ||
+      NAME_LABELS.has(label) ||
+      PROFILE_FIELD_LABELS.hospitalId.has(label) ||
+      PROFILE_FIELD_LABELS.age.has(label)
+    ) {
+      groups.patientRecording.push(detail);
+    } else groups.other.push(detail);
   }
   return groups;
 }

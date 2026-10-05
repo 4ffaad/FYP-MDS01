@@ -4,32 +4,21 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => window.localStorage.clear());
 });
 
-test("video privacy route opens its protected transform workflow", async ({
+test("legacy video privacy routes use the unified video workspace", async ({
   page,
 }) => {
   await page.goto("/video-privacy");
+  await expect(page.getByRole("heading", { name: "Video" })).toBeVisible();
+  await expect(page).toHaveURL(/\/video-detection$/);
   await expect(
-    page.getByRole("heading", {
-      name: "Protect a patient video before review",
-    }),
+    page
+      .getByRole("navigation", { name: "Video workspace" })
+      .getByRole("link", { name: "New video analysis" }),
   ).toBeVisible();
-  await expect(page.getByText(/AVI, MP4, MOV, or WebM/)).toBeVisible();
-  await expect(page.getByText("Audio-free output:")).toBeVisible();
+
+  await page.goto("/video-privacy/legacy-job");
+  await expect(page).toHaveURL(/\/video-detection\?view=reviews$/);
   await expect(
-    page.getByText(
-      /Every frame receives full-frame blur, whether or not a face is detected/,
-    ),
-  ).toBeVisible();
-  await expect(
-    page.getByText(/Face-detection coverage is a quality signal for review/),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("radio", { name: /Full-frame blur only/ }),
-  ).toBeChecked();
-  await page
-    .getByRole("radio", { name: /Full-frame blur \+ body-keypoint preview/ })
-    .check();
-  await expect(
-    page.getByText(/Facial Action Units are not configured/i),
+    page.getByRole("heading", { name: "Video reviews" }),
   ).toBeVisible();
 });

@@ -30,11 +30,13 @@ export interface AuthUser {
 export interface SignalPreviewChannel {
   label: string;
   samples: number[];
+  timeSeconds?: number[];
 }
 
 export interface SignalPreview {
   recordId: string;
   representation: "metadata-scrubbed" | "signal-obfuscated";
+  displayFilter?: string | null;
   samplingRate: number;
   channels: SignalPreviewChannel[];
   timeSeconds: number[];
@@ -87,6 +89,8 @@ export interface CaseSummary {
   reportSummary?: string | null;
   modalities: Array<"eeg" | "video">;
   analysisCount: number;
+  eegRecordingCount?: number;
+  videoClipCount?: number;
   privacyPreviewCount: number;
   latestCreatedAt: string;
   status: "processing" | "complete" | "needs_review";
@@ -149,6 +153,15 @@ export interface Session {
   recordings: Recording[];
   progress: SessionProgress;
   summary: SessionSummary;
+  processingAttempts: ProcessingAttempt[];
+}
+
+export interface ProcessingAttempt {
+  recordingSequenceIndex: number | null;
+  stage: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  startedAt: string | null;
+  finishedAt: string | null;
 }
 
 export interface SessionProgress {

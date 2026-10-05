@@ -13,27 +13,27 @@ const statusConfig: Record<
   queued: {
     label: "Queued",
     icon: "clock",
-    className: "border-rule-strong bg-surface-muted text-ink-muted",
+    className: "border-rule bg-surface-muted text-ink",
   },
   processing: {
     label: "Processing",
     icon: "spinner",
-    className: "border-cyan/40 bg-cyan-soft text-teal-dark",
+    className: "border-rule bg-cyan-soft text-teal-dark",
   },
   complete: {
     label: "Complete",
     icon: "check",
-    className: "border-teal/30 bg-teal-soft text-teal-dark",
+    className: "border-rule bg-teal-soft text-teal-dark",
   },
   partial: {
     label: "Partial · review",
     icon: "alert",
-    className: "border-amber/30 bg-amber-soft text-amber",
+    className: "border-rule bg-amber-soft text-ink",
   },
   failed: {
     label: "Needs review",
     icon: "alert",
-    className: "border-red/30 bg-red-soft text-red",
+    className: "border-rule bg-red-soft text-red",
   },
 };
 
@@ -42,7 +42,7 @@ export function StatusBadge({ status }: { status: DisplayStatus }) {
   return (
     <Badge
       variant="outline"
-      className={`min-h-7 rounded-full px-2.5 py-1 text-xs font-semibold ${config.className}`}
+      className={`min-h-7 rounded-full border px-2.5 py-1 text-xs font-semibold ${config.className}`}
       aria-label={`Status: ${config.label}`}
     >
       <Icon

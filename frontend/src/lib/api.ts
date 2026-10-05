@@ -43,6 +43,7 @@ function defaultApiBaseUrl(): string {
 const API_BASE_URL = (
   process.env.NEXT_PUBLIC_API_BASE_URL ?? defaultApiBaseUrl()
 ).replace(/\/$/, "");
+export const apiMediaUrl = (path: string) => `${API_BASE_URL}${path}`;
 const REQUEST_CREDENTIALS: RequestCredentials = "include";
 const USE_STUB = process.env.NEXT_PUBLIC_USE_API_STUB === "true";
 export const API_STUB_ENABLED = USE_STUB;
@@ -193,7 +194,7 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
     return {
       id: "USR-STUB",
       email: "demo@mds01.local",
-      displayName: "Demo user",
+      displayName: "Dr. Aisha Rahman (Demo)",
     };
   const response = await fetch(`${API_BASE_URL}/api/auth/session`, {
     headers: { Accept: "application/json" },
@@ -383,14 +384,14 @@ function stubVideoJob(profile: VideoPrivacyProfile): VideoPrivacyJob {
     profile,
     profileLabel:
       profile === "face-redacted-pose-preview"
-        ? "Full-frame blur + body-keypoint preview"
+        ? "Face blur + body-keypoint preview"
         : profile === "face-redacted"
-          ? "Full-frame blur"
+          ? "Face blur with full-frame fallback"
           : "Legacy pose-only",
     profileDescription:
       profile === "face-redacted-pose-preview"
-        ? "Full-frame blur precedes Lightweight OpenPose. No VSViG score or facial Action Units are produced."
-        : "The full frame is blurred on every frame. Face-detection coverage is a quality signal for review.",
+        ? "This preview-only utility blurs the face before OpenPose and produces no VSViG score. If face detection is uncertain, it blurs the full frame."
+        : "A detected face is blurred. If detection is missing or ambiguous, the full frame is blurred.",
     status: "queued",
     currentStage: "preflight",
     stages: [
@@ -482,6 +483,13 @@ type BackendSession = {
   created_at: string;
   completed_at: string | null;
   error_message?: string | null;
+  processing_attempts?: Array<{
+    recording_sequence_index: number | null;
+    stage: string;
+    status: "pending" | "running" | "succeeded" | "failed";
+    started_at: string | null;
+    finished_at: string | null;
+  }>;
   progress: {
     total_recordings: number;
     finished_recordings: number;
@@ -746,6 +754,13 @@ function sessionFromBackend(session: BackendSession): Session {
     ),
     progress: progressFromBackend(session.progress),
     summary: summaryFromBackend(session.summary),
+    processingAttempts: (session.processing_attempts ?? []).map((attempt) => ({
+      recordingSequenceIndex: attempt.recording_sequence_index,
+      stage: attempt.stage,
+      status: attempt.status,
+      startedAt: attempt.started_at,
+      finishedAt: attempt.finished_at,
+    })),
   };
 }
 
@@ -826,6 +841,7 @@ function stubSessionFromJob(job: StubJob): Session {
       percent: status === "completed" || status === "failed" ? 100 : 0,
     },
     summary: { modelAlertRecordings: 0 },
+    processingAttempts: [],
   };
 }
 
@@ -984,6 +1000,8 @@ type BackendCaseSummary = {
   report_summary?: string | null;
   modalities: Array<"eeg" | "video">;
   analysis_count: number;
+  eeg_recording_count?: number;
+  video_clip_count?: number;
   privacy_preview_count?: number;
   latest_created_at: string;
   status: CaseSummary["status"];
@@ -1001,6 +1019,8 @@ export async function getCases(signal?: AbortSignal): Promise<CaseSummary[]> {
       reportSummary: null,
       modalities: ["eeg"],
       analysisCount: 1,
+      eegRecordingCount: session.recordings.length,
+      videoClipCount: 0,
       privacyPreviewCount: 0,
       latestCreatedAt: session.createdAt,
       status:
@@ -1024,6 +1044,8 @@ export async function getCases(signal?: AbortSignal): Promise<CaseSummary[]> {
       reportSummary: item.report_summary ?? null,
       modalities: item.modalities,
       analysisCount: item.analysis_count,
+      eegRecordingCount: item.eeg_recording_count,
+      videoClipCount: item.video_clip_count,
       privacyPreviewCount: item.privacy_preview_count ?? 0,
       latestCreatedAt: item.latest_created_at,
       status: item.status,
@@ -1067,6 +1089,21 @@ export async function getCase(
       reviewReady: analysis.review_ready,
     })),
   };
+}
+
+export async function deleteCase(caseId: string): Promise<void> {
+  if (USE_STUB) {
+    await wait(80);
+    const jobs = readStubJobs().filter(
+      (job) => `CASE-${job.jobId.slice(-8)}` !== caseId,
+    );
+    writeStubJobs(jobs);
+    return;
+  }
+  await requestWithoutBody(
+    `/api/cases/${encodeURIComponent(caseId)}`,
+    "DELETE",
+  );
 }
 
 type BackendPatientProfile = {
@@ -1694,7 +1731,7 @@ export async function getSignalPreview(
         "No model-positive signal is available for this recording.",
         404,
       );
-    const points = Math.min(maxPoints, 480);
+    const points = Math.min(maxPoints, Math.ceil(durationSeconds * 128));
     const timeSeconds = Array.from(
       { length: points },
       (_, index) =>
@@ -1727,6 +1764,7 @@ export async function getSignalPreview(
     }));
     return {
       recordId,
+      displayFilter: null,
       representation: result.privacyMethods.some(
         (method) => method.id === "signal-obfuscation",
       )
@@ -1764,8 +1802,13 @@ export async function getSignalPreview(
   const response = await getJson<{
     record_id: string;
     representation: "metadata-scrubbed" | "signal-obfuscated";
+    display_filter?: string | null;
     sampling_rate: number;
-    channels: Array<{ label: string; samples: number[] }>;
+    channels: Array<{
+      label: string;
+      samples: number[];
+      time_seconds?: number[];
+    }>;
     time_seconds: number[];
     segments: Array<{
       source_start_seconds: number;
@@ -1778,9 +1821,14 @@ export async function getSignalPreview(
   );
   return {
     recordId: response.record_id,
+    displayFilter: response.display_filter ?? null,
     representation: response.representation,
     samplingRate: response.sampling_rate,
-    channels: response.channels,
+    channels: response.channels.map((channel) => ({
+      label: channel.label,
+      samples: channel.samples,
+      ...(channel.time_seconds ? { timeSeconds: channel.time_seconds } : {}),
+    })),
     timeSeconds: response.time_seconds,
     segments: response.segments.map((segment) => ({
       sourceStartSeconds: segment.source_start_seconds,
@@ -1852,12 +1900,18 @@ async function postFormJson<T>(
   return (await response.json()) as T;
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+export async function postJson<T>(
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     body: JSON.stringify(body),
+    signal,
     headers: { Accept: "application/json", "Content-Type": "application/json" },
     credentials: REQUEST_CREDENTIALS,
+    cache: "no-store",
   });
   if (!response.ok) throw await readError(response, false);
   return (await response.json()) as T;
@@ -1902,6 +1956,8 @@ async function readError(
 }
 
 function responseErrorMessage(detail: unknown, status: number): string {
+  if (status >= 500)
+    return "The service could not complete this request. Check local service health and retry.";
   if (typeof detail === "string" && detail.trim()) return detail;
   if (status === 422) {
     return "The request was rejected (422). Check the submitted fields and files.";
@@ -1909,8 +1965,19 @@ function responseErrorMessage(detail: unknown, status: number): string {
   return `Request failed with status ${status}.`;
 }
 
-function uploadErrorMessage(status: number, detail: unknown): string {
+function uploadErrorMessage(
+  status: number,
+  detail: unknown,
+  path: string,
+): string {
   if (status === 422) {
+    if (
+      path.startsWith("/api/video-detection/") &&
+      typeof detail === "string" &&
+      detail.trim()
+    ) {
+      return detail;
+    }
     return "Upload rejected (422). Verify the selected files and that the frontend and backend upload contracts match.";
   }
   if (status === 413) return "The upload exceeds the service size limit.";
@@ -1918,8 +1985,10 @@ function uploadErrorMessage(status: number, detail: unknown): string {
     return "This file format is not supported by the upload service.";
   if (status === 409)
     return "The service is busy with another upload or video analysis.";
-  if (status >= 500 && typeof detail === "string" && detail.trim())
-    return detail;
+  if (status === 503 && path.startsWith("/api/video-detection/"))
+    return "Video analysis is unavailable. Install and verify the pinned VSViG model assets, then retry.";
+  if (status >= 500)
+    return "The service could not complete this upload. Check local service health and retry.";
   return `Upload failed with status ${status}.`;
 }
 
@@ -1973,7 +2042,7 @@ function uploadRequest<T>(
       const payload = request.response as ApiErrorPayload | null;
       reject(
         new ApiError(
-          uploadErrorMessage(request.status, payload?.detail),
+          uploadErrorMessage(request.status, payload?.detail, path),
           request.status,
         ),
       );

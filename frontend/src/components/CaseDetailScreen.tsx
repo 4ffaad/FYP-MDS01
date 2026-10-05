@@ -1,25 +1,10 @@
 "use client";
-/* eslint-disable @next/next/no-img-element -- Authenticated protected media must bypass Next's optimizer/cache. */
 
 import Link from "next/link";
 import { MotionConfig, motion } from "motion/react";
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import {
-  ApiError,
-  deletePatientProfile,
-  getCase,
-  getCaseSourceReportPdf,
-  getPatientProfile,
-  getVideoPrivacyJobs,
-  savePatientProfile,
-  saveCaseSourceReportPdf,
-} from "@/lib/api";
-import type {
-  CaseDetail,
-  PatientProfile,
-  PatientProfileDetail,
-  VideoPrivacyJob,
-} from "@/lib/types";
+import { useEffect, useRef, useState } from "react";
+import { deletePatientProfile, getCase, getPatientProfile } from "@/lib/api";
+import type { CaseDetail, PatientProfileDetail } from "@/lib/types";
 import {
   profileLoadForCase,
   type PatientProfileLoad,
@@ -31,22 +16,7 @@ import {
 } from "@/lib/patient-profile-privacy";
 import { Icon } from "./Icon";
 import { LoadingOrb } from "./LoadingOrb";
-import { Status } from "./CasesScreen";
-
-type LoadedVideoPrivacyJobs = {
-  caseId: string;
-  jobs: VideoPrivacyJob[];
-  error: string | null;
-};
-
-type LoadedSourceReport = {
-  caseId: string;
-  url: string | null;
-  loading: boolean;
-  uploading: boolean;
-  error: string | null;
-  available?: boolean;
-};
+import { CaseStatusBadge } from "./CaseStatusBadge";
 
 type CaseDetailScreenProps = {
   caseId: string;
@@ -69,24 +39,12 @@ function CaseDetailScreenContent({
   const currentProfileLoad = profileLoadForCase(caseId, patientProfileLoad);
   const patientProfile = currentProfileLoad?.profile ?? null;
   const profileError = currentProfileLoad?.error ?? null;
-  const [videoPrivacyLoad, setVideoPrivacyLoad] =
-    useState<LoadedVideoPrivacyJobs | null>(null);
-  const [sourceReportLoad, setSourceReportLoad] =
-    useState<LoadedSourceReport | null>(null);
-  const reportPdfInput = useRef<HTMLInputElement>(null);
-  const reportPdfUrl = useRef<string | null>(null);
-  const reportPdfController = useRef<AbortController | null>(null);
   const caseIdRef = useRef(caseId);
   const caseLifecycleRef = useRef({ caseId, active: true });
   const [error, setError] = useState<string | null>(null);
   const [profileActionError, setProfileActionError] = useState<string | null>(
     null,
   );
-  const [profileActionBusy, setProfileActionBusy] = useState(false);
-  const currentSourceReport =
-    sourceReportLoad?.caseId === caseId ? sourceReportLoad : null;
-  const currentVideoPrivacy =
-    videoPrivacyLoad?.caseId === caseId ? videoPrivacyLoad : null;
 
   function isCurrentCase(
     targetCaseId: string,
@@ -100,25 +58,12 @@ function CaseDetailScreenContent({
     );
   }
 
-  function revokeReportPdfUrl() {
-    const url = reportPdfUrl.current;
-    reportPdfUrl.current = null;
-    if (url) URL.revokeObjectURL(url);
-  }
-
-  function abortReportPdfLoad() {
-    reportPdfController.current?.abort();
-    reportPdfController.current = null;
-  }
-
   useEffect(() => {
     caseIdRef.current = caseId;
     const lifecycle = { caseId, active: true };
     caseLifecycleRef.current = lifecycle;
     return () => {
       lifecycle.active = false;
-      abortReportPdfLoad();
-      revokeReportPdfUrl();
     };
   }, [caseId]);
 
@@ -152,90 +97,17 @@ function CaseDetailScreenContent({
           setPatientProfileLoad({
             caseId,
             profile: null,
-            error: "The reviewed patient profile is unavailable.",
+            error: "The patient report details are unavailable.",
           });
         }
       });
     return () => controller.abort();
   }, [caseId]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    let retry: ReturnType<typeof setTimeout> | undefined;
-
-    async function loadVideoPrivacyJobs() {
-      try {
-        const jobs = await getVideoPrivacyJobs(caseId, controller.signal);
-        if (controller.signal.aborted) return;
-        setVideoPrivacyLoad({ caseId, jobs, error: null });
-        if (
-          jobs.some(
-            (job) =>
-              !["ready", "needs_review", "failed", "expired"].includes(
-                job.status,
-              ),
-          )
-        ) {
-          retry = setTimeout(() => void loadVideoPrivacyJobs(), 1500);
-        }
-      } catch (loadError) {
-        if (
-          !(
-            loadError instanceof DOMException && loadError.name === "AbortError"
-          )
-        ) {
-          setVideoPrivacyLoad({
-            caseId,
-            jobs: [],
-            error: "Protected video evidence could not be loaded.",
-          });
-        }
-      }
-    }
-
-    void loadVideoPrivacyJobs();
-    return () => {
-      controller.abort();
-      if (retry) clearTimeout(retry);
-    };
-  }, [caseId]);
-
-  async function markPatientProfileReviewed() {
-    if (!patientProfile || patientProfile.reviewed || profileActionBusy) return;
-    if (
-      !window.confirm(
-        "Mark all extracted patient details as reviewed? Confirm only after comparing every value with the source report. This records data review, not clinical validation.",
-      )
-    )
-      return;
-    const lifecycle = caseLifecycleRef.current;
-    setProfileActionError(null);
-    setProfileActionBusy(true);
-    try {
-      const reviewedProfile = await savePatientProfile(
-        caseId,
-        patientProfile.details ?? [],
-      );
-      if (!isCurrentCase(caseId, lifecycle)) return;
-      setPatientProfileLoad({
-        caseId,
-        profile: reviewedProfile,
-        error: null,
-      });
-    } catch {
-      if (!isCurrentCase(caseId, lifecycle)) return;
-      setProfileActionError(
-        "The patient details remain unverified because the review could not be saved.",
-      );
-    } finally {
-      if (isCurrentCase(caseId, lifecycle)) setProfileActionBusy(false);
-    }
-  }
-
   async function removePatientProfile() {
     if (
       !window.confirm(
-        "Delete the encrypted patient details and source-report PDF for this case?",
+        "Delete the encrypted patient details and any retained source document for this case?",
       )
     )
       return;
@@ -244,16 +116,6 @@ function CaseDetailScreenContent({
     try {
       await deletePatientProfile(caseId);
       if (!isCurrentCase(caseId, lifecycle)) return;
-      abortReportPdfLoad();
-      revokeReportPdfUrl();
-      setSourceReportLoad({
-        caseId,
-        url: null,
-        loading: false,
-        uploading: false,
-        error: null,
-        available: false,
-      });
       setPatientProfileLoad({ caseId, profile: null, error: null });
       setProfileActionError(null);
     } catch {
@@ -261,113 +123,10 @@ function CaseDetailScreenContent({
       setPatientProfileLoad({
         caseId,
         profile: patientProfile,
-        error: "The reviewed patient profile could not be deleted.",
+        error: "The patient report details could not be deleted.",
       });
-      setProfileActionError(
-        "The reviewed patient profile could not be deleted.",
-      );
+      setProfileActionError("The patient report details could not be deleted.");
     }
-  }
-
-  async function openSourceReport() {
-    if (currentSourceReport?.url) return;
-    abortReportPdfLoad();
-    const lifecycle = caseLifecycleRef.current;
-    const controller = new AbortController();
-    reportPdfController.current = controller;
-    setSourceReportLoad({
-      caseId,
-      url: null,
-      loading: true,
-      uploading: false,
-      error: null,
-    });
-    try {
-      const pdf = await getCaseSourceReportPdf(caseId, controller.signal);
-      if (controller.signal.aborted || !isCurrentCase(caseId, lifecycle))
-        return;
-      if (pdf.type && pdf.type !== "application/pdf") {
-        throw new Error("The stored source report is not a PDF.");
-      }
-      const url = URL.createObjectURL(pdf);
-      reportPdfUrl.current = url;
-      setSourceReportLoad({
-        caseId,
-        url,
-        loading: false,
-        uploading: false,
-        error: null,
-        available: true,
-      });
-    } catch (loadError) {
-      if (controller.signal.aborted || !isCurrentCase(caseId, lifecycle))
-        return;
-      const message =
-        loadError instanceof ApiError && loadError.status === 404
-          ? "No PDF report is attached yet. Export the report as a PDF on this device, then attach it here."
-          : "The original report PDF could not be opened.";
-      setSourceReportLoad({
-        caseId,
-        url: null,
-        loading: false,
-        uploading: false,
-        error: message,
-        available: !(loadError instanceof ApiError && loadError.status === 404),
-      });
-    } finally {
-      if (reportPdfController.current === controller)
-        reportPdfController.current = null;
-    }
-  }
-
-  async function attachSourceReport(event: ChangeEvent<HTMLInputElement>) {
-    const pdf = event.target.files?.[0];
-    event.target.value = "";
-    if (!pdf) return;
-    const lifecycle = caseLifecycleRef.current;
-    abortReportPdfLoad();
-    revokeReportPdfUrl();
-    setSourceReportLoad({
-      caseId,
-      url: null,
-      loading: false,
-      uploading: true,
-      error: null,
-    });
-    try {
-      await saveCaseSourceReportPdf(caseId, pdf);
-      if (!isCurrentCase(caseId, lifecycle)) return;
-      setSourceReportLoad({
-        caseId,
-        url: null,
-        loading: false,
-        uploading: false,
-        error: null,
-        available: true,
-      });
-    } catch {
-      if (!isCurrentCase(caseId, lifecycle)) return;
-      setSourceReportLoad({
-        caseId,
-        url: null,
-        loading: false,
-        uploading: false,
-        error: "The PDF report could not be attached to this case.",
-      });
-    }
-  }
-
-  function closeSourceReport() {
-    abortReportPdfLoad();
-    revokeReportPdfUrl();
-    setSourceReportLoad({
-      caseId,
-      url: null,
-      loading: false,
-      uploading: false,
-      error: null,
-      available: true,
-    });
   }
 
   if (error)
@@ -394,19 +153,13 @@ function CaseDetailScreenContent({
       </div>
     );
 
-  const patientDetailsReviewed =
-    patientProfile?.reviewed ??
-    caseData.patientNameVerificationStatus === "reviewed";
-  const displayName = patientDetailsReviewed
-    ? patientDisplayName(patientProfile, caseData.patientName)
-    : "Patient review";
-  const nameVerificationStatus =
-    patientProfile?.verificationStatus ??
-    caseData.patientNameVerificationStatus;
+  const caseReference = `Case ${caseData.caseId.slice(-8)}`;
+  const displayName = patientDisplayName(
+    patientProfile,
+    caseData.patientName,
+    caseReference,
+  );
   const report = reportDetails(patientProfile);
-  const reportSummary = patientProfile?.reviewed
-    ? (report.conclusion[0] ?? report.technical[0] ?? report.events[0] ?? null)
-    : null;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -418,27 +171,26 @@ function CaseDetailScreenContent({
           transition={{ duration: 0.28, ease: "easeOut" }}
         >
           <Link
-            href="/cases"
+            href="/dashboard"
             className="inline-flex min-h-10 items-center gap-2 text-xs font-bold text-teal-dark underline underline-offset-4"
           >
             <Icon name="back" className="size-4" />
-            Back to Patient History
+            Back to Workspace
           </Link>
           <header className="mt-6 border-b border-rule pb-7">
             <p className="eyebrow">Patient review</p>
             <h1 className="mt-3 break-words text-[clamp(2rem,5vw,3rem)] font-semibold tracking-[-0.05em] text-ink">
               {displayName}
             </h1>
-            {nameVerificationStatus === "auto_extracted" && (
-              <p className="mt-2 inline-flex rounded-full bg-amber-soft/60 px-3 py-1 text-xs font-semibold text-ink-muted">
-                Name auto-extracted · not verified
-              </p>
-            )}
             <p className="mt-3 max-w-2xl text-sm leading-6 text-ink-muted">
-              Report overview and independent EEG and video review history.
-              Internal case references are kept out of the screen.
+              Report details and independent EEG and video review history.
             </p>
             <div className="mt-5 flex flex-wrap gap-2 text-xs font-medium text-ink-muted">
+              {displayName !== caseReference && (
+                <span className="rounded-full bg-surface-soft px-3 py-1.5">
+                  {caseReference}
+                </span>
+              )}
               <span className="rounded-full bg-surface-soft px-3 py-1.5">
                 {caseData.analyses.length}{" "}
                 {caseData.analyses.length === 1 ? "analysis" : "analyses"}
@@ -504,21 +256,11 @@ function CaseDetailScreenContent({
             </div>
           )}
 
-          {patientProfile && !patientProfile.reviewed && (
-            <p
-              className="mt-5 rounded-xl border border-amber/30 bg-amber-soft/40 px-4 py-3 text-sm leading-6 text-ink-muted"
-              role="status"
-            >
-              Patient details were extracted automatically from the report and
-              remain unverified until reviewed against the source.
-            </p>
-          )}
-
           <section
-            className="panel glass-panel mt-6 overflow-hidden"
+            className="panel mt-6 overflow-hidden"
             aria-labelledby="patient-report-heading"
           >
-            <div className="flex flex-col gap-4 border-b border-rule px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-7">
+            <div className="border-b border-rule px-5 py-5 sm:px-7">
               <div>
                 <p className="eyebrow">Patient report · owner-only</p>
                 <h2
@@ -528,177 +270,55 @@ function CaseDetailScreenContent({
                   Report overview
                 </h2>
                 <p className="mt-1 text-sm leading-6 text-ink-muted">
-                  {patientProfile?.reviewed
-                    ? "Reviewed report sections are grouped below. The original PDF retains the full document for authorized review."
-                    : patientProfile
-                      ? "Unverified extracted report text is hidden from the overview. Expand All extracted report details below to compare it with the source."
-                      : "Patient report details are unavailable. Attach or open the original PDF for authorized review."}
+                  {patientProfile
+                    ? "Report fields were extracted on this device from the selected Word document and saved to this patient review."
+                    : "Patient report details are unavailable. The Word document is read during patient-folder intake."}
                 </p>
                 <p className="mt-2 max-w-2xl text-xs leading-5 text-ink-muted">
-                  For a Word report, export a PDF on this device and attach it
-                  here. The DOC/DOCX file is used for local text extraction; the
-                  attached PDF is the only source-document file retained with
-                  this case, encrypted and owner-scoped.
+                  The source document is not retained. All extracted fields
+                  appear below in this owner-only view. The fields are copied
+                  from the report automatically and may contain extraction
+                  errors.
                 </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-rule bg-surface/80 px-4 text-sm font-semibold text-ink transition hover:border-teal/40 hover:text-teal-dark disabled:cursor-wait disabled:opacity-60"
-                  onClick={() =>
-                    currentSourceReport?.url
-                      ? closeSourceReport()
-                      : void openSourceReport()
-                  }
-                  disabled={
-                    currentSourceReport?.loading ||
-                    currentSourceReport?.uploading
-                  }
-                >
-                  <Icon name="file" className="size-4" />
-                  {currentSourceReport?.loading
-                    ? "Opening PDF…"
-                    : currentSourceReport?.url
-                      ? "Close PDF viewer"
-                      : "View original report PDF"}
-                </button>
-                <button
-                  type="button"
-                  className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-teal px-4 text-sm font-semibold text-white transition hover:bg-teal-dark disabled:cursor-wait disabled:opacity-60"
-                  onClick={() => reportPdfInput.current?.click()}
-                  disabled={currentSourceReport?.uploading}
-                >
-                  <Icon name="file" className="size-4" />
-                  {currentSourceReport?.uploading
-                    ? "Attaching PDF…"
-                    : "Attach or replace PDF"}
-                </button>
-                <input
-                  ref={reportPdfInput}
-                  className="sr-only"
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  aria-label="Attach source report PDF"
-                  onChange={(event) => void attachSourceReport(event)}
-                />
               </div>
             </div>
 
             {patientProfile ? (
               <div className="space-y-5 p-5 sm:p-7">
-                {patientProfile.reviewed ? (
-                  <>
-                    {reportSummary && (
-                      <div className="rounded-2xl border border-teal/15 bg-teal-soft/40 p-4 sm:p-5">
-                        <p className="text-xs font-bold uppercase tracking-[0.12em] text-teal-dark">
-                          Report at a glance · {reportSummary.label}
-                        </p>
-                        <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-sm leading-6 text-ink">
-                          {reportSummary.value}
-                        </p>
-                      </div>
-                    )}
-
-                    <div className="grid gap-4 lg:grid-cols-3">
-                      <ReportSection
-                        title="Technical summary"
-                        details={report.technical}
-                      />
-                      <ReportSection title="Events" details={report.events} />
-                      <ReportSection
-                        title="Conclusion"
-                        details={report.conclusion}
-                      />
-                    </div>
-
-                    {!report.technical.length &&
-                      !report.events.length &&
-                      !report.conclusion.length &&
-                      !report.additional.length && (
-                        <p className="rounded-xl border border-dashed border-rule-strong p-4 text-sm leading-6 text-ink-muted">
-                          No structured report sections are available. Attach or
-                          open the original PDF to review the complete document.
-                        </p>
-                      )}
-                  </>
-                ) : (
-                  <p className="rounded-xl border border-amber/30 bg-amber-soft/40 p-4 text-sm leading-6 text-ink-muted">
-                    Unverified report text is hidden from the overview. Open All
-                    extracted report details below to inspect it before marking
-                    the complete profile reviewed.
-                  </p>
-                )}
-
-                {report.additional.length > 0 && (
-                  <details className="rounded-xl border border-rule bg-surface/60 px-4 py-3">
-                    <summary className="cursor-pointer text-sm font-semibold text-ink">
-                      Other report details ({report.additional.length})
-                    </summary>
-                    <ReportDetailsList
-                      details={report.additional}
-                      className="mt-4 grid gap-4 sm:grid-cols-2"
-                    />
-                  </details>
-                )}
-
-                {patientProfile.details &&
-                  patientProfile.details.length > 0 && (
-                    <details className="rounded-2xl border border-rule bg-surface/60 p-4 sm:p-5">
-                      <summary className="cursor-pointer text-sm font-semibold text-ink">
-                        All extracted report details (
-                        {patientProfile.details.length})
-                      </summary>
-                      <p className="mt-2 text-xs leading-5 text-ink-muted">
-                        Owner-only encrypted profile. These details are
-                        auto-extracted and unverified; compare them with the
-                        source report before marking them reviewed.
-                      </p>
-                      <ReportDetailsList
-                        details={patientProfile.details}
-                        className="mt-4 grid gap-4 sm:grid-cols-2"
-                      />
-                      {!patientProfile.reviewed && (
-                        <div className="mt-4 space-y-3 border-t border-rule pt-4">
-                          <p className="text-xs leading-5 text-ink-muted">
-                            Compare every extracted value with the source report
-                            before marking it reviewed. This records data
-                            review; it does not verify clinical credentials or
-                            model output.
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => void markPatientProfileReviewed()}
-                            disabled={profileActionBusy}
-                            className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-teal px-3 py-2 text-xs font-semibold text-white hover:bg-teal-dark disabled:cursor-wait disabled:opacity-60"
-                          >
-                            <Icon name="check" className="size-4" />
-                            {profileActionBusy
-                              ? "Saving review…"
-                              : "Mark details reviewed"}
-                          </button>
-                        </div>
-                      )}
-                    </details>
-                  )}
-
-                <div className="border-t border-rule pt-4 text-xs leading-5 text-ink-muted">
-                  {currentSourceReport?.uploading
-                    ? "Uploading the PDF for encrypted, owner-scoped storage…"
-                    : currentSourceReport?.error
-                      ? currentSourceReport.error
-                      : currentSourceReport?.url
-                        ? "The original report is open below. It may include identifiers not shown in this summary."
-                        : currentSourceReport?.available
-                          ? "PDF report attached and stored encrypted for this case."
-                          : "Address, phone, and record identifiers are intentionally omitted from this summary."}
-                </div>
-                {currentSourceReport?.url && (
-                  <iframe
-                    className="h-[min(78vh,900px)] w-full rounded-2xl border border-rule bg-white"
-                    title="Original source report PDF"
-                    src={currentSourceReport.url}
-                    referrerPolicy="no-referrer"
+                <div className="grid gap-4 md:grid-cols-2">
+                  <ReportSection
+                    title="Patient and recording details"
+                    details={report.patientRecording}
                   />
+                  <ReportSection
+                    title="Interictal EEG"
+                    details={report.interictal}
+                  />
+                  <ReportSection title="Ictal EEG" details={report.ictal} />
+                  <ReportSection title="Attacks" details={report.attacks} />
+                  <ReportSection
+                    title="EEG findings"
+                    details={report.findings}
+                  />
+                  <ReportSection
+                    title="Conclusion"
+                    details={report.conclusion}
+                  />
+                  <ReportSection
+                    title="Report sign-off"
+                    details={report.reportSignoff}
+                  />
+                  <ReportSection
+                    title="Other extracted details"
+                    details={report.other}
+                  />
+                </div>
+
+                {!Object.values(report).some((details) => details.length) && (
+                  <p className="rounded-xl bg-surface-soft p-4 text-sm leading-6 text-ink-muted shadow-hard-sm">
+                    The report was saved, but no readable details were
+                    extracted.
+                  </p>
                 )}
                 {profileActionError && (
                   <p
@@ -710,9 +330,7 @@ function CaseDetailScreenContent({
                 )}
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="text-xs text-ink-muted">
-                    {patientProfile.reviewed && patientProfile.reviewedAt
-                      ? `Details reviewed ${formatDate(patientProfile.reviewedAt)}`
-                      : "Auto-extracted · not reviewed"}
+                    Automatically extracted from the report
                   </p>
                   <button
                     type="button"
@@ -720,7 +338,7 @@ function CaseDetailScreenContent({
                     className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-rule px-3 py-2 text-xs font-semibold text-ink-muted hover:border-red/40 hover:text-red"
                   >
                     <Icon name="trash" className="size-4" />
-                    Delete patient record and PDF
+                    Delete patient details
                   </button>
                 </div>
               </div>
@@ -731,113 +349,6 @@ function CaseDetailScreenContent({
             )}
           </section>
 
-          {(currentVideoPrivacy?.jobs.length || currentVideoPrivacy?.error) && (
-            <section
-              className="panel mt-6 overflow-hidden"
-              aria-labelledby="video-privacy-heading"
-            >
-              <div className="border-b border-rule px-5 py-5 sm:px-7">
-                <h2 id="video-privacy-heading" className="text-base font-bold">
-                  Video de-identification and pose preview
-                </h2>
-                <p className="mt-1 text-sm leading-6 text-ink-muted">
-                  Preview jobs stay separate from EEG inference. The full frame
-                  is blurred before Lightweight OpenPose runs; no facial Action
-                  Units or model prediction are generated.
-                </p>
-              </div>
-              {currentVideoPrivacy.error ? (
-                <p className="px-5 py-4 text-sm text-amber" role="status">
-                  {currentVideoPrivacy.error}
-                </p>
-              ) : (
-                <ul className="divide-y divide-rule">
-                  {currentVideoPrivacy.jobs.map((job) => (
-                    <li
-                      key={job.jobId}
-                      className="grid gap-4 px-5 py-5 sm:grid-cols-[minmax(0,1fr)_minmax(240px,0.8fr)] sm:px-7"
-                    >
-                      <div>
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <h3 className="text-sm font-bold">
-                            {job.profileLabel} · privacy preview
-                          </h3>
-                          {job.status === "failed" ||
-                          job.status === "expired" ? (
-                            <span className="text-xs font-semibold text-amber">
-                              {job.status === "failed"
-                                ? "Unavailable"
-                                : "Expired"}
-                            </span>
-                          ) : (
-                            <Status
-                              status={
-                                job.status === "ready"
-                                  ? "complete"
-                                  : job.status === "needs_review"
-                                    ? "needs_review"
-                                    : "processing"
-                              }
-                            />
-                          )}
-                        </div>
-                        <p className="mt-2 text-xs leading-5 text-ink-muted">
-                          {job.profileDescription}
-                        </p>
-                        {job.poseEvidence && (
-                          <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-                            <div>
-                              <dt className="text-xs text-ink-muted">
-                                Body-pose samples
-                              </dt>
-                              <dd className="mt-1 text-sm font-semibold text-ink">
-                                {job.poseEvidence.detectedFrames} /{" "}
-                                {job.poseEvidence.sampledFrames} sampled frames
-                              </dd>
-                            </div>
-                            <div>
-                              <dt className="text-xs text-ink-muted">
-                                Facial Action Units
-                              </dt>
-                              <dd className="mt-1 text-sm font-semibold text-ink">
-                                Not configured
-                              </dd>
-                            </div>
-                          </dl>
-                        )}
-                        {job.poseEvidence?.trackingStopped && (
-                          <p className="mt-3 text-xs leading-5 text-amber">
-                            Pose overlay stopped after a missing or ambiguous
-                            person frame; the preview never switches subjects
-                            automatically.
-                          </p>
-                        )}
-                        {job.error && (
-                          <p className="mt-3 text-xs text-red" role="status">
-                            {job.error}
-                          </p>
-                        )}
-                      </div>
-                      <div>
-                        {job.previewUrl ? (
-                          <img
-                            className="aspect-video w-full rounded-lg border border-rule bg-black object-contain"
-                            src={job.previewUrl}
-                            alt="Full-frame-blurred video frame with body-keypoint overlay when detected"
-                          />
-                        ) : (
-                          <div className="grid aspect-video place-items-center rounded-lg border border-rule bg-surface-soft px-4 text-center text-xs text-ink-muted">
-                            Protected preview is being prepared.
-                          </div>
-                        )}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          )}
-
           <section
             className="panel mt-8 overflow-hidden"
             aria-labelledby="history-heading"
@@ -847,8 +358,7 @@ function CaseDetailScreenContent({
                 Review timeline
               </h2>
               <p className="mt-1 text-sm text-ink-muted">
-                EEG inference, VSViG analysis, and privacy previews are separate
-                review paths.
+                EEG and video results for this patient.
               </p>
             </div>
             <div className="divide-y divide-rule">
@@ -876,7 +386,7 @@ function CaseDetailScreenContent({
                     </div>
                   </div>
                   <div className="flex items-center gap-3 sm:text-right">
-                    <Status status={analysis.status} />
+                    <CaseStatusBadge status={analysis.status} />
                     <span className="text-xs text-ink-muted">
                       {analysis.reviewReady
                         ? "Review ready"
@@ -891,12 +401,20 @@ function CaseDetailScreenContent({
                       </Link>
                     )}
                     {analysis.modality === "video" && (
-                      <Link
-                        href={`/video-detection/${encodeURIComponent(analysis.id)}`}
-                        className="text-xs font-bold text-teal-dark underline underline-offset-4"
-                      >
-                        Open VSViG player
-                      </Link>
+                      <>
+                        <Link
+                          href={`/analysis?videoJobId=${encodeURIComponent(analysis.id)}`}
+                          className="text-xs font-bold text-teal-dark underline underline-offset-4"
+                        >
+                          Open EEG/video sync review
+                        </Link>
+                        <Link
+                          href={`/video-detection/${encodeURIComponent(analysis.id)}`}
+                          className="text-xs font-bold text-teal-dark underline underline-offset-4"
+                        >
+                          Open VSViG player
+                        </Link>
+                      </>
                     )}
                   </div>
                 </div>
@@ -905,10 +423,8 @@ function CaseDetailScreenContent({
                 (analysis) => analysis.modality === "video",
               ) && (
                 <p className="px-5 py-8 text-sm leading-6 text-ink-muted sm:px-7">
-                  No VSViG player is attached to this case yet. A player appears
-                  only after a video-detection job is admitted and submitted
-                  under the current unmodified 1920×1080 contract. Privacy
-                  previews are separate and do not create model scores.
+                  Upload a video analysis to add its protected player and model
+                  scores here.
                 </p>
               )}
             </div>
@@ -932,16 +448,11 @@ function ReportSection({
   title: string;
   details: PatientProfileDetail[];
 }) {
+  if (!details.length) return null;
   return (
     <section className="rounded-2xl border border-rule bg-surface/70 p-4">
       <h3 className="text-sm font-semibold text-ink">{title}</h3>
-      {details.length ? (
-        <ReportDetailsList details={details} className="mt-4 space-y-4" />
-      ) : (
-        <p className="mt-3 text-xs leading-5 text-ink-muted">
-          Not available in the structured report details.
-        </p>
-      )}
+      <ReportDetailsList details={details} className="mt-4 space-y-4" />
     </section>
   );
 }

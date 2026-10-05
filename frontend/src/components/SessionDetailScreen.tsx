@@ -37,7 +37,7 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
   const removeSession = async (id: string) => {
     try {
       await deleteSession(id);
-      router.push("/dashboard");
+      router.push("/sessions");
     } catch (deleteError: unknown) {
       setError(
         deleteError instanceof Error
@@ -156,10 +156,10 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
       <div className="animate-enter-up">
         <Link
           className="inline-flex min-h-10 items-center gap-2 text-xs font-bold text-teal-dark underline decoration-teal/40 underline-offset-4 hover:decoration-teal"
-          href="/dashboard"
+          href="/sessions"
         >
           <Icon name="back" className="size-4" />
-          Back to VEEG analysis
+          Back to EEG sessions
         </Link>
 
         <section
@@ -326,9 +326,9 @@ function SessionError({ message }: { message: string }) {
         <p className="mt-2 text-sm leading-6 text-red">{message}</p>
         <Link
           className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-teal-dark underline underline-offset-4"
-          href="/dashboard"
+          href="/sessions"
         >
-          Return to VEEG analysis <Icon name="arrow" className="size-4" />
+          Return to EEG sessions <Icon name="arrow" className="size-4" />
         </Link>
       </div>
     </div>

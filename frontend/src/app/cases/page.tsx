@@ -1,7 +1,7 @@
-import { CasesScreen } from "@/components/CasesScreen";
+import { VeegWorkspaceScreen } from "@/components/VeegWorkspaceScreen";
 
-export const metadata = { title: "Patient history" };
+export const metadata = { title: "VEEG workspace" };
 
 export default function CasesPage() {
-  return <CasesScreen />;
+  return <VeegWorkspaceScreen />;
 }

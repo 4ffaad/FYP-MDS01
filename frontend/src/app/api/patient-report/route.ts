@@ -39,7 +39,7 @@ export async function POST(request: Request) {
   }
   if (process.platform !== "darwin") {
     return error(
-      "Legacy Word extraction requires local macOS textutil. Convert the report locally or enter the approved fields manually.",
+      "Legacy Word extraction requires local macOS textutil. Convert the report locally or enter the details manually.",
       501,
     );
   }
@@ -113,14 +113,14 @@ export async function POST(request: Request) {
     typeof result.stdout !== "string"
   ) {
     return error(
-      "The report could not be read locally. Review the source and enter only the approved profile fields manually.",
+      "The report could not be read locally. Convert it to a readable Word document or enter the details manually.",
       422,
     );
   }
 
   const draft = extractPatientReportDraft(result.stdout);
   return NextResponse.json(
-    { draft, requiresHumanReview: true, stored: false },
+    { draft, stored: false },
     { headers: { "Cache-Control": "no-store", Pragma: "no-cache" } },
   );
 }

@@ -50,7 +50,10 @@ function isWithinDirectory(directory: string, root: string): boolean {
 }
 
 /** Classify one explicitly selected directory; filenames never establish modality pairing. */
-export function classifyPatientFolder(files: File[]): PatientFolderSelection {
+export function classifyPatientFolder(
+  files: File[],
+  { requireReport = true, includeVideos = true } = {},
+): PatientFolderSelection {
   const errors: string[] = [];
   const byExtension = new Map<string, File[]>();
   const partsByFile = new Map<File, FileParts>();
@@ -65,12 +68,18 @@ export function classifyPatientFolder(files: File[]): PatientFolderSelection {
   const reports = [...REPORT_EXTENSIONS].flatMap(
     (extension) => byExtension.get(extension) ?? [],
   );
-  const videos = [...VIDEO_EXTENSIONS].flatMap(
+  const allVideos = [...VIDEO_EXTENSIONS].flatMap(
     (extension) => byExtension.get(extension) ?? [],
   );
-  if (reports.length !== 1) {
+  const videos = includeVideos ? allVideos : [];
+  if (
+    (requireReport && reports.length !== 1) ||
+    (!requireReport && reports.length > 1)
+  ) {
     errors.push(
-      "Select exactly one supported report (.doc or .docx) in the patient folder.",
+      requireReport
+        ? "Select exactly one supported report (.doc or .docx) in the patient folder."
+        : "Select no more than one supported report (.doc or .docx) in the EEG folder.",
     );
   }
 
@@ -133,7 +142,7 @@ export function classifyPatientFolder(files: File[]): PatientFolderSelection {
     const patientRoot = patientRootDirectory(reports[0], partsByFile);
     const supportedFiles = [
       ...reports,
-      ...videos,
+      ...(includeVideos ? allVideos : []),
       ...eegCandidates.flatMap((candidate) =>
         candidate.files.map((entry) => entry.file),
       ),
@@ -160,7 +169,7 @@ export function classifyPatientFolder(files: File[]): PatientFolderSelection {
 
   const recognized = new Set<File>([
     ...reports,
-    ...videos,
+    ...allVideos,
     ...eegCandidates.flatMap((candidate) =>
       candidate.files.map((entry) => entry.file),
     ),

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { PRIVACY_METHODS } from "@/lib/api";
 import { Icon } from "./Icon";
 import { PrivacyPreview } from "./PrivacyPreview";
+import { VideoBlurStrengthControl } from "./VideoBlurStrengthControl";
 import {
   PatientDetailsSummary,
   type PatientDetailDraft,
@@ -12,7 +13,10 @@ import {
 interface PatientFolderMediaStepProps {
   eegCount: number;
   videoCount: number;
+  showVideoInput?: boolean;
+  showPatientDetails?: boolean;
   signalObfuscation: boolean;
+  videoBlurStrengthPercent: number;
   signalDescription: string;
   patientDetails: PatientDetailDraft[];
   reportTruncated: boolean;
@@ -20,13 +24,17 @@ interface PatientFolderMediaStepProps {
   reportReading: boolean;
   canContinue: boolean;
   onSignalObfuscationChange: (checked: boolean) => void;
+  onVideoBlurStrengthChange: (value: number) => void;
   onContinue: () => void;
 }
 
 export function PatientFolderMediaStep({
   eegCount,
   videoCount,
+  showVideoInput = true,
+  showPatientDetails = true,
   signalObfuscation,
+  videoBlurStrengthPercent,
   signalDescription,
   patientDetails,
   reportTruncated,
@@ -34,11 +42,14 @@ export function PatientFolderMediaStep({
   reportReading,
   canContinue,
   onSignalObfuscationChange,
+  onVideoBlurStrengthChange,
   onContinue,
 }: PatientFolderMediaStepProps) {
   return (
     <section className="mt-6 min-w-0 space-y-5" aria-label="Media and privacy">
-      <div className="grid min-w-0 items-stretch gap-5 lg:grid-cols-2">
+      <div
+        className={`grid min-w-0 items-stretch gap-5 ${showVideoInput ? "lg:grid-cols-2" : "lg:grid-cols-1"}`}
+      >
         <section
           className="panel min-w-0 p-5 sm:p-6"
           aria-labelledby="privacy-settings-heading"
@@ -87,38 +98,47 @@ export function PatientFolderMediaStep({
           </div>
         </section>
 
-        <section
-          className="panel min-w-0 p-5 sm:p-6"
-          aria-labelledby="video-input-heading"
-        >
-          <p className="eyebrow">Video input</p>
-          <h2
-            id="video-input-heading"
-            className="mt-2 text-lg font-bold text-ink"
+        {showVideoInput && (
+          <section
+            className="panel min-w-0 p-5 sm:p-6"
+            aria-labelledby="video-input-heading"
           >
-            Video input
-          </h2>
-          <p className="mt-2 text-sm font-semibold text-ink">
-            {videoCount} {videoCount === 1 ? "video clip" : "video clips"}{" "}
-            included automatically
-          </p>
-          <p className="mt-2 text-sm leading-6 text-ink-muted">
-            Full-frame blur runs before VSViG analysis. Audio is not analyzed.
-            Original video and protected model-input files are deleted after
-            processing; only encrypted prediction artifacts are retained.
-          </p>
-          <p className="mt-3 border-t border-rule pt-3 text-xs leading-5 text-ink-muted">
-            Video model output is research-only and is not a diagnosis.
-          </p>
-        </section>
+            <p className="eyebrow">Video input</p>
+            <h2
+              id="video-input-heading"
+              className="mt-2 text-lg font-bold text-ink"
+            >
+              Video input
+            </h2>
+            <p className="mt-2 text-sm font-semibold text-ink">
+              {videoCount} {videoCount === 1 ? "video clip" : "video clips"}{" "}
+              included automatically
+            </p>
+            <p className="mt-2 text-sm leading-6 text-ink-muted">
+              VSViG receives pose coordinates and 15 blurred patches. The review
+              video blurs the patient, with full-frame fallback.
+            </p>
+            {videoCount > 0 && (
+              <VideoBlurStrengthControl
+                value={videoBlurStrengthPercent}
+                onChange={onVideoBlurStrengthChange}
+              />
+            )}
+            <p className="mt-3 border-t border-rule pt-3 text-xs leading-5 text-ink-muted">
+              Video model output is research-only and is not a diagnosis.
+            </p>
+          </section>
+        )}
       </div>
 
-      <PatientDetailsSummary
-        fields={patientDetails}
-        truncated={reportTruncated}
-        reportMessage={reportMessage}
-        reportReading={reportReading}
-      />
+      {showPatientDetails && (
+        <PatientDetailsSummary
+          fields={patientDetails}
+          truncated={reportTruncated}
+          reportMessage={reportMessage}
+          reportReading={reportReading}
+        />
+      )}
 
       <div className="flex justify-end border-t border-rule pt-5">
         <Button

@@ -16,11 +16,15 @@ export function PredictionTimeline({
   durationSeconds,
   threshold = 0.5,
   scoreType = "development_score",
+  selectedTimeSeconds = null,
+  onTimeSelect,
 }: {
   predictions: PredictionWindow[];
   durationSeconds: number;
   threshold?: number;
   scoreType?: string;
+  selectedTimeSeconds?: number | null;
+  onTimeSelect?: (seconds: number) => void;
 }) {
   const [activeAlertIndex, setActiveAlertIndex] = useState(0);
   const plotWidth = CHART_WIDTH - PADDING.left - PADDING.right;
@@ -97,6 +101,8 @@ export function PredictionTimeline({
     else return;
     event.preventDefault();
     setActiveAlertIndex(nextIndex);
+    const prediction = alertPredictions[nextIndex]?.prediction;
+    if (prediction) onTimeSelect?.(windowCenterSeconds(prediction));
   };
 
   return (
@@ -176,6 +182,20 @@ export function PredictionTimeline({
             data-testid="prediction-score-line"
             data-point-count={linePredictions.length}
           />
+          {selectedTimeSeconds !== null &&
+            selectedTimeSeconds >= 0 &&
+            selectedTimeSeconds <= recordingDuration && (
+              <line
+                x1={x(selectedTimeSeconds)}
+                y1={PADDING.top}
+                x2={x(selectedTimeSeconds)}
+                y2={PADDING.top + plotHeight}
+                stroke="#b55d12"
+                strokeDasharray="4 4"
+                strokeWidth="1.5"
+                pointerEvents="none"
+              />
+            )}
           {hoverPredictions.map(({ prediction, windowIndex }) => {
             const alert = prediction.seizureDetected;
             const alertIndex = alert
@@ -189,22 +209,28 @@ export function PredictionTimeline({
                   cx={x(windowCenterSeconds(prediction))}
                   cy={y(prediction.score)}
                   r="11"
-                  className="fill-transparent stroke-transparent"
+                  className="cursor-pointer fill-transparent stroke-transparent focus-visible:stroke-teal"
                   aria-label={label}
-                  role={alert ? "button" : undefined}
-                  tabIndex={alert ? 0 : -1}
+                  role="button"
+                  tabIndex={0}
                   data-alert-point={alert ? "true" : undefined}
                   data-score={prediction.score}
-                  onMouseEnter={
-                    alertIndex >= 0
-                      ? () => setActiveAlertIndex(alertIndex)
-                      : undefined
-                  }
-                  onFocus={
-                    alertIndex >= 0
-                      ? () => setActiveAlertIndex(alertIndex)
-                      : undefined
-                  }
+                  onMouseEnter={() => {
+                    if (alertIndex >= 0) setActiveAlertIndex(alertIndex);
+                  }}
+                  onFocus={() => {
+                    if (alertIndex >= 0) setActiveAlertIndex(alertIndex);
+                  }}
+                  onClick={() => {
+                    if (alertIndex >= 0) setActiveAlertIndex(alertIndex);
+                    onTimeSelect?.(windowCenterSeconds(prediction));
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    if (alertIndex >= 0) setActiveAlertIndex(alertIndex);
+                    onTimeSelect?.(windowCenterSeconds(prediction));
+                  }}
                 >
                   <title>{label}</title>
                 </circle>
@@ -273,23 +299,23 @@ export function PredictionTimeline({
         </svg>
       </div>
       <div
-        className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-ink-muted"
+        className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[0.7rem] text-ink-muted"
         aria-label="Prediction timeline legend"
       >
         <span className="inline-flex items-center gap-2">
           <span className="size-2 rounded-full bg-teal" aria-hidden="true" />
-          {calibrated ? "Window probability" : "Window score"}
+          {calibrated ? "Probability" : "Score"}
         </span>
         <span className="inline-flex items-center gap-2">
           <span className="size-2 rounded-full bg-amber" aria-hidden="true" />
-          Window above threshold
+          Flagged
         </span>
         <span className="inline-flex items-center gap-2">
           <span
             className="w-4 border-t border-dashed border-amber"
             aria-hidden="true"
           />
-          Alert threshold {threshold.toFixed(2)}
+          Threshold {threshold.toFixed(2)}
         </span>
       </div>
       {selectedAlert ? (
@@ -297,13 +323,12 @@ export function PredictionTimeline({
           className="mt-3 rounded-md border border-amber/30 bg-amber-soft px-3 py-2 text-xs leading-5 text-ink outline-none focus-visible:ring-2 focus-visible:ring-amber/40"
           role="group"
           tabIndex={0}
-          aria-label="Browse exact flagged windows. Use the arrow keys, Home, or End."
+          aria-label="Flagged windows"
           onKeyDown={handleAlertNavigation}
         >
           <p aria-live="polite">
             <span className="font-semibold text-amber">
-              Flagged window {selectedAlertIndex + 1} of{" "}
-              {alertPredictions.length}
+              Flag {selectedAlertIndex + 1}/{alertPredictions.length}
             </span>{" "}
             ·{" "}
             <span className="font-mono">
@@ -312,17 +337,8 @@ export function PredictionTimeline({
             </span>{" "}
             · {windowLabel} {selectedAlert.prediction.score.toFixed(3)}
           </p>
-          <p className="mt-1 text-ink-muted">
-            Use the arrow keys to inspect exact flagged times. Hover any visible
-            point for its window details.
-          </p>
         </div>
-      ) : (
-        <p className="mt-2 text-xs text-ink-muted">
-          Hover any visible point for its exact window time and score. No window
-          crossed the configured threshold.
-        </p>
-      )}
+      ) : null}
     </div>
   );
 }

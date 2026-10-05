@@ -1,8 +1,7 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/button";
 import { pollRetryDelay, shouldRetryRequest } from "@/lib/api";
@@ -14,30 +13,18 @@ import {
 import {
   getDetection,
   getDetectionResults,
-  listDetections,
   uploadDetection,
+  detectionVisualizationUrl,
   type DetectionJob,
   type DetectionResult,
+  videoJobFailureMessage,
 } from "@/lib/video-detection";
 import { VideoReviewPanel } from "@/components/VideoReviewPanel";
+import { VideoBlurStrengthControl } from "@/components/VideoBlurStrengthControl";
+import { ModalityWorkspaceTabs } from "./ModalityWorkspaceTabs";
 
 function formatTime(seconds: number) {
   return `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(1).padStart(4, "0")}`;
-}
-
-function formatPrivacyQualityFlag(flag: string) {
-  return flag === "intermittent_detection"
-    ? "The detector reported exactly one face in only some frames."
-    : flag === "no_detection"
-      ? "The detector did not report exactly one face in any frame."
-      : flag.replaceAll("_", " ");
-}
-
-function formatFaceDetectionCoverage(coverage: number) {
-  return new Intl.NumberFormat(undefined, {
-    style: "percent",
-    maximumFractionDigits: 1,
-  }).format(coverage);
 }
 
 function formatRetentionExpiry(value: string) {
@@ -48,41 +35,38 @@ function formatRetentionExpiry(value: string) {
 }
 
 export function VideoDetectionUploadScreen() {
-  const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
-  const [jobs, setJobs] = useState<DetectionJob[]>([]);
+  const [submittedJobId, setSubmittedJobId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [uploadPhase, setUploadPhase] = useState<"uploading" | "checking-pose">(
+    "uploading",
+  );
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const abort = new AbortController();
-
-    listDetections(abort.signal)
-      .then(({ jobs: detectedJobs }) => setJobs(detectedJobs))
-      .catch((error: unknown) => {
-        if (!abort.signal.aborted) {
-          setError(
-            error instanceof Error
-              ? error.message
-              : "Your video jobs could not be loaded.",
-          );
-        }
-      });
-
-    return () => abort.abort();
-  }, []);
+  const [blurStrengthPercent, setBlurStrengthPercent] = useState(100);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!file || busy) return;
 
     setBusy(true);
+    setProgress(0);
+    setUploadPhase("uploading");
     setError(null);
 
     try {
-      const { job } = await uploadDetection(file, setProgress);
-      router.push(`/video-detection/${encodeURIComponent(job.job_id)}`);
+      const { job } = await uploadDetection(
+        file,
+        (value) => {
+          setProgress(value);
+          if (value >= 100) setUploadPhase("checking-pose");
+        },
+        undefined,
+        undefined,
+        blurStrengthPercent,
+      );
+      setSubmittedJobId(job.job_id);
+      setFile(null);
     } catch (error) {
       setError(
         error instanceof Error
@@ -96,18 +80,31 @@ export function VideoDetectionUploadScreen() {
   return (
     <div className="page-frame">
       <div className="mx-auto max-w-5xl">
-        <h1 className="text-3xl font-semibold tracking-tight">
-          Video seizure review
-        </h1>
-        <p className="mt-3 max-w-2xl text-sm leading-6 text-ink-muted">
-          Upload one video to review privacy diagnostics, VSViG model scores,
-          and possible event intervals. Detection exposes no preview or
-          playback; its privacy-safe validation visualization is transient and
-          deleted. A separate video-privacy workflow may retain its own
-          protected preview.
+        <p className="eyebrow">Video workspace</p>
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight">Video</h1>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-muted">
+          Upload a clip once. MDS01 scores movement and creates a face-blurred
+          review copy automatically.
         </p>
+        <ModalityWorkspaceTabs modality="video" active="upload" />
 
-        <form onSubmit={submit} className="panel mt-8 max-w-2xl space-y-5 p-6">
+        {submittedJobId && (
+          <p
+            className="mt-5 rounded-lg border border-teal/30 bg-teal-soft/40 px-4 py-3 text-sm"
+            role="status"
+          >
+            Video processing started. You can stay here;{" "}
+            <Link
+              className="font-semibold text-teal-dark underline underline-offset-4"
+              href={`/video-detection/${encodeURIComponent(submittedJobId)}`}
+            >
+              open its review when you’re ready
+            </Link>
+            .
+          </p>
+        )}
+
+        <form onSubmit={submit} className="panel mt-6 max-w-2xl space-y-5 p-6">
           <div>
             <label
               htmlFor="detection-video"
@@ -119,17 +116,8 @@ export function VideoDetectionUploadScreen() {
               id="video-help"
               className="mt-2 text-sm leading-6 text-ink-muted"
             >
-              AVI, MP4, MOV or WebM showing one patient. The pinned contract
-              requires 1920×1080 input. The local H5 profile experimentally
-              upscales smaller clips into a 1920×1080 frame while preserving
-              aspect ratio, with black padding when needed. Upscaling adds no
-              captured detail and is not validated as equivalent to
-              native-resolution input. Use a readable constant-frame-rate clip
-              of at least five seconds where possible; low-quality or incomplete
-              pose can still fail closed. Lightweight OpenPose and VSViG use the
-              same full-frame-blurred protected model-input frames. Audio is
-              excluded from the visual model input. Your account owns this
-              upload.
+              MP4, MOV, AVI, or WebM · one person visible · 5 seconds or longer
+              · 1920×1080 preferred.
             </p>
             <input
               id="detection-video"
@@ -138,22 +126,28 @@ export function VideoDetectionUploadScreen() {
               type="file"
               accept=".avi,.mp4,.mov,.webm"
               disabled={busy}
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              onChange={(event) => {
+                setSubmittedJobId(null);
+                setFile(event.target.files?.[0] ?? null);
+              }}
+            />
+            <VideoBlurStrengthControl
+              value={blurStrengthPercent}
+              onChange={setBlurStrengthPercent}
+              disabled={busy}
             />
           </div>
 
-          <p className="text-sm leading-6 text-ink-muted">
-            The browser sends the upload over this computer’s local connection;
-            the API encrypts it as it streams into private storage before
-            background processing begins. This local HTTP connection has no TLS
-            and must not be exposed to a network. A queued source may still
-            contain audio temporarily; it is excluded from the visual model and
-            retained outputs, then deleted during cleanup. One shared pose pass
-            feeds the VSViG model and a temporary privacy-safe visualization
-            used for validation. The visualization, original, and temporary
-            model-input files are deleted after processing; only encrypted
-            predictions and provenance are retained until the displayed expiry.
-          </p>
+          <details className="rounded-lg border border-rule px-4 py-3 text-sm">
+            <summary className="cursor-pointer font-semibold text-ink">
+              Privacy and model details
+            </summary>
+            <p className="mt-3 leading-6 text-ink-muted">
+              VSViG receives pose coordinates and 15 blurred patches. The review
+              copy blurs the tracked face; uncertain detection falls back to
+              full-frame blur.
+            </p>
+          </details>
           {error && (
             <div
               role="alert"
@@ -162,51 +156,35 @@ export function VideoDetectionUploadScreen() {
               {error}
             </div>
           )}
-          {busy && <VideoUploadStatus progress={progress} />}
+          {busy && (
+            <VideoUploadStatus progress={progress} phase={uploadPhase} />
+          )}
 
           <Button disabled={!file || busy} type="submit">
             <Icon
               name={busy ? "spinner" : "activity"}
               className={`size-4 ${busy ? "animate-spin" : ""}`}
             />
-            {busy ? "Submitting…" : "Start detection"}
+            {busy
+              ? uploadPhase === "checking-pose"
+                ? "Checking pose…"
+                : "Submitting…"
+              : "Upload video"}
           </Button>
         </form>
-
-        <section className="mt-10" aria-labelledby="recent-detections">
-          <h2 id="recent-detections" className="text-lg font-semibold">
-            Your video jobs
-          </h2>
-          {jobs.length ? (
-            <ul className="mt-4 divide-y divide-rule border-y border-rule">
-              {jobs.map((job) => (
-                <li key={job.job_id}>
-                  <Link
-                    className="flex min-h-16 flex-wrap items-center justify-between gap-2 py-3 text-sm hover:text-teal"
-                    href={`/video-detection/${job.job_id}`}
-                  >
-                    <span>{job.label}</span>
-                    <span className="text-ink-muted">
-                      {job.status.replaceAll("_", " ")}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-3 text-sm text-ink-muted">
-              Submitted videos will appear here.
-            </p>
-          )}
-        </section>
-
         <ResearchOnlyNotice />
       </div>
     </div>
   );
 }
 
-export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
+export function VideoDetectionJobScreen({
+  jobId,
+  initialVideoTimeSeconds,
+}: {
+  jobId: string;
+  initialVideoTimeSeconds?: number;
+}) {
   const [job, setJob] = useState<DetectionJob | null>(null);
   const [result, setResult] = useState<DetectionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -278,20 +256,14 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
   return (
     <div className="page-frame">
       <div className="mx-auto max-w-5xl">
-        <Link
-          href="/video-detection"
-          className="text-sm text-teal hover:underline"
-        >
-          Video review
-        </Link>
+        <ModalityWorkspaceTabs modality="video" active="reviews" />
         <h1 className="mt-5 text-3xl font-semibold tracking-tight">
           {job?.label ?? "Video review"}
         </h1>
         {job?.retention_expires_at && (
           <p className="mt-2 text-xs leading-5 text-ink-muted">
-            Encrypted prediction retention ends{" "}
-            {formatRetentionExpiry(job.retention_expires_at)}. Source and
-            temporary model-input video are removed after processing.
+            Encrypted result expires{" "}
+            {formatRetentionExpiry(job.retention_expires_at)}.
           </p>
         )}
         {error && (
@@ -321,19 +293,66 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
         ) : (
           <>
             <VideoProcessingStatus job={job} />
+            <p className="mt-3 text-sm text-ink-muted">
+              VSViG patch-blur setting: {job.blur_strength_percent}%.
+            </p>
             {job.error && (
               <p
                 role="alert"
                 className="mt-5 rounded-md border border-rule p-4 text-sm text-red"
               >
-                {job.error}
+                {videoJobFailureMessage(
+                  job.status === "expired" ? "expired" : "failed",
+                  job.error,
+                )}
               </p>
             )}
             {job.status === "expired" && (
               <p className="mt-5 text-sm">
-                The retention period ended. Encrypted prediction data, source
-                video, and the temporary model input have been removed.
+                The retention period ended. Encrypted predictions and review
+                video have been removed.
               </p>
+            )}
+
+            {job.status === "failed" && job.video_available && (
+              <section className="panel mt-6 overflow-hidden p-5 sm:p-6">
+                <div>
+                  <h2 className="text-lg font-semibold">
+                    Privacy-safe video review
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-ink-muted">
+                    VSViG did not produce a score for this clip. You can still
+                    review its timing alongside the EEG. The retained video
+                    blurs the face; the viewer can also show the 15 model
+                    patches and their Grad-CAM evidence.
+                  </p>
+                </div>
+                <video
+                  className="mt-4 aspect-video w-full rounded-xl bg-black object-contain"
+                  src={detectionVisualizationUrl(jobId)}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  crossOrigin="use-credentials"
+                  aria-label="Privacy-safe video review without a VSViG score"
+                  onLoadedMetadata={(event) => {
+                    if (
+                      typeof initialVideoTimeSeconds === "number" &&
+                      Number.isFinite(initialVideoTimeSeconds)
+                    ) {
+                      event.currentTarget.currentTime = Math.max(
+                        0,
+                        Math.min(
+                          event.currentTarget.duration,
+                          initialVideoTimeSeconds,
+                        ),
+                      );
+                    }
+                  }}
+                >
+                  Your browser cannot play this review video.
+                </video>
+              </section>
             )}
 
             {result && (
@@ -351,73 +370,24 @@ export function VideoDetectionJobScreen({ jobId }: { jobId: string }) {
                       Experimental input adaptation
                     </h2>
                     <p className="mt-2 text-sm leading-6 text-ink-muted">
-                      This lower-resolution clip was resized to 1920×1080 while
-                      preserving its aspect ratio; black padding was added only
-                      where needed. The adaptation adds no captured detail and
-                      has not been validated as equivalent to native-resolution
-                      input. Treat its scores as research-only and review the
-                      time-aligned model evidence.
+                      This lower-resolution clip was resized and padded to
+                      1920×1080. That adds no detail and is not validated as
+                      equivalent to native-resolution input.
                     </p>
                   </section>
                 )}
-                {result.privacy?.review_required && (
-                  <section
-                    className="mt-6 rounded-lg border border-amber/40 bg-amber-soft px-5 py-4"
-                    role="status"
-                    aria-live="polite"
-                    aria-labelledby="privacy-quality-heading"
-                  >
-                    <h2
-                      id="privacy-quality-heading"
-                      className="text-sm font-bold text-ink"
-                    >
-                      Privacy quality needs review
-                    </h2>
-                    <p className="mt-2 text-sm leading-6 text-ink-muted">
-                      One or more privacy-quality checks need review. This does
-                      not change the full-frame blur, which is applied to every
-                      frame. Treat flagged windows as uncertain and review them
-                      with the appropriate context.
-                    </p>
-                    {result.privacy.quality_flags.length > 0 && (
-                      <ul className="mt-2 list-disc pl-5 text-xs leading-5 text-ink-muted">
-                        {result.privacy.quality_flags.map((flag) => (
-                          <li key={flag}>{formatPrivacyQualityFlag(flag)}</li>
-                        ))}
-                      </ul>
-                    )}
-                  </section>
-                )}
-                {typeof result.privacy?.face_detection_coverage === "number" &&
-                  Number.isFinite(result.privacy.face_detection_coverage) &&
-                  result.privacy.face_detection_coverage >= 0 &&
-                  result.privacy.face_detection_coverage <= 1 && (
-                    <section
-                      className="mt-4 rounded-lg border border-rule bg-surface-soft px-5 py-4"
-                      aria-labelledby="face-detection-coverage-heading"
-                    >
-                      <h2
-                        id="face-detection-coverage-heading"
-                        className="text-sm font-bold text-ink"
-                      >
-                        De-identification diagnostic
-                      </h2>
-                      <p className="mt-2 text-sm leading-6 text-ink-muted">
-                        OpenCV Haar reported exactly one face in{" "}
-                        {formatFaceDetectionCoverage(
-                          result.privacy.face_detection_coverage,
-                        )}{" "}
-                        of frames. Full-frame blur was applied to every frame,
-                        independent of detection. This coverage signal does not
-                        guarantee anonymity.
-                      </p>
-                    </section>
-                  )}
-                <VideoReviewPanel result={result} duration={duration} />
-                <VideoEvidence
+                <VideoReviewPanel
+                  result={result}
+                  duration={duration}
+                  videoAvailable={job.video_available}
+                  videoUrl={detectionVisualizationUrl(jobId)}
+                  initialTimeSeconds={initialVideoTimeSeconds}
+                />
+                <VideoGradCamSummary
                   prediction={result.predictions.find(
                     (prediction) => prediction.model_evidence,
                   )}
+                  patchLabels={result.model.patch_labels ?? []}
                 />
                 <WindowScores predictions={result.predictions} />
                 <ModelDetails model={result.model} privacy={result.privacy} />
@@ -494,6 +464,10 @@ function ModelDetails({
     "Source geometry": sourceResolution
       ? `${sourceResolution[0]}×${sourceResolution[1]} → ${privacy?.model_input_adaptation ?? "adaptation not reported"} → ${modelResolution ? `${modelResolution[0]}×${modelResolution[1]}` : "model geometry not reported"}`
       : "Not reported",
+    "VSViG patch blur":
+      typeof privacy?.blur_strength_percent === "number"
+        ? `${privacy.blur_strength_percent}% of default strength`
+        : "Not reported",
     "Letterbox padding (L/T/R/B)":
       privacy?.model_input_adaptation === "letterbox" &&
       privacy.model_input_padding_ltrb
@@ -520,35 +494,45 @@ function ModelDetails({
   );
 }
 
-function VideoEvidence({
+function VideoGradCamSummary({
   prediction,
+  patchLabels,
 }: {
   prediction: DetectionResult["predictions"][number] | undefined;
+  patchLabels: string[];
 }) {
   const evidence = prediction?.model_evidence;
+  const samples = evidence?.gradcam_samples ?? [];
+  const patchRelevance = new Map<number, number>();
+  for (const sample of samples) {
+    for (const patch of sample.patches) {
+      patchRelevance.set(
+        patch.patch_index,
+        Math.max(patchRelevance.get(patch.patch_index) ?? 0, patch.relevance),
+      );
+    }
+  }
+  const strongestPatches = [...patchRelevance.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 5);
 
-  if (!evidence || !prediction) {
+  if (!evidence || !prediction || evidence.method !== "vsvig-graph-grad-cam") {
     return (
       <section
         className="panel mt-7 p-5"
         aria-labelledby="video-evidence-heading"
       >
         <h2 id="video-evidence-heading" className="text-base font-semibold">
-          Model evidence
+          VSViG Grad-CAM
         </h2>
         <p className="mt-2 text-sm leading-6 text-ink-muted">
-          No input-sensitivity attribution is available because this result has
-          no flagged window. Window scores and intervals remain available for
-          review.
+          {evidence
+            ? "This older result has patch-sensitivity data but no Grad-CAM."
+            : "No Grad-CAM evidence was returned. Window scores and intervals remain available."}
         </p>
       </section>
     );
   }
-
-  const maxScoreChange = Math.max(
-    ...evidence.patches.map((patch) => Math.abs(patch.score_change)),
-    1e-9,
-  );
 
   return (
     <section
@@ -556,38 +540,51 @@ function VideoEvidence({
       aria-labelledby="video-evidence-heading"
     >
       <h2 id="video-evidence-heading" className="text-base font-semibold">
-        Model evidence
+        VSViG Grad-CAM
       </h2>
-      <p className="mt-2 text-sm leading-6 text-ink-muted">
-        Sensitivity for the highest flagged window (
-        {formatTime(prediction.start_time)}–{formatTime(prediction.end_time)}).
-        Each VSViG input patch was neutralised once; a larger score change means
-        the model relied on that input region more. Labels identify the pose
-        keypoint region, not a clinical explanation.
+      <p className="mt-2 text-xs text-ink-muted">
+        Strongest-scoring window · {formatTime(prediction.start_time)}–
+        {formatTime(prediction.end_time)}
       </p>
-      <div className="mt-4 space-y-2">
-        {evidence.patches.slice(0, 5).map((patch) => (
-          <div
-            className="grid grid-cols-[8rem_minmax(0,1fr)_4rem] items-center gap-3 text-xs"
-            key={patch.patch_index}
-          >
-            <span className="font-mono text-ink-muted">
-              {patch.component ?? `Patch ${patch.patch_index + 1}`}
-            </span>
-            <span className="h-2 rounded-full bg-surface-muted">
-              <span
-                className="block h-full rounded-full bg-teal"
-                style={{
-                  width: `${Math.max(4, (Math.abs(patch.score_change) / maxScoreChange) * 100)}%`,
-                }}
-              />
-            </span>
-            <span className="font-mono text-right tabular-nums text-ink-muted">
-              {patch.score_change.toFixed(3)}
-            </span>
-          </div>
-        ))}
-      </div>
+      <p className="mt-1 text-xs text-ink-muted">
+        Relative contribution across time and the 15 keypoint patches.
+      </p>
+      {strongestPatches.length > 0 ? (
+        <ol className="mt-4 grid gap-3 sm:grid-cols-2">
+          {strongestPatches.map(([patchIndex, relevance]) => (
+            <li
+              className="rounded-lg border border-rule bg-surface-soft px-3 py-2"
+              key={patchIndex}
+            >
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <span className="font-medium text-ink">
+                  {patchLabels[patchIndex] ?? `Patch ${patchIndex + 1}`}
+                </span>
+                <span className="font-mono tabular-nums text-ink-muted">
+                  {relevance.toFixed(2)}
+                </span>
+              </div>
+              <div
+                className="mt-2 h-2 overflow-hidden rounded-full bg-rule"
+                role="img"
+                aria-label={`${patchLabels[patchIndex] ?? `Patch ${patchIndex + 1}`} relative Grad-CAM relevance ${relevance.toFixed(2)}; normalized within this window`}
+              >
+                <span
+                  className="block h-full rounded-full bg-gradient-to-r from-amber to-red"
+                  style={{ width: `${Math.round(relevance * 100)}%` }}
+                />
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="mt-3 text-sm text-ink-muted">
+          No patch contribution values were returned.
+        </p>
+      )}
+      <p className="mt-3 text-xs text-ink-muted">
+        Relative model evidence · not a diagnosis
+      </p>
     </section>
   );
 }
@@ -595,8 +592,7 @@ function VideoEvidence({
 function ResearchOnlyNotice() {
   return (
     <p className="mt-8 text-xs leading-5 text-ink-muted">
-      VSViG · Research only · Not a diagnosis. Flagged intervals require human
-      review.
+      VSViG research output · not a diagnosis.
     </p>
   );
 }

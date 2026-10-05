@@ -45,7 +45,7 @@ export function CombinedAnalysisScreen({
 
     async function load() {
       try {
-        const [eegResult, videoResult] = await Promise.all([
+        const [requestedEegResult, videoResult] = await Promise.all([
           sessionId
             ? getSession(sessionId, controller.signal)
             : Promise.resolve(null),
@@ -54,14 +54,24 @@ export function CombinedAnalysisScreen({
             : Promise.resolve(null),
         ]);
         if (!mounted) return;
-        setSession(eegResult);
         const nextVideoJob = videoResult?.job ?? null;
+        const linkedSessionId =
+          nextVideoJob?.sync?.status === "linked"
+            ? nextVideoJob.sync.session_id
+            : null;
+        const eegResult =
+          linkedSessionId && linkedSessionId !== requestedEegResult?.sessionId
+            ? await getSession(linkedSessionId, controller.signal)
+            : requestedEegResult;
+        if (!mounted) return;
+        setSession(eegResult);
         setVideoJob(nextVideoJob);
         setError(null);
         retryAttempt = 0;
         if (
           (eegResult && ACTIVE_VEEG.has(eegResult.status)) ||
-          (nextVideoJob && ACTIVE_VIDEO.has(nextVideoJob.status))
+          (nextVideoJob && ACTIVE_VIDEO.has(nextVideoJob.status)) ||
+          nextVideoJob?.sync?.status === "pending"
         ) {
           timer = setTimeout(() => void load(), 2500);
         }
@@ -160,9 +170,9 @@ export function CombinedAnalysisScreen({
                   : "Loading the owner-scoped video job…"
               }
               steps={[
-                "Face redaction",
-                "Pose keypoints",
-                "VSViG model",
+                "Normalize frames",
+                "OpenPose + 15 patches",
+                "Blur patches + VSViG",
                 "Evidence timeline",
               ]}
               href={
@@ -193,10 +203,9 @@ export function CombinedAnalysisScreen({
                 How to read this report
               </h2>
               <p className="mt-2 text-sm leading-6 text-ink-muted">
-                EEG and video outputs remain separate model results. The review
-                below places their technical evidence and source EEG markers in
-                one view; it does not establish that the recordings are paired
-                or synchronized.
+                {videoJob?.sync?.status === "linked"
+                  ? "The camera clock is linked from Nicolet frame markers. EEG and video model outputs remain separate and are not a diagnosis."
+                  : "No unique Nicolet clock match is available. EEG and video outputs remain separate, and this view does not assume they are synchronized."}
               </p>
             </div>
           </div>
@@ -231,8 +240,8 @@ function AnalysisCard({
     <section className="panel glass-panel rounded-2xl border border-rule p-5 sm:p-6">
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-start gap-3">
-          <span className="grid size-11 place-items-center rounded-xl bg-ink text-white">
-            <Icon name={icon} className="size-5" weight="bold" />
+          <span className="grid size-11 place-items-center rounded-xl bg-teal-soft text-teal-dark shadow-hard-sm">
+            <Icon name={icon} className="size-5" />
           </span>
           <div>
             <h2 className="text-lg font-bold">{title}</h2>

@@ -1,5 +1,66 @@
-import { getJson, uploadBinary } from "./api";
+import { apiMediaUrl, getJson, postJson, uploadBinary } from "./api";
 import { prepareVideoUploadFile } from "./safe-upload";
+
+export interface VideoEegSync {
+  status: "pending" | "linked" | "unavailable" | "unmatched" | "ambiguous";
+  record_id: string | null;
+  session_id: string | null;
+  eeg_source_start_seconds: number | null;
+  video_duration_seconds: number | null;
+  eeg_coverage_seconds: number | null;
+  mapped_segments: Array<{
+    video_start_seconds: number;
+    video_end_seconds: number;
+    eeg_source_start_seconds: number;
+  }>;
+}
+
+/** Convert an EEG source-clock time through the validated clip/segment map. */
+export function videoTimeForEegTime(
+  segments: VideoEegSync["mapped_segments"] | undefined,
+  eegSeconds: number,
+): number | null {
+  if (!segments || !Number.isFinite(eegSeconds)) return null;
+  for (const segment of segments) {
+    const segmentDuration =
+      segment.video_end_seconds - segment.video_start_seconds;
+    const eegEnd = segment.eeg_source_start_seconds + segmentDuration;
+    if (
+      Number.isFinite(segmentDuration) &&
+      segmentDuration > 0 &&
+      eegSeconds >= segment.eeg_source_start_seconds &&
+      eegSeconds <= eegEnd
+    ) {
+      return (
+        segment.video_start_seconds +
+        eegSeconds -
+        segment.eeg_source_start_seconds
+      );
+    }
+  }
+  return null;
+}
+
+/** Convert a protected clip time back to EEG source-clock time. */
+export function eegTimeForVideoTime(
+  segments: VideoEegSync["mapped_segments"] | undefined,
+  videoSeconds: number,
+): number | null {
+  if (!segments || !Number.isFinite(videoSeconds)) return null;
+  for (const segment of segments) {
+    if (
+      videoSeconds >= segment.video_start_seconds &&
+      videoSeconds <= segment.video_end_seconds
+    ) {
+      return (
+        segment.eeg_source_start_seconds +
+        videoSeconds -
+        segment.video_start_seconds
+      );
+    }
+  }
+  return null;
+}
 
 export interface DetectionJob {
   job_id: string;
@@ -9,10 +70,56 @@ export interface DetectionJob {
   current_stage: string;
   duration_seconds: number;
   fps: number;
+  blur_strength_percent: number;
+  review_privacy_method?:
+    | "legacy-face-blur"
+    | "pose-region-patient-blur-with-full-frame-fallback"
+    | "tracked-face-blur-with-full-frame-fallback";
   created_at: string;
   retention_expires_at: string;
   video_available: boolean;
   error: string | null;
+  sync?: VideoEegSync;
+}
+
+export function videoJobFailureMessage(
+  status: "failed" | "expired",
+  message: string | null,
+): string {
+  if (status === "expired") return "Video job expired. No result is available.";
+  const unavailableMessage =
+    "Video processing failed; no result was produced. The reason is not available here.";
+  if (!message) return unavailableMessage;
+  const normalized = message.toLocaleLowerCase("en-US");
+  if (
+    normalized.includes("face-redacted safely") ||
+    normalized.includes("patient-blurred safely") ||
+    normalized.includes("privacy")
+  ) {
+    return "The privacy transform could not be validated, so VSViG did not run and no video score was produced. Face redaction or the protected output did not pass its checks.";
+  }
+  if (
+    normalized.includes("opening five-second pose check") &&
+    normalized.includes("landmark")
+  ) {
+    return "OpenPose could not find all 15 required landmarks in the opening five seconds. These include points from the face through both ankles; this is a body-pose failure, not a face-blur failure. The clip has no VSViG score.";
+  }
+  if (normalized.includes("landmark")) {
+    return "OpenPose missed one or more of the 15 body landmarks VSViG needs in a sampled frame. Keep the face through both ankles visible. This clip has no score; clearer lighting and full-body framing may help.";
+  }
+  if (normalized.includes("single patient") || normalized.includes("person")) {
+    return "Pose extraction could not track exactly one person through this clip, so VSViG did not produce a score. Check for occlusion or other people entering the frame.";
+  }
+  if (
+    normalized.includes("readable avi") ||
+    normalized.includes("five seconds")
+  ) {
+    return "The clip could not pass video input checks. Use a readable AVI, MP4, MOV, or WebM video that is at least five seconds long and has stable frame timing.";
+  }
+  if (normalized.includes("1920") && normalized.includes("1080")) {
+    return "This clip does not meet the 1920×1080 input requirement. Use the matching original-resolution video; resizing cannot add detail.";
+  }
+  return unavailableMessage;
 }
 
 export interface DetectionResult {
@@ -48,12 +155,26 @@ export interface DetectionResult {
     score_type: string;
     seizure_detected: boolean;
     model_evidence?: {
-      method: "patch-occlusion";
+      method: "patch-occlusion" | "vsvig-graph-grad-cam";
       note: string;
-      patches: {
+      target_class?: "flagged" | "below_threshold";
+      patches?: {
         patch_index: number;
         component?: string;
         score_change: number;
+      }[];
+      pose_samples?: {
+        timestamp: number;
+        points: {
+          patch_index: number;
+          x: number;
+          y: number;
+          confidence: number;
+        }[];
+      }[];
+      gradcam_samples?: {
+        timestamp: number;
+        patches: { patch_index: number; relevance: number }[];
       }[];
     };
   }[];
@@ -79,18 +200,43 @@ export interface DetectionResult {
   };
   recording_probability_available: false;
   privacy?: {
-    method: "face-detection-and-full-frame-blur";
-    model_input: "full-frame-blurred video";
+    method:
+      | "pose-region-patient-blur-with-full-frame-fallback"
+      | "tracked-face-blur-with-full-frame-fallback"
+      | "face-detection-and-full-frame-blur";
+    model_input: "15 individually blurred RGB patches per sampled frame";
+    blur_strength_percent?: number;
     pose_model_input?: string;
     model_input_adaptation?: "none" | "letterbox";
     adaptation_experimental?: boolean;
     source_resolution?: [number, number];
     model_resolution?: [number, number];
     model_input_padding_ltrb?: [number, number, number, number];
-    face_detection_coverage: number;
+    face_detection_coverage?: number;
+    face_blur_coverage?: number;
+    patient_blur_coverage?: number;
     quality_flags: string[];
+    overlay?: {
+      skeleton: boolean;
+      model_score: boolean;
+      event_markers: boolean;
+    };
     review_required: boolean;
     audio_policy?: string;
+  };
+  visualization?: {
+    available: boolean;
+    media_type: "video/mp4";
+    audio_included: false;
+    privacy_method:
+      | "pose-region-patient-blur-with-full-frame-fallback-and-skeleton-overlay"
+      | "tracked-face-blur-with-full-frame-fallback-and-skeleton-overlay"
+      | "face-blur-with-full-frame-fallback-and-skeleton-overlay";
+    face_detection_coverage?: number;
+    face_blur_coverage?: number;
+    patient_blur_coverage?: number;
+    full_frame_fallback_frames: number;
+    quality_flags: string[];
   };
 }
 
@@ -104,6 +250,17 @@ export interface VideoPreflightResult {
   experimental?: boolean;
   fps?: number;
   duration_seconds?: number;
+  pose_readiness?: {
+    ready: boolean;
+    checked_frames: number;
+    required_frames: number;
+    window_seconds: number;
+    frames_without_person: number;
+    frames_with_multiple_people: number;
+    frames_with_tracking_break: number;
+    frames_with_incomplete_pose: number;
+    missing_landmarks: Record<string, number>;
+  };
   message: string;
 }
 
@@ -128,6 +285,8 @@ export async function uploadDetection(
   progress: (value: number) => void,
   caseId?: string,
   signal?: AbortSignal,
+  blurStrengthPercent = 100,
+  veegSync?: { sourceName: string; groupId: string },
 ) {
   const safeName = prepareVideoUploadFile(file);
   const extension = safeName.name.split(".").pop() ?? "";
@@ -138,8 +297,32 @@ export async function uploadDetection(
     signal,
     {
       "X-Video-Format": extension,
+      "X-Model-Blur-Percent": String(blurStrengthPercent),
       ...(caseId ? { "X-Case-ID": caseId } : {}),
+      ...(veegSync
+        ? {
+            "X-VEEG-Source-Name": encodeURIComponent(veegSync.sourceName),
+            "X-VEEG-Source-Group": veegSync.groupId,
+          }
+        : {}),
     },
+  );
+}
+
+export function finalizeVideoSyncGroup(
+  caseId: string,
+  groupId: string,
+  expectedSourceNames: string[],
+  signal?: AbortSignal,
+) {
+  return postJson<{
+    group_id: string;
+    status: VideoEegSync["status"];
+    linked_jobs: number;
+  }>(
+    `/api/video-detection/cases/${encodeURIComponent(caseId)}/sync-groups/${encodeURIComponent(groupId)}/finalize`,
+    { expected_source_names: expectedSourceNames },
+    signal,
   );
 }
 
@@ -154,4 +337,8 @@ export const getDetectionResults = (id: string, signal?: AbortSignal) =>
   getJson<DetectionResult>(
     `/api/video-detection/jobs/${encodeURIComponent(id)}/predictions`,
     signal,
+  );
+export const detectionVisualizationUrl = (id: string) =>
+  apiMediaUrl(
+    `/api/video-detection/jobs/${encodeURIComponent(id)}/visualization`,
   );

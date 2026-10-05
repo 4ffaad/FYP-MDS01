@@ -1,374 +1,355 @@
 "use client";
 
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  deleteSession,
-  getCases,
-  getSessions,
-  toDisplayStatus,
-} from "@/lib/api";
-import type { DisplayStatus, Session } from "@/lib/types";
-import { Icon } from "./Icon";
-import {
-  RecentPatientHistory,
-  type WorkspaceCaseSummary,
-} from "./RecentPatientHistory";
-import { SessionGroup } from "./SessionRecordings";
 import { Button } from "@/components/ui/button";
+import { getCases, getSessions } from "@/lib/api";
+import { listDetections, type DetectionJob } from "@/lib/video-detection";
+import type { CaseSummary } from "@/lib/types";
+import { Icon } from "./Icon";
+import { WorkspaceUserContext } from "./AppShell";
 
-const ACTIVE_SESSION_STATUSES = new Set([
-  "queued",
-  "validating",
-  "deidentifying",
-  "preprocessing",
-  "inference",
-  "explaining",
-]);
-const POLL_INTERVAL_MS = 4000;
+type RecentCase = Pick<
+  CaseSummary,
+  "caseId" | "modalities" | "latestCreatedAt" | "status"
+>;
 
-/** Home for all analyses; detailed review stays in the case history. */
+function shortCaseId(caseId: string) {
+  return `PT-${caseId.slice(-8)}`;
+}
+
+function displayDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : new Intl.DateTimeFormat(undefined, {
+        day: "2-digit",
+        month: "short",
+      }).format(date);
+}
+
+function statusLabel(status: CaseSummary["status"]) {
+  return {
+    processing: "Processing",
+    complete: "Ready",
+    needs_review: "Issues",
+  }[status];
+}
+
 export function DashboardScreen() {
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [caseCount, setCaseCount] = useState(0);
-  const [recentCases, setRecentCases] = useState<WorkspaceCaseSummary[]>([]);
-  const [filter, setFilter] = useState<"all" | DisplayStatus>("all");
+  const user = useContext(WorkspaceUserContext);
+  const [cases, setCases] = useState<RecentCase[]>([]);
+  const [eegSessionCount, setEegSessionCount] = useState(0);
+  const [videoJobs, setVideoJobs] = useState<DetectionJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const latestRequest = useRef(0);
-  const deletedSessionIds = useRef(new Set<string>());
+  const [query, setQuery] = useState("");
+  const requestNumber = useRef(0);
+  const requestController = useRef<AbortController | null>(null);
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    const requestNumber = ++latestRequest.current;
+  const refresh = useCallback(async () => {
+    requestController.current?.abort();
+    const controller = new AbortController();
+    requestController.current = controller;
+    const currentRequest = ++requestNumber.current;
+
     try {
-      const [nextSessions, nextCases] = await Promise.all([
-        getSessions(signal),
-        getCases(signal),
+      const [caseItems, sessions, { jobs }] = await Promise.all([
+        getCases(controller.signal),
+        getSessions(controller.signal),
+        listDetections(controller.signal),
       ]);
-      if (signal?.aborted || requestNumber !== latestRequest.current) return;
-      setSessions(
-        nextSessions.filter(
-          (session) => !deletedSessionIds.current.has(session.sessionId),
-        ),
-      );
-      setCaseCount(nextCases.length);
-      setRecentCases(
-        [...nextCases]
+      if (controller.signal.aborted || currentRequest !== requestNumber.current)
+        return;
+      setCases(
+        [...caseItems]
           .sort(
             (left, right) =>
               Date.parse(right.latestCreatedAt) -
               Date.parse(left.latestCreatedAt),
           )
-          .slice(0, 4)
-          .map(
-            ({
-              caseId,
-              patientName,
-              patientNameVerificationStatus,
-              modalities,
-              latestCreatedAt,
-              status,
-              flaggedIntervalCount,
-            }) => ({
-              caseId,
-              patientName,
-              patientNameVerificationStatus,
-              modalities,
-              latestCreatedAt,
-              status,
-              flaggedIntervalCount,
-            }),
-          ),
+          .map(({ caseId, modalities, latestCreatedAt, status }) => ({
+            caseId,
+            modalities,
+            latestCreatedAt,
+            status,
+          })),
       );
+      setEegSessionCount(sessions.length);
+      setVideoJobs(jobs);
       setError(null);
-    } catch (refreshError) {
+    } catch (loadError) {
       if (
-        refreshError instanceof DOMException &&
-        refreshError.name === "AbortError"
+        controller.signal.aborted ||
+        (loadError instanceof DOMException && loadError.name === "AbortError")
       )
         return;
-      if (requestNumber !== latestRequest.current) return;
+      if (currentRequest !== requestNumber.current) return;
       setError(
-        refreshError instanceof Error
-          ? refreshError.message
-          : "Your analyses could not be loaded.",
+        loadError instanceof Error
+          ? loadError.message
+          : "Dashboard data could not be loaded.",
       );
     } finally {
-      if (!signal?.aborted && requestNumber === latestRequest.current)
+      if (
+        !controller.signal.aborted &&
+        currentRequest === requestNumber.current
+      )
         setLoading(false);
-    }
-  }, []);
-
-  const removeSession = useCallback(async (sessionId: string) => {
-    try {
-      await deleteSession(sessionId);
-      deletedSessionIds.current.add(sessionId);
-      latestRequest.current += 1;
-      setSessions((current) =>
-        current.filter((session) => session.sessionId !== sessionId),
-      );
-    } catch (deleteError) {
-      setError(
-        deleteError instanceof Error
-          ? deleteError.message
-          : "The session could not be deleted.",
-      );
-      throw deleteError;
+      if (requestController.current === controller)
+        requestController.current = null;
     }
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    const initialLoad = window.setTimeout(
-      () => void refresh(controller.signal),
-      0,
-    );
+    const initialLoad = window.setTimeout(() => void refresh(), 0);
     return () => {
-      controller.abort();
       window.clearTimeout(initialLoad);
+      requestNumber.current += 1;
+      requestController.current?.abort();
     };
   }, [refresh]);
 
-  const hasActiveSessions = sessions.some((session) =>
-    ACTIVE_SESSION_STATUSES.has(session.status),
+  const linkedCaseIds = new Set(
+    videoJobs.flatMap((job) =>
+      job.case_id && job.sync?.status === "linked" ? [job.case_id] : [],
+    ),
   );
-  useEffect(() => {
-    if (!hasActiveSessions) return;
-    const controller = new AbortController();
-    let timer: number | undefined;
-    let stopped = false;
-    const poll = async () => {
-      if (!document.hidden) await refresh(controller.signal);
-      if (!stopped && !controller.signal.aborted)
-        timer = window.setTimeout(() => void poll(), POLL_INTERVAL_MS);
-    };
-    timer = window.setTimeout(() => void poll(), POLL_INTERVAL_MS);
-    return () => {
-      stopped = true;
-      controller.abort();
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [hasActiveSessions, refresh]);
-
-  const visibleSessions = useMemo(
-    () =>
-      filter === "all"
-        ? sessions
-        : sessions.filter(
-            (session) => toDisplayStatus(session.status) === filter,
-          ),
-    [filter, sessions],
-  );
-  const recordingCount = sessions.reduce(
-    (total, session) => total + session.recordings.length,
-    0,
-  );
-  const completedCount = sessions.filter(
-    (session) =>
-      session.status === "completed" ||
-      session.status === "completed_with_errors",
+  const processingCount = cases.filter(
+    (item) => item.status === "processing",
   ).length;
+  const readyCount = cases.filter((item) => item.status === "complete").length;
+  const issueCount = cases.filter(
+    (item) => item.status === "needs_review",
+  ).length;
+  const workspaces = [
+    {
+      label: "VEEG",
+      detail: "Synced cases",
+      count: linkedCaseIds.size,
+      href: "/cases",
+    },
+    {
+      label: "EEG",
+      detail: "EEG sessions",
+      count: eegSessionCount,
+      href: "/upload/eeg?view=reviews",
+    },
+    {
+      label: "VIDEO",
+      detail: "Video files",
+      count: videoJobs.length,
+      href: "/video-reviews",
+    },
+  ];
+  const metrics = [
+    { label: "Total patients", value: cases.length },
+    { label: "Active processing", value: processingCount },
+    { label: "Ready", value: readyCount },
+    { label: "Issues", value: issueCount },
+  ];
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const recentCases = cases
+    .filter((item) =>
+      shortCaseId(item.caseId).toLocaleLowerCase().includes(normalizedQuery),
+    )
+    .slice(0, 5);
 
   return (
-    <div className="page-frame">
-      <div className="animate-enter-up">
-        <header className="glass-panel rounded-3xl border border-rule px-6 py-7 sm:px-8 sm:py-9">
-          <div className="flex flex-col justify-between gap-7 lg:flex-row lg:items-end">
-            <div className="max-w-2xl">
-              <p className="eyebrow">MDS01 workspace</p>
-              <h1 className="mt-3 text-[clamp(2.2rem,5vw,3.3rem)] font-semibold leading-[1.03] tracking-[-0.055em] text-ink">
-                Analysis workspace
-              </h1>
-              <p className="mt-4 max-w-xl text-[0.98rem] leading-7 text-ink-muted">
-                Keep VEEG and patient-video review in one place. Each modality
-                keeps its own privacy treatment, model, and evidence trail.
-              </p>
-            </div>
-            <Button
-              asChild
-              size="lg"
-              className="shrink-0 self-start lg:self-end"
+    <div className="page-frame space-y-8">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-[-0.035em] text-ink sm:text-4xl">
+            Dashboard
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-ink-muted">
+            Overview of patient recordings and processing status
+          </p>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="grid gap-1 text-xs font-medium text-ink-muted">
+            Search
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              placeholder="Patient ID"
+              className="min-h-11 w-44 rounded-lg border border-rule-strong bg-surface px-3 text-sm text-ink outline-none placeholder:text-ink-faint focus:border-teal focus:ring-2 focus:ring-teal/20"
+            />
+          </label>
+          {user && (
+            <div
+              aria-label={`Profile: ${user.displayName}`}
+              className="flex min-h-11 items-center gap-2 rounded-lg border border-rule bg-surface px-3"
             >
-              <Link href="/upload">
-                <Icon name="upload" className="size-4" />
-                New patient review
-              </Link>
+              <span className="grid size-7 place-items-center rounded-full bg-teal-soft text-xs font-bold text-teal-dark">
+                {user.displayName.slice(0, 1).toUpperCase()}
+              </span>
+              <span className="text-sm font-semibold text-ink">
+                {user.displayName}
+              </span>
+            </div>
+          )}
+          <Button
+            asChild
+            className="min-h-11 bg-teal-dark text-white hover:bg-teal-dark/90"
+          >
+            <Link href="/upload">
+              <Icon name="upload" className="size-4" />
+              New review
+            </Link>
+          </Button>
+        </div>
+      </header>
+
+      <section
+        aria-label="Analysis workspaces"
+        className="grid gap-4 md:grid-cols-3"
+      >
+        {workspaces.map((workspace) => (
+          <Link
+            key={workspace.label}
+            href={workspace.href}
+            className="group rounded-2xl border border-rule bg-surface p-5 shadow-hard transition-shadow hover:shadow-hard-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-bold tracking-[0.14em] text-ink-muted">
+                {workspace.label}
+              </span>
+              <Icon
+                name={workspace.label === "VIDEO" ? "video" : "activity"}
+                className="size-5 text-teal-dark"
+              />
+            </div>
+            <p className="mt-3 text-sm text-ink-muted">{workspace.detail}</p>
+            <p className="mt-1 text-4xl font-semibold tabular-nums tracking-tight text-ink">
+              {loading || error ? "—" : workspace.count}
+            </p>
+            <span className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-teal-dark">
+              View workspace <Icon name="arrow" className="size-4" />
+            </span>
+          </Link>
+        ))}
+      </section>
+
+      <dl
+        className="grid grid-cols-2 divide-x divide-y divide-rule overflow-hidden rounded-2xl border border-rule bg-surface shadow-hard md:grid-cols-4 md:divide-y-0"
+        aria-label="Patient processing totals"
+        aria-busy={loading}
+      >
+        {metrics.map(({ label, value }) => (
+          <div key={label} className="px-5 py-4 sm:px-6">
+            <dt className="text-xs font-medium text-ink-muted">{label}</dt>
+            <dd className="mt-2 text-2xl font-semibold tabular-nums text-ink">
+              {loading || error ? "—" : value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+
+      <section
+        className="overflow-hidden rounded-2xl border border-rule bg-surface shadow-hard"
+        aria-labelledby="recent-cases-heading"
+      >
+        <div className="flex flex-wrap items-end justify-between gap-4 border-b border-rule px-5 py-4 sm:px-6">
+          <div>
+            <h2
+              id="recent-cases-heading"
+              className="text-lg font-semibold text-ink"
+            >
+              Recent patients / sessions
+            </h2>
+            <p className="mt-1 text-xs text-ink-muted">Newest activity first</p>
+          </div>
+        </div>
+
+        {error ? (
+          <div
+            className="flex flex-wrap items-center justify-between gap-3 px-5 py-5 sm:px-6"
+            role="alert"
+          >
+            <p className="text-sm text-ink-muted">
+              Dashboard records could not be loaded.
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void refresh()}
+            >
+              Try again
             </Button>
           </div>
-          <div className="mt-8 grid gap-3 sm:grid-cols-3">
-            <Metric
-              label="Patient history"
-              value={caseCount}
-              detail="Owner-scoped reviews"
-              icon="list"
-            />
-            <Metric
-              label="VEEG recordings"
-              value={recordingCount}
-              detail={`${completedCount} complete`}
-              icon="file"
-            />
-            <Metric
-              label="Modalities"
-              value="2"
-              detail="VEEG + video"
-              icon="shield"
-            />
-          </div>
-        </header>
-
-        <div className="mt-6 grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(280px,0.75fr)]">
-          <section
-            className="panel overflow-hidden"
-            aria-labelledby="eeg-analysis-heading"
-          >
-            <div className="flex flex-col justify-between gap-4 border-b border-rule px-5 py-5 sm:flex-row sm:items-center sm:px-7">
-              <div>
-                <p className="eyebrow">Modality one</p>
-                <h2
-                  id="eeg-analysis-heading"
-                  className="mt-1 text-lg font-bold"
-                >
-                  VEEG analysis
-                </h2>
-                <p className="mt-1 text-sm text-ink-muted">
-                  {sessions.length} VEEG{" "}
-                  {sessions.length === 1 ? "session" : "sessions"} · Window
-                  scores, flagged intervals, and optional waveform review.
-                </p>
-              </div>
-              <label
-                className="flex items-center gap-2 text-xs text-ink-muted"
-                htmlFor="status-filter"
-              >
-                <span>Status</span>
-                <select
-                  className="min-h-10 rounded-lg border border-rule-strong bg-surface px-3 text-xs font-semibold text-ink outline-none transition focus:border-teal focus:ring-3 focus:ring-teal/15"
-                  id="status-filter"
-                  value={filter}
-                  onChange={(event) =>
-                    setFilter(event.target.value as "all" | DisplayStatus)
-                  }
-                >
-                  <option value="all">All statuses</option>
-                  <option value="queued">Queued</option>
-                  <option value="processing">Processing</option>
-                  <option value="complete">Complete</option>
-                  <option value="partial">Partial · review</option>
-                  <option value="failed">Needs review</option>
-                </select>
-              </label>
-            </div>
-            {error && (
-              <div
-                className="mx-5 mt-5 flex items-start justify-between gap-4 rounded-xl border border-red/30 bg-red-soft px-4 py-3 text-sm text-red sm:mx-7"
-                role="alert"
-              >
-                <span className="flex gap-2">
-                  <Icon name="alert" className="mt-0.5 size-4 shrink-0" />
-                  {error}
-                </span>
-                <button
-                  className="text-xs font-bold underline underline-offset-4"
-                  type="button"
-                  onClick={() => {
-                    setLoading(true);
-                    void refresh();
-                  }}
-                >
-                  Try again
-                </button>
-              </div>
-            )}
-            {loading ? (
-              <LoadingRows />
-            ) : visibleSessions.length === 0 ? (
-              <EmptyDashboard filtered={filter !== "all"} />
-            ) : (
-              <div className="space-y-5 px-5 py-5 sm:px-7">
-                {visibleSessions.map((session) => (
-                  <SessionGroup
-                    key={session.sessionId}
-                    session={session}
-                    onDelete={removeSession}
+        ) : loading ? (
+          <p className="px-5 py-6 text-sm text-ink-muted" role="status">
+            Loading records…
+          </p>
+        ) : recentCases.length === 0 ? (
+          <p className="px-5 py-6 text-sm text-ink-muted" role="status">
+            {cases.length === 0
+              ? "No patient cases yet. Start a new review to add recordings."
+              : "No patient IDs match this search."}
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[42rem] text-left text-sm">
+              <thead className="bg-surface-soft text-xs text-ink-muted">
+                <tr>
+                  <th className="px-5 py-3 font-semibold sm:px-6">
+                    Patient ID
+                  </th>
+                  <th className="px-5 py-3 font-semibold">Date</th>
+                  <th className="px-5 py-3 font-semibold">Data</th>
+                  <th className="px-5 py-3 font-semibold">Status</th>
+                  <th
+                    className="px-5 py-3 text-right font-semibold sm:px-6"
+                    aria-label="Open case"
                   />
-                ))}
-              </div>
-            )}
-          </section>
-
-          <aside>
-            <RecentPatientHistory
-              items={recentCases}
-              loading={loading}
-              error={error}
-            />
-          </aside>
-        </div>
-        <p className="mt-6 text-xs leading-5 text-ink-muted">
-          Research only · model output is not a diagnosis · raw patient files
-          remain outside the public workspace.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  detail,
-  icon,
-}: {
-  label: string;
-  value: string | number;
-  detail: string;
-  icon: "activity" | "file" | "shield" | "list";
-}) {
-  return (
-    <div className="rounded-2xl border border-rule bg-surface/70 px-4 py-4">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-xs font-semibold uppercase tracking-[0.1em] text-ink-faint">
-          {label}
-        </span>
-        <Icon name={icon} className="size-5 text-teal" />
-      </div>
-      <p className="mt-3 text-2xl font-semibold tracking-[-0.04em] tabular-nums text-ink">
-        {value}
-      </p>
-      <p className="mt-1 text-xs text-ink-muted">{detail}</p>
-    </div>
-  );
-}
-
-function LoadingRows() {
-  return (
-    <div className="space-y-3 px-5 py-5 sm:px-7" aria-label="Loading sessions">
-      <div className="h-28 animate-pulse rounded-xl border border-rule bg-surface" />
-      <div className="h-28 animate-pulse rounded-xl border border-rule bg-surface" />
-    </div>
-  );
-}
-
-function EmptyDashboard({ filtered }: { filtered: boolean }) {
-  return (
-    <div className="px-5 py-16 sm:px-7 sm:py-24">
-      <h3 className="text-lg font-semibold">
-        {filtered
-          ? "No VEEG sessions match this status."
-          : "No VEEG analyses yet."}
-      </h3>
-      <p className="mt-2 max-w-md text-sm leading-6 text-ink-muted">
-        {filtered
-          ? "Choose another status to see the rest of your VEEG sessions."
-          : "Start with one patient folder from New patient review above."}
-      </p>
-      <Link
-        className="mt-5 inline-flex min-h-10 items-center gap-2 text-sm font-bold text-teal-dark underline underline-offset-4"
-        href="/upload"
-      >
-        Upload data <Icon name="arrow" className="size-4" />
-      </Link>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-rule">
+                {recentCases.map((item) => {
+                  const hasEeg = item.modalities.includes("eeg");
+                  const hasVideo = item.modalities.includes("video");
+                  const dataLabels = [
+                    hasEeg ? "EEG" : null,
+                    hasVideo ? "Video" : null,
+                    linkedCaseIds.has(item.caseId) ? "VEEG" : null,
+                  ].filter((label): label is string => Boolean(label));
+                  return (
+                    <tr
+                      key={item.caseId}
+                      className="transition-colors hover:bg-surface-soft/70"
+                    >
+                      <td className="px-5 py-4 font-mono font-semibold tabular-nums text-ink sm:px-6">
+                        {shortCaseId(item.caseId)}
+                      </td>
+                      <td className="px-5 py-4 text-ink-muted">
+                        {displayDate(item.latestCreatedAt)}
+                      </td>
+                      <td className="px-5 py-4 text-ink">
+                        {dataLabels.length ? dataLabels.join(" · ") : "—"}
+                      </td>
+                      <td className="px-5 py-4">
+                        <span className="rounded-full border border-rule bg-surface-soft px-2.5 py-1 text-xs font-semibold text-ink">
+                          {statusLabel(item.status)}
+                        </span>
+                      </td>
+                      <td className="px-5 py-4 text-right sm:px-6">
+                        <Link
+                          href={`/cases/${encodeURIComponent(item.caseId)}`}
+                          className="inline-flex min-h-10 items-center gap-1 rounded-md px-2 font-semibold text-teal-dark focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal"
+                        >
+                          Open <Icon name="arrow" className="size-4" />
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

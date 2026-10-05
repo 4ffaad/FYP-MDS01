@@ -7,6 +7,7 @@ import { buildEegArchive, classifyPatientFolder } from "@/lib/patient-folder";
 import { recordingFromBackend } from "@/lib/api";
 import { profileLoadForCase } from "@/lib/case-profile-state";
 import { prepareVideoUploadFile } from "@/lib/safe-upload";
+import { videoJobFailureMessage } from "@/lib/video-detection";
 import { extractPatientReportDraft } from "@/lib/report-extraction";
 
 function folderFile(path: string, content = "synthetic"): File {
@@ -31,6 +32,21 @@ test("recording display names use sequence numbers, never backend filenames", ()
   expect(recording.displayName).not.toContain("Synthetic-Patient-MRN-42");
 });
 
+test("explains why the video pose gate prevented VSViG from running", () => {
+  expect(
+    videoJobFailureMessage(
+      "failed",
+      "Too many patient landmarks were missing or obscured for this model.",
+    ),
+  ).toContain("the 15 body landmarks VSViG needs");
+  expect(
+    videoJobFailureMessage(
+      "failed",
+      "A single patient could not be identified throughout this clip.",
+    ),
+  ).toContain("track exactly one person");
+});
+
 test("classifies one explicitly selected folder without filename-based cross-modal pairing", () => {
   const result = classifyPatientFolder([
     folderFile("one-case/session.e"),
@@ -43,6 +59,23 @@ test("classifies one explicitly selected folder without filename-based cross-mod
   expect(result.eeg?.format).toBe("nicolet-e");
   expect(result.report?.name).toBe("final-report.doc");
   expect(result.videos).toHaveLength(1);
+  expect(result.ignoredCount).toBe(1);
+});
+
+test("EEG-only classification permits a missing report and ignores videos", () => {
+  const result = classifyPatientFolder(
+    [
+      folderFile("one-case/session.e"),
+      folderFile("one-case/clip-01.avi"),
+      folderFile("one-case/notes.txt"),
+    ],
+    { requireReport: false, includeVideos: false },
+  );
+
+  expect(result.errors).toEqual([]);
+  expect(result.eegCandidates).toHaveLength(1);
+  expect(result.report).toBeNull();
+  expect(result.videos).toEqual([]);
   expect(result.ignoredCount).toBe(1);
 });
 
@@ -294,6 +327,72 @@ test("extracts technical, event, conclusion, and specialist report headings", ()
   ]);
 });
 
+test("keeps the EEG report sections and date labels separate during extraction", () => {
+  const result = extractPatientReportDraft(
+    [
+      "EEG NO",
+      "VT 2/2026",
+      "UNIT Neurology, Clinical Laboratory",
+      "Synthetic Hospital",
+      "03-1234567",
+      "PATIENT DETIALS",
+      "PATIENT NAME",
+      "Synthetic Person",
+      "IC NO",
+      "000000-00-0000",
+      "MRN NO",
+      "SYN-42",
+      "SEX",
+      "Female",
+      "RACE",
+      "Synthetic",
+      "HAND DOMINANCE",
+      "R",
+      "DATE & TIME:",
+      "13/1/2026 6:46:30 AM",
+      "TEST INFORMATION",
+      "TYPES OF TEST",
+      "ROUTINE EEG",
+      "INTERICTAL RECORD",
+      "Synthetic interictal details.",
+      "ICTAL RECORD",
+      "Synthetic ictal details.",
+      "ATTACKS",
+      "Two attacks captured.",
+      "CONCLUSIONS",
+      "Synthetic conclusion.",
+      "SPECIALIST NAMES",
+      "Synthetic neurologist",
+      "DATE",
+      "14.1.2026",
+    ].join("\n"),
+  );
+
+  expect(result.details).toEqual([
+    { label: "EEG NO", value: "VT 2/2026" },
+    {
+      label: "Institution",
+      value:
+        "UNIT Neurology, Clinical Laboratory\nSynthetic Hospital\n03-1234567",
+    },
+    { label: "PATIENT NAME", value: "Synthetic Person" },
+    { label: "IC NO", value: "000000-00-0000" },
+    { label: "MRN NO", value: "SYN-42" },
+    { label: "SEX", value: "Female" },
+    { label: "RACE", value: "Synthetic" },
+    { label: "HAND DOMINANCE", value: "R" },
+    { label: "DATE & TIME", value: "13/1/2026 6:46:30 AM" },
+    { label: "TYPES OF TEST", value: "ROUTINE EEG" },
+    { label: "INTERICTAL RECORD", value: "Synthetic interictal details." },
+    { label: "ICTAL RECORD", value: "Synthetic ictal details." },
+    { label: "ATTACKS", value: "Two attacks captured." },
+    { label: "CONCLUSIONS", value: "Synthetic conclusion." },
+    { label: "SPECIALIST NAMES", value: "Synthetic neurologist" },
+    { label: "DATE", value: "14.1.2026" },
+  ]);
+  expect(result.truncated).toBe(false);
+});
+
 test("/upload opens the one-patient multi-recording intake", async ({
   page,
 }) => {
@@ -306,6 +405,33 @@ test("/upload opens the one-patient multi-recording intake", async ({
     page.getByRole("button", { name: /choose patient folder/i }),
   ).toBeVisible();
   await expect(page.getByRole("radio")).toHaveCount(0);
+});
+
+test("/upload/eeg accepts one EEG file without requiring a folder or report", async ({
+  page,
+}) => {
+  await page.goto("/upload/eeg");
+  await expect(
+    page.getByRole("heading", { name: "Add EEG recordings" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Choose one EEG file" }),
+  ).toBeVisible();
+  await page.getByLabel("Choose one EEG recording").setInputFiles({
+    name: "recording.e",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("synthetic-eeg"),
+  });
+
+  await expect(page.getByRole("region", { name: "Video input" })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("region", { name: "Privacy settings" }),
+  ).toContainText("1 EEG recording included automatically");
+  await expect(page.getByText("Imported report", { exact: true })).toHaveCount(
+    0,
+  );
 });
 
 test("local legacy Word extraction returns a bounded review draft only", async ({
@@ -385,7 +511,6 @@ test("local legacy Word extraction returns a bounded review draft only", async (
         ],
         truncated: false,
       },
-      requiresHumanReview: true,
       stored: false,
     });
     expect(JSON.stringify(payload)).toContain("synthetic-only");
@@ -419,7 +544,6 @@ test("a delayed report response cannot replace details from a newer folder", asy
     headers: { "Cache-Control": "no-store" },
     json: {
       draft: { details: [{ label: "Patient Name", value: name }] },
-      requiresHumanReview: true,
       stored: false,
     },
   });
@@ -454,10 +578,6 @@ test("a delayed report response cannot replace details from a newer folder", asy
     const patientDetails = page.getByRole("region", {
       name: "Patient details",
     });
-    await expect(
-      patientDetails.getByText("Synthetic Patient B", { exact: true }),
-    ).toBeHidden();
-    await patientDetails.getByText("View extracted details").click();
     await expect(
       patientDetails.getByText("Synthetic Patient B", { exact: true }),
     ).toBeVisible();
@@ -623,7 +743,6 @@ test("video clips are summarized and included automatically for VSViG", async ({
           ],
           truncated: false,
         },
-        requiresHumanReview: true,
         stored: false,
       }),
     });
@@ -650,7 +769,7 @@ test("video clips are summarized and included automatically for VSViG", async ({
       "2 video clips included automatically",
     );
     await expect(videoInput).toContainText(
-      "Full-frame blur runs before VSViG analysis",
+      "VSViG receives the coordinates plus 15 RGB patches blurred individually after extraction",
     );
     await expect(page.getByText("EEG input", { exact: true })).toHaveCount(0);
     await expect(
@@ -898,7 +1017,7 @@ test("one patient folder includes every report detail and proceeds directly to p
     await expect(
       page.getByText("2 of 2 EEG recordings complete"),
     ).toBeVisible();
-    await page.getByRole("link", { name: "Open patient history" }).click();
+    await page.getByRole("link", { name: "Open patient review" }).click();
 
     await expect(page).toHaveURL(/\/cases\/CASE-SYNTHETIC$/);
     await expect(
@@ -909,24 +1028,17 @@ test("one patient folder includes every report detail and proceeds directly to p
     ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Synthetic Person" }),
-    ).toHaveCount(0);
-    await expect(
-      page.getByText("Synthetic Person", { exact: true }),
-    ).toBeHidden();
-    const allExtractedDetails = page
-      .locator("details")
-      .filter({ hasText: "All extracted report details" });
-    await expect(allExtractedDetails).toHaveJSProperty("open", false);
-    await expect(allExtractedDetails).toContainText("47 years");
-    await expect(allExtractedDetails).toContainText(
-      "Synthetic reviewed finding.",
-    );
-    await expect(allExtractedDetails).toContainText("Synthetic-H42");
-    await expect(
-      page.getByText("Auto-extracted · not reviewed", {
-        exact: true,
-      }),
     ).toBeVisible();
+    await expect(page.getByText("47 years", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("Synthetic reviewed finding.", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Synthetic-H42", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Auto-extracted · not reviewed", { exact: true }),
+    ).toHaveCount(0);
 
     expect(profileVerificationStatus).toBe("auto_extracted");
     expect(savedDetails.map((detail) => detail.label)).toEqual([
@@ -1108,7 +1220,16 @@ test("media intake splits EEG privacy from video input and shows details inline"
       "2 EEG recordings included automatically and analyzed independently",
     );
     await expect(video).toContainText("2 video clips included automatically");
-    await expect(video).toContainText("Full-frame blur runs before VSViG");
+    await expect(video).toContainText(
+      "VSViG receives the coordinates plus 15 RGB patches blurred individually after extraction",
+    );
+    const blurStrength = video.getByRole("slider", {
+      name: "VSViG model-input blur strength",
+    });
+    await expect(blurStrength).toHaveValue("100");
+    await blurStrength.focus();
+    await blurStrength.press("Home");
+    await expect(blurStrength).toHaveValue("50");
     await expect(page.getByText("EEG input", { exact: true })).toHaveCount(0);
     await expect(
       page.getByRole("region", { name: /\d+ EEG recordings?/ }),
@@ -1155,7 +1276,7 @@ test("media intake splits EEG privacy from video input and shows details inline"
   }
 });
 
-test("one case submits every selected video to VSViG sequentially", async ({
+test("one case queues all videos independently from EEG before polling", async ({
   page,
 }) => {
   test.skip(
@@ -1167,6 +1288,7 @@ test("one case submits every selected video to VSViG sequentially", async ({
   const detectionEvents: string[] = [];
   const detectionFormats: string[] = [];
   const detectionCaseIds: string[] = [];
+  const detectionBlurStrengths: string[] = [];
   let savedDetails: Array<{ label: string; value: string }> = [];
   let legacyPrivacyRequests = 0;
   let eegTerminalSeen = false;
@@ -1215,24 +1337,25 @@ test("one case submits every selected video to VSViG sequentially", async ({
       }),
   );
   await page.route("**/api/sessions/MDS-VIDEO-SYNTHETIC", (route) => {
-    eegTerminalSeen = true;
+    const sessionComplete = detectionJobs.length > 0;
+    if (sessionComplete) eegTerminalSeen = true;
     return route.fulfill({
       json: {
         session_id: "MDS-VIDEO-SYNTHETIC",
         case_id: "CASE-VIDEO-SYNTHETIC",
         privacy_method: "metadata-scrub",
         privacy_methods: ["metadata-scrub"],
-        status: "completed",
-        current_stage: "complete",
+        status: sessionComplete ? "completed" : "processing",
+        current_stage: sessionComplete ? "complete" : "inference",
         created_at: createdAt,
-        completed_at: createdAt,
+        completed_at: sessionComplete ? createdAt : null,
         error_message: null,
         progress: {
           total_recordings: 2,
-          finished_recordings: 2,
-          completed_recordings: 2,
+          finished_recordings: sessionComplete ? 2 : 0,
+          completed_recordings: sessionComplete ? 2 : 0,
           failed_recordings: 0,
-          percent: 100,
+          percent: sessionComplete ? 100 : 0,
         },
         summary: { model_alert_recordings: 0 },
         recordings: [],
@@ -1272,6 +1395,7 @@ test("one case submits every selected video to VSViG sequentially", async ({
     const headers = request.headers();
     detectionFormats.push(headers["x-video-format"] ?? "");
     detectionCaseIds.push(headers["x-case-id"] ?? "");
+    detectionBlurStrengths.push(headers["x-model-blur-percent"] ?? "");
     const index = detectionJobs.length + 1;
     const job = {
       job_id: `VID-DETECTION-SYNTHETIC-${index}`,
@@ -1281,6 +1405,7 @@ test("one case submits every selected video to VSViG sequentially", async ({
       current_stage: "queued",
       duration_seconds: 5,
       fps: 25,
+      blur_strength_percent: Number(headers["x-model-blur-percent"] ?? "100"),
       created_at: createdAt,
       retention_expires_at: "2026-09-28T00:00:00Z",
       video_available: false,
@@ -1296,8 +1421,15 @@ test("one case submits every selected video to VSViG sequentially", async ({
       const job = detectionJobs.find((candidate) => candidate.job_id === jobId);
       if (!job)
         return route.fulfill({ status: 404, json: { detail: "Not found." } });
-      job.status = "ready";
-      job.current_stage = "complete";
+      if (jobId?.endsWith("-1")) {
+        job.status = "failed";
+        job.current_stage = "failed";
+        job.error =
+          "Too many patient landmarks were missing or obscured for this model. Try a clearer clip.";
+      } else {
+        job.status = "ready";
+        job.current_stage = "complete";
+      }
       return route.fulfill({ json: { job } });
     },
   );
@@ -1323,9 +1455,9 @@ test("one case submits every selected video to VSViG sequentially", async ({
           ...detectionJobs.map((job) => ({
             id: job.job_id,
             modality: "video",
-            status: "complete",
+            status: job.status === "failed" ? "needs_review" : "complete",
             created_at: createdAt,
-            review_ready: true,
+            review_ready: job.status === "ready",
           })),
         ],
       },
@@ -1341,19 +1473,38 @@ test("one case submits every selected video to VSViG sequentially", async ({
     writeFileSync(join(folder, "recording-one.e"), "synthetic-eeg-one");
     writeFileSync(join(folder, "recording-two.e"), "synthetic-eeg-two");
     writeFileSync(join(folder, "report.doc"), "synthetic-report");
-    writeFileSync(join(folder, "clip-one.avi"), "synthetic-video-one");
-    writeFileSync(join(folder, "clip-two.avi"), "synthetic-video-two");
+    for (let index = 1; index <= 9; index += 1) {
+      writeFileSync(
+        join(folder, `clip-${index}.avi`),
+        `synthetic-video-${index}`,
+      );
+    }
     await page
       .locator('input[type="file"][webkitdirectory]')
       .setInputFiles(folder);
 
     await expect(
       page.getByRole("region", { name: "Video input" }),
-    ).toContainText("2 video clips included automatically");
+    ).toContainText("9 video clips included automatically");
+    const blurStrength = page.getByRole("slider", {
+      name: "VSViG model-input blur strength",
+    });
+    await expect(blurStrength).toHaveValue("100");
+    await blurStrength.focus();
+    await blurStrength.press("Home");
+    await blurStrength.press("ArrowRight");
+    await blurStrength.press("ArrowRight");
+    await blurStrength.press("ArrowRight");
+    await expect(blurStrength).toHaveValue("65");
     await page.getByRole("button", { name: "Start processing" }).click();
+    await expect(
+      page.getByRole("progressbar", {
+        name: "Overall EEG and video processing progress",
+      }),
+    ).toBeVisible();
 
     await expect(
-      page.getByRole("heading", { name: "Processing complete" }),
+      page.getByRole("heading", { name: "Processing finished with issues" }),
     ).toBeVisible();
     await expect(
       page.getByText("2 of 2 EEG recordings complete"),
@@ -1363,38 +1514,58 @@ test("one case submits every selected video to VSViG sequentially", async ({
     });
     await expect(
       videoProgressRegion.getByText("Complete", { exact: true }),
-    ).toHaveCount(2);
+    ).toHaveCount(8);
     await expect(videoProgressRegion.getByRole("progressbar")).toHaveCount(0);
     await expect(videoProgressRegion.getByText(/Phase estimate/)).toHaveCount(
       0,
     );
-    await expect(page.getByText("Video 1", { exact: true })).toBeVisible();
-    await expect(page.getByText("Video 2", { exact: true })).toBeVisible();
-    await page.getByRole("link", { name: "Open patient history" }).click();
+    const videoList = videoProgressRegion.locator("details");
+    await expect(videoList.getByText("Video 1", { exact: true })).toBeHidden();
+    await expect(videoList.locator("summary")).toContainText(
+      "Show 9 video clips",
+    );
+    await expect(videoList.locator("summary")).toContainText(
+      "8 complete · 0 in progress · 1 needs attention",
+    );
+    await videoList.locator("summary").click();
+    await expect(videoList.getByText("Video 1", { exact: true })).toBeVisible();
+    await expect(videoList.getByText("Video 9", { exact: true })).toBeVisible();
+    await expect(videoList).toContainText(
+      "Pose extraction could not find all 15 body landmarks required by VSViG",
+    );
+    await page.getByRole("link", { name: "Open patient review" }).click();
     await expect(page).toHaveURL(/\/cases\/CASE-VIDEO-SYNTHETIC$/);
     await expect(
       page.getByRole("heading", { name: "Report overview" }),
     ).toBeVisible();
     await expect(
       page.getByText("VSViG video analysis", { exact: true }),
-    ).toHaveCount(2);
+    ).toHaveCount(9);
     expect(savedDetails).toEqual([
       { label: "Findings", value: "Synthetic finding." },
     ]);
-    expect(detectionFormats).toEqual(["avi", "avi"]);
-    expect(detectionCaseIds).toEqual([
-      "CASE-VIDEO-SYNTHETIC",
-      "CASE-VIDEO-SYNTHETIC",
-    ]);
-    expect(detectionJobs).toHaveLength(2);
-    expect(videoSubmittedBeforeEeg).toBe(false);
+    expect(detectionFormats).toEqual(Array(9).fill("avi"));
+    expect(detectionBlurStrengths).toEqual(Array(9).fill("65"));
+    expect(detectionCaseIds).toEqual(Array(9).fill("CASE-VIDEO-SYNTHETIC"));
+    expect(detectionJobs).toHaveLength(9);
+    expect(videoSubmittedBeforeEeg).toBe(true);
     expect(legacyPrivacyRequests).toBe(0);
-    expect(detectionEvents).toEqual([
-      "POST /api/video-detection/jobs",
-      "GET /api/video-detection/jobs/VID-DETECTION-SYNTHETIC-1",
-      "POST /api/video-detection/jobs",
-      "GET /api/video-detection/jobs/VID-DETECTION-SYNTHETIC-2",
-    ]);
+    expect(detectionEvents.slice(0, 9)).toEqual(
+      Array(9).fill("POST /api/video-detection/jobs"),
+    );
+    const firstStatusRead = detectionEvents.findIndex((event) =>
+      event.startsWith(
+        "GET /api/video-detection/jobs/VID-DETECTION-SYNTHETIC-",
+      ),
+    );
+    expect(firstStatusRead).toBeGreaterThanOrEqual(9);
+    expect(
+      detectionEvents.filter((event) =>
+        event.startsWith(
+          "GET /api/video-detection/jobs/VID-DETECTION-SYNTHETIC-",
+        ),
+      ),
+    ).toHaveLength(9);
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
