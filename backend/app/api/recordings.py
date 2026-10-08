@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 
 from backend.app.core.config import ENABLE_FULL_SIGNAL_PREVIEW, ENABLE_SIGNAL_PREVIEW, FULL_SIGNAL_PREVIEW_MAX_SECONDS
-from backend.app.core.security import owner_id, require_api_auth
+from backend.app.core.security import owner_id, require_owner_auth
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
 from backend.app.database.models.eeg import EEGRecording
@@ -22,7 +23,7 @@ from backend.app.database.repository import (
 )
 from backend.app.services.session_service import public_record
 from backend.app.services.signal_service import SignalPreviewUnavailable, build_signal_preview
-from backend.app.services.storage_service import SessionStorage
+from backend.app.services.storage_service import SessionStorage, StorageError
 from backend.app.privacy.retention import model_alert_intervals
 from backend.app.ml.interface import public_score_type
 
@@ -61,7 +62,7 @@ def _get_record(db: Session, record_id: str, owner_user_id: int | None = None) -
 def get_recording(
     record_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User | None = Depends(require_owner_auth),
 ) -> dict:
     """Return safe technical metadata for one recording.
 
@@ -91,7 +92,7 @@ def get_recording(
 def get_prediction(
     record_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User | None = Depends(require_owner_auth),
 ) -> dict:
     """Return model metadata and window predictions for a recording.
 
@@ -180,7 +181,7 @@ def get_prediction(
 def get_annotations(
     record_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User | None = Depends(require_owner_auth),
 ) -> dict:
     """Return sanitized embedded EEG event timing for review alignment.
 
@@ -235,7 +236,7 @@ def get_annotations(
 def get_explanation(
     record_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User | None = Depends(require_owner_auth),
 ) -> dict:
     """Return stored non-clinical explanation artifacts for a recording.
 
@@ -294,7 +295,7 @@ def get_signal(
     duration_seconds: float = Query(10, gt=0, le=7200),
     max_points: int = Query(2000, gt=0, le=10000),
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User | None = Depends(require_owner_auth),
 ) -> dict:
     """Reject waveform access because EEG remains biometrically sensitive.
 
@@ -345,5 +346,25 @@ def get_signal(
             duration_seconds,
             max_points,
         )
-    except (SignalPreviewUnavailable, FileNotFoundError) as exc:
+    except (SignalPreviewUnavailable, StorageError, FileNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/recordings/{record_id}/original")
+def download_original(record_id: str, db: Session = Depends(get_session),
+                      current_user: User = Depends(require_owner_auth)):
+    from backend.app.services.source_download_service import original_response
+    from backend.app.services.storage_service import StorageError
+    record = _get_record(db, record_id, current_user.id)
+    session = get_session_by_database_id(db, record.session_db_id, current_user.id)
+    if not session or not record.original_artifact_path:
+        raise HTTPException(404, "Original recording is unavailable. Previously deleted originals cannot be recovered.")
+    storage = SessionStorage()
+    artifact = Path(record.original_artifact_path)
+    suffix = artifact.name.removesuffix(".enc").split(".")[-1]
+    if suffix not in {"e", "edf", "data"} or artifact != storage.root / session.session_id / "retained" / f"{record.record_id}.source.{suffix}.enc":
+        raise HTTPException(404, "Original recording is unavailable.")
+    try:
+        return original_response(storage, session.session_id, artifact, f"{record.record_id}.{suffix}")
+    except (StorageError, FileNotFoundError):
+        raise HTTPException(404, "Original recording is unavailable.")

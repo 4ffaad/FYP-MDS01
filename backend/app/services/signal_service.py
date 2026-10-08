@@ -46,7 +46,12 @@ def _filter_review_signal(samples: np.ndarray) -> np.ndarray:
     )
 
 
-def build_signal_preview(
+def build_signal_preview(db, session, record, storage, start_seconds, duration_seconds, max_points):
+    with storage.read_lease(session.session_id):
+        return _build_signal_preview(db, session, record, storage, start_seconds, duration_seconds, max_points)
+
+
+def _build_signal_preview(
     db: Session,
     session: EEGSession,
     record: EEGRecording,
@@ -64,6 +69,8 @@ def build_signal_preview(
 
     if not ENABLE_SIGNAL_PREVIEW:
         raise SignalPreviewUnavailable("Waveform access is disabled for this privacy-first prototype.")
+    if getattr(record, "original_artifact_path", None) and session.retention_policy == "until-deletion":
+        return _source_preview(session, record, storage, start_seconds, duration_seconds, max_points)
     if record.status.value != "inferred" or not record.retained_artifact_path:
         raise SignalPreviewUnavailable("No retained model-positive signal is available for this recording.")
 
@@ -327,3 +334,72 @@ def _downsample(samples: np.ndarray, times: np.ndarray, max_points: int) -> tupl
         return samples, times
     indexes = np.linspace(0, len(times) - 1, max_points, dtype=np.int64)
     return samples[:, indexes], times[indexes]
+
+
+def _source_preview(session, record, storage, start, duration, max_points):
+    """Owner source review is independent of model success and flagged windows."""
+    from backend.app.eeg.legacy_nicolet import LegacyNicoletReader
+    artifact = Path(record.original_artifact_path)
+    suffix = artifact.name.removesuffix(".enc").split(".")[-1]
+    temporary = storage.materialize_retained_artifact(
+        session.session_id, artifact, f"{record.record_id}.{secrets.token_hex(16)}.source.{suffix}"
+    )
+    header_temporary = None
+    try:
+        if suffix == "e":
+            payload = LegacyNicoletReader(temporary).read_source_range(start, start + duration, max_points)
+        elif suffix == "edf":
+            reader = pyedflib.EdfReader(str(temporary))
+            try:
+                channels = []
+                for index, label in enumerate(reader.getSignalLabels()):
+                    rate = float(reader.getSampleFrequency(index))
+                    begin = min(int(start * rate), int(reader.getNSamples()[index]))
+                    finish = min(int((start + duration) * rate), int(reader.getNSamples()[index]))
+                    if finish <= begin:
+                        continue
+                    samples = reader.readSignal(index, start=begin, n=finish - begin)
+                    unit = reader.getPhysicalDimension(index).strip().lower()
+                    factor = {"uv": 1e-6, "µv": 1e-6, "μv": 1e-6, "mv": 1e-3, "v": 1.0}.get(unit)
+                    if factor is not None:
+                        samples = samples * factor
+                    times = np.arange(begin, finish, dtype=np.float64) / rate
+                    samples, times = _downsample(samples[None, :], times, max_points)
+                    channels.append({"label": label.strip(), "samples": samples[0].tolist(),
+                                     "time_seconds": times.tolist(), "sampling_rate": rate})
+                if not channels:
+                    raise SignalPreviewUnavailable("No source signal overlaps the requested interval.")
+                payload = {"channels": channels, "time_seconds": channels[0]["time_seconds"],
+                           "segments": [{"source_start_seconds": start,
+                                         "source_end_seconds": min(start + duration, reader.file_duration)}],
+                           "sampling_rate": float(reader.getSampleFrequency(0)), "display_filter": None}
+            finally:
+                reader.close()
+        elif suffix == "data":
+            from backend.app.eeg.io import _read_nicolet
+            header_temporary = storage.materialize_retained_artifact(
+                session.session_id, artifact.with_name(f"{record.record_id}.source.head.enc"),
+                temporary.with_suffix(".head").name
+            )
+            raw = _read_nicolet(temporary, preload=False)
+            try:
+                rate = float(raw.info["sfreq"])
+                begin, finish = int(start * rate), min(raw.n_times, int((start + duration) * rate))
+                if begin >= finish:
+                    raise SignalPreviewUnavailable("No source signal overlaps the requested interval.")
+                samples = raw.get_data(start=begin, stop=finish)
+                samples, times = _downsample(samples, np.arange(begin, finish, dtype=np.float64) / rate, max_points)
+                payload = {"channels": [{"label": label, "samples": samples[index].tolist(), "sampling_rate": rate}
+                                        for index, label in enumerate(raw.ch_names)],
+                           "time_seconds": times.tolist(), "sampling_rate": rate, "display_filter": None,
+                           "segments": [{"source_start_seconds": begin / rate, "source_end_seconds": finish / rate}]}
+            finally:
+                raw.close()
+        else:
+            raise SignalPreviewUnavailable("Source waveform review is unavailable for this format. Download the original archive.")
+        payload.update({"record_id": record.record_id, "representation": "original-source", "flagged_intervals": []})
+        return payload
+    finally:
+        temporary.unlink(missing_ok=True)
+        if header_temporary:
+            header_temporary.unlink(missing_ok=True)

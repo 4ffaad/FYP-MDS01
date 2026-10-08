@@ -6,6 +6,7 @@ import asyncio
 import logging
 import secrets
 import threading
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from collections.abc import Iterable
@@ -308,12 +309,15 @@ def finalize_upload_draft(
 
     ensure_case_reference(db, case_id, owner_user_id)
     profile = canonical_privacy_profile(privacy_methods if privacy_methods is not None else privacy_method)
+    if "signal-obfuscation" in profile:
+        raise ValueError("Signal obfuscation is unavailable for new patient analyses.")
     session = EEGSession(
         owner_user_id=owner_user_id,
         session_id=new_session_id(),
         upload_draft_id=draft_id,
         case_id=case_id or new_case_id(),
         privacy_method=profile,
+        retention_policy="until-deletion",
         original_filename="",
         original_path="",
     )
@@ -395,6 +399,8 @@ async def create_session(
 
     ensure_case_reference(db, case_id, owner_user_id)
     profile = canonical_privacy_profile(privacy_methods if privacy_methods is not None else privacy_method)
+    if "signal-obfuscation" in profile:
+        raise ValueError("Signal obfuscation is unavailable for new patient analyses.")
     session_id = new_session_id()
     try:
         original_path = await storage.save_upload(session_id, archive)
@@ -406,6 +412,7 @@ async def create_session(
             session_id=session_id,
             case_id=case_id or new_case_id(),
             privacy_method=profile,
+            retention_policy="until-deletion",
             original_filename="",
             original_path=str(original_path),
         )
@@ -483,6 +490,8 @@ def public_record(
         # generated display name, never the submitted filename.
         "source_filename": f"recording_{record.sequence_index:02d}.edf",
         "source_format": record.source_format,
+        "source_available": bool(record.original_artifact_path and Path(record.original_artifact_path).is_file()),
+        "retention_policy": session.retention_policy if session else "legacy",
         "duration_seconds": record.duration_seconds,
         "sampling_rate": record.sampling_rate,
         "channel_count": record.channel_count,
@@ -528,6 +537,7 @@ def _public_session_payload(
     public_records = [
         public_record(
             record,
+            session=session,
             model_alert_window_count=alert_counts.get(record.id or 0, 0),
             model_metadata=model_metadata.get(record.id or 0),
             alert_intervals=model_alert_intervals(alert_windows.get(record.id or 0, [])),
@@ -538,6 +548,8 @@ def _public_session_payload(
     return {
         "session_id": session.session_id,
         "case_id": session.case_id,
+        "retention_policy": session.retention_policy,
+        "source_available": bool(session.original_path and Path(session.original_path).is_file()),
         "privacy_method": canonical_profile,
         "privacy_methods": list(methods_from_profile(canonical_profile)),
         "status": session.status.value,

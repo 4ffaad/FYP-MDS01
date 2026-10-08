@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, timezone
 import hashlib
 import json
+import shutil
 import logging
 from pathlib import Path
 
@@ -208,13 +209,13 @@ def sweep_interrupted_sessions(*, reconcile_active: bool = True) -> None:
                     db.add(attempt)
 
             keep_retained = (
-                not active
+                session.retention_policy == "until-deletion" or not active
                 and session.status
                 in {AnalysisStatus.COMPLETED, AnalysisStatus.COMPLETED_WITH_ERRORS}
             )
             cleanup_succeeded = True
             try:
-                storage.cleanup_session(session.session_id, keep_retained=keep_retained)
+                storage.cleanup_session(session.session_id, keep_retained=keep_retained, keep_original=session.retention_policy == "until-deletion")
             except Exception:
                 cleanup_succeeded = False
                 LOGGER.warning("EEG private cleanup unavailable; retrying later.")
@@ -234,9 +235,9 @@ def sweep_interrupted_sessions(*, reconcile_active: bool = True) -> None:
                     record.deidentified_path = None
                     record.preprocessed_path = None
                 db.add(record)
-            if cleanup_succeeded:
+            if cleanup_succeeded and session.retention_policy != "until-deletion":
                 session.original_path = ""
-            elif not active:
+            elif not cleanup_succeeded and not active:
                 session.current_stage = "cleanup"
                 session.error_message = _CLEANUP_ERROR
             db.add(session)
@@ -601,7 +602,7 @@ def process_session(session_id: str) -> None:
             db.rollback()
             cleanup_succeeded = True
             try:
-                storage.cleanup_session(session_id, keep_retained=True)
+                storage.cleanup_session(session_id, keep_retained=True, keep_original=session.retention_policy == "until-deletion")
             except Exception:
                 cleanup_succeeded = False
                 LOGGER.warning("EEG private cleanup unavailable; retrying later.")
@@ -610,7 +611,8 @@ def process_session(session_id: str) -> None:
             if current_session is None or current_session.id is None:
                 return
             if cleanup_succeeded:
-                current_session.original_path = ""
+                if current_session.retention_policy != "until-deletion":
+                    current_session.original_path = ""
                 for record in list_recordings_for_session(db, current_session.id):
                     record.extracted_path = None
                     record.preprocessed_path = None
@@ -661,6 +663,20 @@ def _process_record(
     """
 
     extracted_path = Path(record.extracted_path or "")
+    if session.retention_policy == "until-deletion" and not record.original_artifact_path:
+        # Preserve bytes before validation or inference can fail; plaintext is transient.
+        suffix = extracted_path.suffix.lower()
+        copy = storage.directory(session.session_id, "work") / f"{record.record_id}.source{suffix}"
+        shutil.copyfile(extracted_path, copy)
+        if suffix == ".data":
+            header_copy = copy.with_suffix(".head")
+            shutil.copyfile(extracted_path.with_suffix(".head"), header_copy)
+            storage.store_encrypted_artifact(session.session_id, header_copy, f"{record.record_id}.source.head")
+        record.original_artifact_path = str(storage.store_encrypted_artifact(
+            session.session_id, copy, f"{record.record_id}.source{suffix}"
+        ))
+        db.add(record)
+        db.commit()
     technical = validate_edf(extracted_path) if extracted_path.suffix.lower() == ".edf" else validate_eeg(extracted_path)
     record.duration_seconds = technical["duration_seconds"]
     record.sampling_rate = technical["sampling_rate"]
@@ -916,6 +932,8 @@ def _retain_positive_artifact(
         Internal encrypted artifact path when retention is configured.
     """
 
+    if session.retention_policy == "until-deletion" and record.original_artifact_path:
+        return None
     alert_intervals = detected_intervals(
         predictions,
         record.duration_seconds or 0.0,

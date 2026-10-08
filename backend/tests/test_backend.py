@@ -1125,11 +1125,11 @@ Seizure End Time: 3036 seconds
             patch("backend.app.api.sessions.processing_capacity.reserve", return_value=True),
             patch("backend.app.api.sessions.processing_capacity.run_reserved") as process,
         ):
-            payload = asyncio.run(upload_session(tasks, request))
+            payload = asyncio.run(upload_session(tasks, request, current_user=types.SimpleNamespace(id=1)))
 
         self.assertEqual(payload, {"session_id": "SES-BACKGROUND", "status": "queued"})
         self.assertNotIn("job_id", payload)
-        create.assert_awaited_once_with(ANY, ANY, ANY, "metadata-scrub")
+        create.assert_awaited_once_with(ANY, ANY, ANY, "metadata-scrub", owner_user_id=1)
         assert create.await_args is not None
         self.assertIsInstance(create.await_args.args[2], UploadFile)
         self.assertEqual(create.await_args.args[2].filename, "recordings.zip")
@@ -1158,10 +1158,10 @@ Seizure End Time: 3036 seconds
             )
         self.assertEqual(raised.exception.status_code, 400)
 
-    def test_signal_endpoint_is_disabled_by_default(self) -> None:
+    def test_signal_endpoint_respects_explicit_disable(self) -> None:
         from backend.app.api.recordings import get_signal
 
-        with self.assertRaises(HTTPException) as raised:
+        with patch("backend.app.api.recordings.ENABLE_SIGNAL_PREVIEW", False), self.assertRaises(HTTPException) as raised:
             get_signal("REC-NOT-LOOKED-UP", db=None)
         self.assertEqual(raised.exception.status_code, 404)
 

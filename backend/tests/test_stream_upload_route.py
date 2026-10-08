@@ -73,7 +73,7 @@ class StagedUploadRouteContractTests(unittest.IsolatedAsyncioTestCase):
             response = await stage_upload(
                 make_request(body, "application/octet-stream"),
                 db=None,
-                current_user=None,
+                current_user=SimpleNamespace(id=1),
             )
 
         self.assertEqual(response["draft_id"], "UPL-SYNTHETIC")
@@ -87,7 +87,7 @@ class StagedUploadRouteContractTests(unittest.IsolatedAsyncioTestCase):
             await stage_upload(
                 make_request(b"synthetic", "multipart/form-data; boundary=test"),
                 db=None,
-                current_user=None,
+                current_user=SimpleNamespace(id=1),
             )
 
         self.assertEqual(raised.exception.status_code, 415)

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlmodel import Session
 
-from backend.app.core.security import owner_id, require_api_auth
+from backend.app.core.security import require_owner_auth
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
 from backend.app.api.upload_contracts import pdf_upload_openapi
@@ -97,14 +97,14 @@ def _validated_details(value: object) -> list[dict[str, str]]:
 @router.get("")
 def get_cases(
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> list[dict]:
     """Return case summaries without patient references, filenames, or paths."""
 
     return list_cases(
         db,
-        owner_id(current_user),
-        profile_owner_user_id=current_user.id if current_user is not None else None,
+        current_user.id,
+        profile_owner_user_id=current_user.id,
     )
 
 
@@ -112,15 +112,15 @@ def get_cases(
 def get_case_detail(
     case_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> dict:
     """Return one owner-scoped case history using opaque identifiers only."""
 
     case = get_case(
         db,
         case_id,
-        owner_id(current_user),
-        profile_owner_user_id=current_user.id if current_user is not None else None,
+        current_user.id,
+        profile_owner_user_id=current_user.id,
     )
     if case is None:
         raise HTTPException(status_code=404, detail="Case was not found.")
@@ -131,7 +131,7 @@ def get_case_detail(
 def remove_case(
     case_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> Response:
     """Delete all linked analyses, media, and identity for the owner."""
 
@@ -195,7 +195,7 @@ async def _bounded_source_report_body(request: Request) -> bytes:
 def get_patient_profile(
     case_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> dict:
     """Return only the authenticated owner's separately encrypted profile."""
 
@@ -224,7 +224,7 @@ async def put_extracted_patient_profile(
     case_id: str,
     request: Request,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> dict:
     """Store extracted report fields encrypted in the owner's patient profile."""
 
@@ -286,7 +286,7 @@ async def put_patient_profile(
     case_id: str,
     request: Request,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> dict:
     """Persist only the reviewed profile fields as authenticated ciphertext.
 
@@ -384,7 +384,7 @@ async def put_patient_profile(
 def remove_patient_profile(
     case_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> None:
     """Delete this owner's identity while retaining de-identified analyses."""
 
@@ -401,7 +401,7 @@ def remove_patient_profile(
 def get_case_source_report(
     case_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> Response:
     """Return an authenticated owner's decrypted PDF without caching it."""
 
@@ -430,7 +430,7 @@ async def put_case_source_report(
     case_id: str,
     request: Request,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> None:
     """Encrypt and atomically replace an owned case's PDF source report."""
 
@@ -461,7 +461,7 @@ async def put_case_source_report(
 def remove_case_source_report(
     case_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> None:
     """Delete an owner's case report while retaining a cleanup pointer safely."""
 

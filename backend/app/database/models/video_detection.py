@@ -18,7 +18,8 @@ class VideoDetectionJob(SQLModel, table=True):
     review_privacy_method: str = Field(
         default="tracked-face-blur-with-full-frame-fallback", max_length=64
     )
-    blur_strength_percent: int = Field(default=100, ge=50, le=100)
+    reference_only: bool = False
+    blur_strength_percent: int = Field(default=0, ge=0, le=100)
     source_name_token: str | None = Field(default=None, max_length=64, index=True)
     source_group_id: str | None = Field(default=None, max_length=36, index=True)
     sync_group_complete: bool = False
@@ -48,4 +49,4 @@ class VideoDetectionJob(SQLModel, table=True):
     predictions_path: str | None = None
     error_code: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
-    retention_expires_at: datetime
+    retention_expires_at: datetime | None = None

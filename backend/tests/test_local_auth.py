@@ -99,7 +99,7 @@ class LocalAuthenticationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "incorrect"):
                 authenticate_local_user(db, "alice@example.test", "x" * 1025)
 
-    def test_demo_admin_is_seeded_and_can_see_all_sessions(self) -> None:
+    def test_demo_admin_is_seeded_and_cannot_see_other_sessions(self) -> None:
         demo_password = os.urandom(16).hex()
         with Session(self.engine) as db, patch.dict(
             os.environ,
@@ -143,7 +143,7 @@ class LocalAuthenticationTests(unittest.TestCase):
                 self.assertEqual(login.status_code, 200, login.text)
                 self.assertEqual(
                     {item["session_id"] for item in client.get("/api/sessions").json()},
-                    {"SES-ALICE", "SES-BOB"},
+                    set(),
                 )
 
     def test_demo_admin_requires_an_explicit_local_password(self) -> None:

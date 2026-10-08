@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_CONFIG = REPOSITORY_ROOT / "backend" / "alembic.ini"
-EXPECTED_HEAD = "032_patient_region_review_blur"
+EXPECTED_HEAD = "033_owner_source_retention"
 
 
 class MigrationChainTests(unittest.TestCase):

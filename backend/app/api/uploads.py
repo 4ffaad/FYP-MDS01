@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Re
 from sqlmodel import Session
 
 from backend.app.core.config import UPLOAD_DRAFT_TTL_SECONDS
-from backend.app.core.security import mutation_owner_id, owner_id, require_api_auth
+from backend.app.core.security import require_owner_auth
 from backend.app.core.stream_upload import UnsupportedRawUpload, request_stream_upload
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
@@ -53,7 +53,7 @@ def _public_draft(draft) -> dict:
 async def stage_upload(
     request: Request,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> dict:
     """Encrypt a ZIP into a short-lived draft before privacy selection.
 
@@ -89,7 +89,7 @@ async def stage_upload(
         async with DRAFT_UPLOAD_LOCK:
             cleanup_expired_drafts(db, storage)
             draft = await create_upload_draft(
-                db, storage, archive, expires_at, mutation_owner_id(current_user)
+                db, storage, archive, expires_at, current_user.id
             )
     except StorageError as exc:
         raise HTTPException(status_code=503, detail="Private EEG storage is temporarily unavailable.") from exc
@@ -102,13 +102,13 @@ async def stage_upload(
 def get_staged_upload(
     draft_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> dict:
     """Return safe status for one staged upload."""
 
     storage = SessionStorage()
     cleanup_expired_drafts(db, storage)
-    draft = get_upload_draft(db, draft_id, owner_id(current_user))
+    draft = get_upload_draft(db, draft_id, current_user.id)
     if draft is None:
         raise HTTPException(status_code=404, detail="Upload draft was not found or has expired.")
     return _public_draft(draft)
@@ -122,7 +122,7 @@ def finalize_staged_upload(
     privacy_methods: str | None = Form(None),
     case_id: str | None = Form(None),
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> dict:
     """Create and queue one analysis session from an encrypted draft.
 
@@ -158,7 +158,7 @@ def finalize_staged_upload(
         privacy_profile = canonical_privacy_profile(selected_methods)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    owner_user_id = mutation_owner_id(current_user)
+    owner_user_id = current_user.id
     existing_session = get_session_by_upload_draft_id(
         db,
         draft_id,
@@ -208,13 +208,13 @@ def finalize_staged_upload(
 def delete_staged_upload(
     draft_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> None:
     """Delete one staged upload before it becomes an analysis session."""
 
     with DRAFT_LIFECYCLE_LOCK:
         storage = SessionStorage()
-        draft = get_upload_draft(db, draft_id, mutation_owner_id(current_user))
+        draft = get_upload_draft(db, draft_id, current_user.id)
         if draft is None:
             raise HTTPException(status_code=404, detail="Upload draft was not found.")
         storage.delete_draft(draft.draft_id)

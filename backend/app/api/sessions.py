@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from fastapi import BackgroundTasks, APIRouter, Depends, HTTPException, Request, Response, status
 from sqlmodel import Session
 
-from backend.app.core.security import mutation_owner_id, owner_id, require_api_auth
+from backend.app.core.security import require_owner_auth
 from backend.app.core.stream_upload import UnsupportedRawUpload, request_stream_upload
 from backend.app.privacy.methods import canonical_privacy_profile, normalize_privacy_methods
 from backend.app.database.db import get_session
@@ -37,7 +38,7 @@ async def upload_session(
     background_tasks: BackgroundTasks,
     request: Request,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> dict:
     """Accept a ZIP archive, create a session, and schedule background work.
 
@@ -91,7 +92,7 @@ async def upload_session(
 
     try:
         create_kwargs = {}
-        if (current_owner_id := mutation_owner_id(current_user)) is not None:
+        if (current_owner_id := current_user.id) is not None:
             create_kwargs["owner_user_id"] = current_owner_id
         if case_id:
             create_kwargs["case_id"] = case_id
@@ -124,7 +125,7 @@ async def upload_session(
 @router.get("/sessions")
 def get_sessions(
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> list[dict]:
     """List sessions using privacy-safe public serialization.
 
@@ -139,14 +140,14 @@ def get_sessions(
         Sessions ordered from newest to oldest without patient references.
     """
 
-    return public_session_list(db, owner_id(current_user))
+    return public_session_list(db, current_user.id)
 
 
 @router.get("/sessions/{session_id}")
 def get_session_detail(
     session_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> dict:
     """Return one session and its safe recording summaries.
 
@@ -168,17 +169,17 @@ def get_session_detail(
         Raised with 404 when the session does not exist.
     """
 
-    session = get_session_or_none(db, session_id, owner_id(current_user))
+    session = get_session_or_none(db, session_id, current_user.id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
-    return public_session(db, session, owner_id(current_user))
+    return public_session(db, session, current_user.id)
 
 
 @router.get("/sessions/{session_id}/status")
 def get_session_status(
     session_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> dict:
     """Return the current pipeline stage and status for a session.
 
@@ -195,7 +196,7 @@ def get_session_status(
         Current status, stage, and a safe error message when applicable.
     """
 
-    session = get_session_or_none(db, session_id, owner_id(current_user))
+    session = get_session_or_none(db, session_id, current_user.id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
     return {
@@ -210,7 +211,7 @@ def get_session_status(
 def get_session_recordings(
     session_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> list[dict]:
     """List the safe recording summaries belonging to a session.
 
@@ -227,17 +228,17 @@ def get_session_recordings(
         Recording metadata without original filenames or storage paths.
     """
 
-    session = get_session_or_none(db, session_id, owner_id(current_user))
+    session = get_session_or_none(db, session_id, current_user.id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
-    return public_session(db, session, owner_id(current_user))["recordings"]
+    return public_session(db, session, current_user.id)["recordings"]
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_session_route(
     session_id: str,
     db: Session = Depends(get_session),
-    current_user: User | None = Depends(require_api_auth),
+    current_user: User = Depends(require_owner_auth),
 ) -> Response:
     """Delete one completed session and its private artifacts.
 
@@ -259,7 +260,7 @@ def delete_session_route(
         Raised with 404 when missing or 409 while processing is active.
     """
 
-    session = get_session_or_none(db, session_id, mutation_owner_id(current_user))
+    session = get_session_or_none(db, session_id, current_user.id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session was not found.")
     try:
@@ -269,3 +270,33 @@ def delete_session_route(
     except CaseSourceReportError as exc:
         raise HTTPException(503, "Case report cleanup is unavailable.") from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/sessions/{session_id}/original")
+def download_archive(session_id: str, db: Session = Depends(get_session),
+                     current_user: User = Depends(require_owner_auth)):
+    from backend.app.services.source_download_service import original_response
+    session = get_session_or_none(db, session_id, current_user.id)
+    if not session or not session.original_path:
+        raise HTTPException(404, "Original archive is unavailable.")
+    storage = SessionStorage()
+    path = Path(session.original_path)
+    if path != storage.root / session.session_id / "original" / "upload.zip.enc":
+        raise HTTPException(404, "Original archive is unavailable.")
+    try:
+        return original_response(storage, session.session_id, path, f"{session.session_id}.zip")
+    except (StorageError, FileNotFoundError):
+        raise HTTPException(404, "Original archive is unavailable.")
+
+
+@router.get("/sessions/{session_id}/original-report")
+def download_original_report(session_id: str, db: Session = Depends(get_session),
+                             current_user: User = Depends(require_owner_auth)):
+    from backend.app.services.source_download_service import source_report_response
+    session = get_session_or_none(db, session_id, current_user.id)
+    if not session or not session.original_path:
+        raise HTTPException(404, "Original report is unavailable.")
+    try:
+        return source_report_response(SessionStorage(), session)
+    except (StorageError, FileNotFoundError):
+        raise HTTPException(404, "Original report is unavailable.")

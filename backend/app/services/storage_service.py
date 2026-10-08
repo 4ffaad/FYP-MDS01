@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import logging
+import fcntl
 import shutil
 import re
 import os
@@ -811,12 +812,41 @@ class SessionStorage:
 
         return self.extract_eeg_recordings(session_id, archive_path)
 
-    def cleanup_session(
+    @contextmanager
+    def read_lease(self, session_id: str):
+        """Prevent cleanup from removing plaintext while an owner reads it."""
+        root = self.session_dir(session_id)
+        descriptor = os.open(root / ".read.lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise StorageError("Private read lease is invalid.")
+            fcntl.flock(descriptor, fcntl.LOCK_SH)
+            yield
+        finally:
+            os.close(descriptor)
+
+    def cleanup_session(self, session_id: str, **kwargs) -> None:
+        root = self.root / self._safe_session_id(session_id)
+        if not root.exists():
+            return
+        self.session_dir(session_id)
+        descriptor = os.open(root / ".read.lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            self._cleanup_session(session_id, **kwargs)
+        finally:
+            os.close(descriptor)
+
+    def _cleanup_session(
         self,
         session_id: str,
         *,
         keep_retained: bool = False,
         preserve_work_files: set[str] | None = None,
+        keep_original: bool = False,
     ) -> None:
         """Delete transient session files after processing.
 
@@ -834,6 +864,8 @@ class SessionStorage:
             return
         preserved = preserve_work_files or set()
         for name in ("original", "work", "extracted", "deidentified", "processed", "explanations"):
+            if name == "original" and keep_original:
+                continue
             area = session_dir / name
             if name != "work" or not preserved:
                 self._remove_tree(area)
@@ -899,7 +931,22 @@ class SessionStorage:
             Opaque session identifier whose protected storage should be removed.
         """
 
-        self._remove_tree(self.root / self._safe_session_id(session_id))
+        root = self.root / self._safe_session_id(session_id)
+        if not root.exists():
+            return
+        self.session_dir(session_id)
+        descriptor = os.open(
+            root / ".read.lock",
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise StorageError("Private deletion lock is invalid.")
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            self._remove_tree(root)
+        finally:
+            os.close(descriptor)
 
     def cleanup_expired_drafts(self, draft_ids: list[str]) -> None:
         """Remove expired staged upload directories."""

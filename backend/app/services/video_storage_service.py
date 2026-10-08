@@ -157,6 +157,25 @@ class VideoStorage:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
 
+    def visualization_response(self, job_id: str, encrypted_path: Path):
+        """Hold a shared storage lease while a browser streams the video."""
+        lease = self._storage.read_lease(job_id)
+        lease.__enter__()
+        try:
+            path = self.materialize_visualization_for_playback(job_id, encrypted_path)
+        except BaseException:
+            lease.__exit__(None, None, None)
+            raise
+        return CleanupFileResponse(
+            path,
+            cleanup=lambda: lease.__exit__(None, None, None),
+            media_type="video/mp4",
+            headers={
+                "Cache-Control": "private, no-store, max-age=0",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     def materialize_visualization_for_playback(
         self, job_id: str, encrypted_path: Path
     ) -> Path:
@@ -238,6 +257,7 @@ class VideoStorage:
         *,
         keep_retained: bool = True,
         preserve_playback: bool = False,
+        keep_original: bool = False,
     ) -> None:
         """Remove original and transient plaintext while retaining ciphertext."""
 
@@ -250,6 +270,7 @@ class VideoStorage:
             self._validate_job_id(job_id),
             keep_retained=keep_retained,
             preserve_work_files=preserve,
+            keep_original=keep_original,
         )
 
     def delete_job(self, job_id: str) -> None:

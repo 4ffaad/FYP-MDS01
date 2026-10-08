@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-import os
 
 from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 import jwt
@@ -16,7 +15,6 @@ from backend.app.core.config import CORS_ORIGINS, auth_configuration
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
 from backend.app.services.auth_service import (
-    DEMO_ADMIN_PUBLIC_ID,
     InvalidCredentials,
     cloudflare_user,
     user_for_session,
@@ -116,23 +114,7 @@ def owner_id(user: User | None) -> int | None:
 
     if not isinstance(user, User):
         return None
-    if user.is_admin and user.public_id == DEMO_ADMIN_PUBLIC_ID and _demo_admin_read_scope_enabled():
-        return None
     return user.id
-
-
-def _demo_admin_read_scope_enabled() -> bool:
-    """Return whether development-only cross-owner reads are explicitly enabled."""
-
-    try:
-        mode, _domain, _audience = auth_configuration()
-    except RuntimeError:
-        return False
-    return (
-        mode == "local-accounts"
-        and os.environ.get("APP_ENV", "development").lower() in {"development", "test"}
-        and os.environ.get("DEMO_ADMIN_ENABLED", "false").lower() == "true"
-    )
 
 
 def mutation_owner_id(user: User | None) -> int | None:
@@ -158,3 +140,9 @@ def _unauthorized() -> HTTPException:
         detail="Authentication required.",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+def require_owner_auth(user: User | None = Depends(require_api_auth)) -> User:
+    if user is None or user.id is None:
+        raise _unauthorized()
+    return user

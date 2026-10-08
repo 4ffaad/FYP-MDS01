@@ -84,6 +84,7 @@ class EEGSession(SQLModel, table=True):
     )
     case_id: str | None = Field(default=None, index=True, max_length=64)
     privacy_method: str = Field(default="metadata-scrub", max_length=64)
+    retention_policy: str = Field(default="legacy", max_length=32)
     original_filename: str = ""
     original_path: str = ""
     # Alembic intentionally stores statuses as VARCHAR. Keep Python enum
@@ -129,6 +130,7 @@ class EEGRecording(SQLModel, table=True):
     original_filename: str
     extracted_path: str | None = None
     deidentified_path: str | None = None
+    original_artifact_path: str | None = None
     retained_artifact_path: str | None = None
     preprocessed_path: str | None = None
     duration_seconds: float | None = None

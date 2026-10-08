@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from fastapi import BackgroundTasks, HTTPException
@@ -80,7 +81,7 @@ class ProcessingCapacityTests(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as raised:
                 finalize_staged_upload(
-                    "DRAFT-ONE", BackgroundTasks(), None, db=MagicMock(), current_user=None
+                    "DRAFT-ONE", BackgroundTasks(), None, db=MagicMock(), current_user=SimpleNamespace(id=1)
                 )
 
         self.assertEqual(raised.exception.status_code, 503)
@@ -104,7 +105,7 @@ class ProcessingCapacityTests(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as raised:
                 finalize_staged_upload(
-                    "DRAFT-ONE", BackgroundTasks(), None, db=MagicMock(), current_user=None
+                    "DRAFT-ONE", BackgroundTasks(), None, db=MagicMock(), current_user=SimpleNamespace(id=1)
                 )
 
         self.assertEqual(raised.exception.status_code, 503)
@@ -132,7 +133,7 @@ class ProcessingCapacityTests(unittest.TestCase):
                 "UPL-REPLAY",
                 tasks,
                 db=MagicMock(),
-                current_user=None,
+                current_user=SimpleNamespace(id=1),
             )
 
         self.assertEqual(response["session_id"], session.session_id)
@@ -170,7 +171,7 @@ class ProcessingCapacityTests(unittest.TestCase):
                 "UPL-REPLAY-RACE",
                 tasks,
                 db=MagicMock(),
-                current_user=None,
+                current_user=SimpleNamespace(id=1),
             )
 
         self.assertEqual(response["session_id"], session.session_id)

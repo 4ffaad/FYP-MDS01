@@ -10,15 +10,14 @@ The backend flow is:
 
 ```text
 EEG ZIP upload → FastAPI → PostgreSQL session → FastAPI BackgroundTasks
-  → validation → de-identification → preprocessing
-  → inference adapter → explanation artifact → PostgreSQL results
+  → encrypted source retention → validation → model-input de-identification
+  → preprocessing → inference adapter → explanation artifact → PostgreSQL results
 
-separate video upload → encryption → first-window OpenPose readiness → queue
-  → normalization
+video upload → encrypted original → owner reference copy (independent of model)
+  separate VSViG analysis → first-window OpenPose readiness → queue → normalization
   ├→ transient normalized frames → OpenPose keypoints + 15 RGB patches
-  │                                  → blur each patch → VSViG → predictions
-  └→ source frames → tracked-face blur with full-frame fallback + skeleton
-                       → encrypted review video
+  │                                  → VSViG → predictions
+  └→ source video → audio-free H.264 review copy → encrypted storage
 ```
 
 FastAPI routes must remain thin. Business logic belongs in services,
@@ -54,11 +53,12 @@ BackgroundTasks.
   opts into the local H5 profile. The video-detection Compose file is an empty
   compatibility overlay; the main Compose file owns that service. The security
   Compose file is a separate disposable test stack.
-- From the repository root, `node scripts/demo.mjs` selects the local H5
+- From the repository root, `node scripts/demo.mjs` selects the real local H5
   research profile and requires its ignored model and reviewed contract;
-  `node scripts/demo.mjs --development-stub` selects the stub. Plain
-  `docker compose up --build` builds and starts the base stack. Native startup
-  uses `node scripts/setup.mjs`, then `node scripts/start-native.mjs`.
+  `node scripts/demo.mjs --development-stub` selects synthetic scores for
+  workflow-only demos. Plain `docker compose up --build` builds and starts the
+  base stack. Native startup uses `node scripts/setup.mjs`, then
+  `node scripts/start-native.mjs`.
 - Backend tests use stdlib `unittest`:
   `PYTHONPATH=. .venv/bin/python -m unittest discover -s backend/tests -v`.
   Launcher checks use `node --test scripts/setup.test.mjs` and
@@ -76,37 +76,29 @@ BackgroundTasks.
 - Store files beneath `backend/storage/sessions/{session_id}/`.
 - Never expose patient references, original metadata, filesystem paths, or
   original files through public API responses.
-- Delete original and transient EEG files after processing. The configured
-  review policy retains a path-bound encrypted waveform artifact for the full
-  recording; APIs expose it only to the owning account. Legacy `.e` recordings
-  using metadata-scrub privacy retain the 18 reviewed bipolar channels plus
-  available EOG, ECG, chin-difference, and photic traces from the source file.
-  Signal-obfuscation profiles retain only transformed model input. All retained
-  artifacts share the session expiry and case-deletion lifecycle.
+- Retain each uploaded EEG archive, each original recording, and any source
+  report encrypted until the owning account deletes its case. Retain complete
+  readable source channels, timing, gaps, and annotations. APIs expose them only
+  to the owner through protected download and waveform routes. Temporary
+  plaintext is removed after each read or processing step. Keep all binaries
+  outside PostgreSQL; keep encryption keys outside Git and separate from backups.
+  Historical cases keep their recorded policy and availability state; files
+  already deleted cannot be recovered.
 - The dashboard offers combined, EEG-only, and video-only intake. Combined EEG
   and video work shares one patient case; EEG-only intake allows an optional
   report and never submits selected video files.
-- Video detection runs OpenPose on transient unblurred normalized frames,
-  extracts 15 RGB patches, blurs each patch individually, then sends only pose
-  coordinates and those blurred patches to VSViG. Each job records a 50–100%
-  model-input patch-blur setting (100% is the reviewed default). Before queueing,
-  a bounded OpenPose readiness check applies the same pose gate to the opening
-  30 samples (five seconds at 6 fps); it does not load or call VSViG. Inference
-  checks the full clip and fails closed if any sampled frame lacks exactly one
-  tracked person or any of the 15 required landmarks. Face blur and full-frame
-  fallback apply only to the retained review video. Interpolate adjacent
-  OpenPose samples and blur the face from nose, eye, and ear landmarks; missing,
-  stale, incomplete, or ambiguous head landmarks require full-frame blur. The
-  review UI can separately overlay blur on the 15 analyzed 128×128 keypoint
-  regions, show VSViG graph Grad-CAM for the strongest-scoring window, or apply
-  full-frame display blur. These viewer layers do not change model input or
-  retained artifacts. Delete the source, normalized frames, and extracted
-  patches after processing; retain encrypted predictions and the audio-free
-  H.264 face-blurred review video until job expiry. Persist the review privacy
-  method so legacy videos keep an accurate label.
-  Playback is owner-scoped; its private
-  decrypted range cache expires after ten idle minutes. The separate
-  video-privacy utility has its own explicitly documented output policy.
+- Combined uploads retain encrypted original video for owner-only reference
+  playback. This path makes an audio-free H.264 browser copy without requiring
+  OpenPose readiness or VSViG admission. Unmatched clips remain playable and
+  show their alignment status. Separate VSViG analysis still requires the pinned
+  model's pose and input gates, uses unblurred RGB patches, and preserves its
+  exact model contract. New analysis and reference videos are unblurred; labels
+  remain accurate for historical blurred outputs. Delete normalized frames,
+  extracted patches, and temporary plaintext after processing. Retain encrypted
+  originals, review videos, and results until case deletion. Every media, result,
+  waveform, report, and download request is owner-scoped and private/no-store.
+  The ten-minute decrypted video range cache remains private and is cleaned up
+  when idle. The separate video-privacy utility keeps its documented policy.
 - For combined legacy Nicolet `.e` and AVI folder uploads, keep only a
   case-scoped HMAC of each referenced basename and an opaque camera-folder
   group ID. Encrypt VEEG frame/clock anchors and resolved offsets at rest.
@@ -202,9 +194,8 @@ any linked processing job is active.
   dedicated report/auth/real suites when changing their backend integration.
 - No CI workflow is checked into this repository. Run the relevant local
   checks and record which runtime/profile they cover.
-- `docs/setup.md` describes the demo launcher as stub-first, but
-  `scripts/demo.mjs` currently defaults to H5 and requires local assets. Check
-  the launcher when documenting or selecting the demo profile.
+- The default demo uses the reviewed H5 EEG profile; keep setup documentation
+  aligned with its explicit stub-only alternative.
 - Authentication and owner filtering, upload/archive parsing, EDF metadata
   handling, encrypted file cleanup/retention, model-contract validation, and
   video admission/model assets are privacy or data-loss boundaries. Keep their

@@ -947,6 +947,51 @@ class LegacyNicoletReader:
             raise LegacyNicoletError("Legacy Nicolet signal data is non-finite.")
         return cast(np.ndarray, signals.astype(np.float32, copy=False)), sampling_rate, labels
 
+    def read_source_range(self, start: float, end: float, max_points: int) -> dict:
+        """Read all readable source traces, at source rates and across source gaps."""
+        header = self.read_header()
+        segments = coalesce_contiguous_segments(header.segments, header.sampling_rate)
+        channels = []
+        with self._open_source() as stream:
+            source_channels = self._read_ts_channels(stream, self._read_tags(stream))
+            for channel in source_channels:
+                values, times = [], []
+                rate = channel.sampling_rate
+                if rate <= 0:
+                    continue
+                total = sum(round(segment.duration_seconds * rate) for segment in header.segments)
+                try:
+                    for segment in segments:
+                        left = max(start, segment.start_seconds)
+                        right = min(end, segment.start_seconds + segment.duration_seconds)
+                        if right <= left:
+                            continue
+                        first = round(segment.sample_start * rate / header.sampling_rate)
+                        first += round((left - segment.start_seconds) * rate)
+                        count = round((right - left) * rate)
+                        if count <= 0:
+                            continue
+                        values.append(self._read_channel_samples(
+                            stream, channel, total, sample_start=first, sample_count=count
+                        ))
+                        times.append(left + np.arange(count, dtype=np.float64) / rate)
+                except LegacyNicoletError:
+                    continue
+                if values:
+                    samples, timestamps = np.concatenate(values), np.concatenate(times)
+                    indices = np.linspace(0, len(samples) - 1, min(max_points, len(samples)), dtype=int)
+                    channels.append({"label": channel.label, "sampling_rate": rate,
+                                     "samples": samples[indices].astype(float).tolist(),
+                                     "time_seconds": timestamps[indices].tolist()})
+        if not channels:
+            raise LegacyNicoletError("No readable source channels overlap this range.")
+        return {"channels": channels, "time_seconds": channels[0]["time_seconds"],
+                "segments": [{"source_start_seconds": max(start, segment.start_seconds),
+                              "source_end_seconds": min(end, segment.start_seconds + segment.duration_seconds)}
+                             for segment in segments
+                             if segment.start_seconds < end and segment.start_seconds + segment.duration_seconds > start],
+                "sampling_rate": header.sampling_rate, "display_filter": None}
+
     def read_review_segments(
         self, intervals: list[tuple[float, float]]
     ) -> tuple[list[tuple[float, np.ndarray]], list[str]]:

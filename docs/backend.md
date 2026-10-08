@@ -73,13 +73,9 @@ them in Git or the Docker image. See [setup](setup.md) for the runtime choice.
 PostgreSQL stores accounts, job/session state, safe metadata, and predictions.
 Encrypted EEG/video bytes remain in private filesystem-backed storage. Do not
 store patient binaries in PostgreSQL or expose private paths in API responses.
-Patient profiles are encrypted and owner-scoped. The patient-folder intake
-extracts report text locally and does not retain the source document.
+Patient profiles, source reports, EEG archives, and source recordings are encrypted and owner-scoped. The patient-folder intake extracts report text locally for review while retaining the uploaded report inside the encrypted original archive until case deletion.
 
-Protected routes filter records by owner. The API does not return original
-filenames, patient references, cryptographic keys, or raw source files.
-Temporary source and processing files are cleaned up after completion; only
-artifacts allowed by the configured retention policy remain encrypted.
+Every case, EEG, video, signal, report, media-range, result, and download route requires an authenticated owner. Responses do not expose submitted filenames, patient references, filesystem paths, cryptographic keys, or source bytes outside protected no-store download endpoints. Original source files and outputs remain encrypted until case deletion; response-scoped plaintext and processing intermediates are removed after use.
 
 New EEG and video file envelopes bind AES-GCM authentication to their
 storage-relative session, job, and artifact path. Draft promotion re-encrypts
@@ -89,13 +85,10 @@ legacy file has been read or explicitly migrated, keep write access to the
 private storage volume trusted. Patient profile and source-report encryption
 also bind ciphertext to the owner and case.
 
-Signal preview is disabled by default and is limited to policy-approved
-retained EEG. Never log patient-identifying values or raw upload contents.
+Signal preview is enabled by default for complete source-channel review and requires owner authentication. New patient analyses do not apply signal obfuscation. Never log patient-identifying values or raw upload contents.
 For metadata-scrubbed legacy `.e` recordings, the encrypted positive-signal
 artifact may also include EOG right/left, ECG, chin 1–chin 2, and photic review
-traces over the same bounded source-time ranges. These traces share the EEG
-artifact's owner checks, expiry, and deletion; signal-obfuscation profiles omit
-them. They are visual review channels and are not model inputs.
+traces over the same bounded source-time ranges. These traces are read from the encrypted full-source recording and share the case deletion lifecycle. They are visual review channels and are not model inputs.
 
 ## Routes and code locations
 

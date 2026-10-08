@@ -163,12 +163,12 @@ class AuthenticationSecurityTests(unittest.TestCase):
         ):
             self.assertEqual(owner_id(admin), 73)
 
-    def test_enabled_development_demo_admin_can_use_global_read_scope(self) -> None:
+    def test_enabled_development_demo_admin_remains_owner_scoped(self) -> None:
         admin = User(id=74, public_id=DEMO_ADMIN_PUBLIC_ID, email="demo@example.test", is_admin=True)
         with auth_environment(APP_ENV="development", AUTH_MODE="local-accounts"), patch.dict(
             os.environ, {"DEMO_ADMIN_ENABLED": "true"}
         ):
-            self.assertIsNone(owner_id(admin))
+            self.assertEqual(owner_id(admin), 74)
 
     def test_cloudflare_state_changes_require_configured_origin(self) -> None:
         with auth_environment(
@@ -225,13 +225,12 @@ class AuthenticationSecurityTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
 
-    def test_local_mode_preserves_existing_api_behavior(self) -> None:
+    def test_local_mode_still_requires_an_owner_for_private_sessions(self) -> None:
         with auth_environment(APP_ENV="test", AUTH_MODE="local"):
             with TestClient(app) as client:
                 response = client.get("/api/sessions")
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), [])
+        self.assertEqual(response.status_code, 401)
 
     def test_valid_cloudflare_assertion_reaches_api(self) -> None:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -298,7 +297,7 @@ class AuthenticationSecurityTests(unittest.TestCase):
             with TestClient(app) as client:
                 response = client.get("/api/sessions")
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 401)
         self.assertEqual(response.headers["cache-control"], "no-store, private")
         self.assertEqual(response.headers["pragma"], "no-cache")
         self.assertIn("Cookie", response.headers["vary"])
