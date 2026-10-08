@@ -36,6 +36,7 @@ from backend.app.services.video_sync_service import (
 from backend.app.video_detection.contract import DetectionError, digest, load_contract, validate_predictions
 from backend.app.video_detection.runtime import (
     _last_model_sample_index,
+    _complete_subject_window,
     _missing_required_keypoints,
     _validate_required_keypoints,
     blur_rgb_patches,
@@ -45,6 +46,8 @@ POSE_READY = {
     "ready": True,
     "checked_frames": 30,
     "required_frames": 30,
+    "tracks_seen": 1,
+    "usable_tracks": 1,
     "window_seconds": 5,
     "frames_without_person": 0,
     "frames_with_multiple_people": 0,
@@ -55,6 +58,14 @@ POSE_READY = {
 
 
 class VideoRuntimeKeypointValidationTests(unittest.TestCase):
+    def test_only_complete_subject_windows_are_scored(self):
+        rows = [{"patches": index} for index in range(30)]
+        self.assertEqual(_complete_subject_window(rows), (rows, None))
+        rows[12] = {"reason": "incomplete_pose"}
+        self.assertEqual(_complete_subject_window(rows), (None, "incomplete_pose"))
+        rows[16] = None
+        self.assertEqual(_complete_subject_window(rows), (None, "missing_pose"))
+
     def test_unused_trailing_samples_do_not_fail_a_complete_model_window(self):
         self.assertEqual(_last_model_sample_index(31, 30, 3), 29)
         self.assertEqual(_last_model_sample_index(33, 30, 3), 32)
@@ -648,7 +659,68 @@ class VideoDetectionTests(unittest.TestCase):
             {"patch_index": 0, "component": "patch-0", "score_change": 0.0},
         )
 
-    def test_demo_admin_can_read_other_users_video_detection_jobs(self):
+    def test_prediction_response_keeps_person_tracks_separate_and_redacts_track_metadata(self):
+        scored = validate_predictions(
+            [{"start_time": 0.0, "end_time": 5.0, "raw_score": 0.7}],
+            10.0,
+            {"threshold": 0.5},
+        )
+        scored.update(
+            {
+                "subject_id": "track-1",
+                "label": "Track 1",
+                "status": "scored",
+                "unavailable_reason": None,
+                "unscored_windows": [],
+                "private_patient_name": "Synthetic Patient",
+            }
+        )
+        unscored = {
+            "subject_id": "track-2",
+            "label": "Track 2",
+            "status": "unscored",
+            "unavailable_reason": "incomplete_pose",
+            "unscored_windows": [
+                {
+                    "start_time": 0.0,
+                    "end_time": 5.0,
+                    "reason": "incomplete_pose",
+                    "private_source_path": "/private/source.mp4",
+                }
+            ],
+            "predictions": [],
+            "timeline": [],
+            "intervals": [],
+            "events": [],
+        }
+        job_id = self.seed(
+            prediction_overrides={
+                "duration_seconds": 10.0,
+                "predictions": [],
+                "timeline": [],
+                "intervals": [],
+                "events": [],
+                "subjects": [scored, unscored],
+            }
+        )
+
+        response = self.alice.get(
+            f"/api/video-detection/jobs/{job_id}/predictions"
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        public = response.json()
+        self.assertEqual(public["predictions"], [])
+        self.assertEqual(
+            [track["subject_id"] for track in public["subjects"]],
+            ["track-1", "track-2"],
+        )
+        self.assertEqual(len(public["subjects"][0]["predictions"]), 1)
+        self.assertEqual(public["subjects"][1]["predictions"], [])
+        self.assertNotIn("private_patient_name", response.text)
+        self.assertNotIn("private_source_path", response.text)
+
+    def test_demo_admin_cannot_read_other_users_video_detection_jobs(self):
         job_id = self.seed()
         admin_password = os.urandom(16).hex()
         with patch.dict(
@@ -669,10 +741,10 @@ class VideoDetectionTests(unittest.TestCase):
                 headers=self.headers,
             )
             self.assertEqual(login.status_code, 200, login.text)
-            self.assertEqual(admin.get(f"/api/video-detection/jobs/{job_id}").status_code, 200)
+            self.assertEqual(admin.get(f"/api/video-detection/jobs/{job_id}").status_code, 404)
             self.assertEqual(
                 [item["job_id"] for item in admin.get("/api/video-detection/jobs").json()["jobs"]],
-                [job_id],
+                [],
             )
 
     def test_admin_flag_is_owner_scoped_outside_development_demo_mode(self):
@@ -895,11 +967,11 @@ class VideoDetectionTests(unittest.TestCase):
         with Session(self.engine) as db:
             self.assertEqual(db.exec(select(VideoDetectionJob)).all(), [])
 
-    def test_upload_persists_requested_model_blur_strength(self):
+    def test_upload_persists_unblurred_model_input(self):
         job = VideoDetectionJob(
             owner_user_id=self.owner,
             job_id="VID-BLUR-STRENGTH",
-            blur_strength_percent=65,
+            blur_strength_percent=0,
             retention_expires_at=utc_now() + timedelta(hours=1),
         )
         with patch.object(
@@ -914,15 +986,15 @@ class VideoDetectionTests(unittest.TestCase):
                     **self.headers,
                     "Content-Type": "application/octet-stream",
                     "X-Video-Format": "mp4",
-                    "X-Model-Blur-Percent": "65",
+                    "X-Model-Blur-Percent": "0",
                 },
             )
 
         self.assertEqual(response.status_code, 202, response.text)
-        self.assertEqual(response.json()["job"]["blur_strength_percent"], 65)
+        self.assertEqual(response.json()["job"]["blur_strength_percent"], 0)
         self.assertEqual(
             create_job.call_args.kwargs["blur_strength_percent"],
-            65,
+            0,
         )
 
     def test_video_upload_is_accepted_while_another_video_job_is_active(self):
@@ -1010,7 +1082,7 @@ class VideoDetectionTests(unittest.TestCase):
             normalize.assert_not_called()
             self.assertEqual(runtime_commands[0][3], runtime_commands[0][6])
             self.assertNotIn("normalized-input.mp4", runtime_commands[0][3])
-            self.assertFalse((self.storage.root / job.job_id).exists())
+            self.assertTrue((self.storage.root / job.job_id / "original" / "video.input.enc").is_file())
             self.assertEqual(self.alice.get(f"/api/video-detection/jobs/{job.job_id}").json()["job"]["status"], "failed")
             failure_log = "\n".join(captured.output)
             self.assertIn("stage=pose-and-inference exception_type=DetectionError", failure_log)
@@ -1058,11 +1130,11 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertIn("opening five-second pose check", job["error"])
         self.assertIn("15 required landmarks", job["error"])
         process_job.assert_not_called()
-        self.assertEqual(list(self.storage.root.glob("VID-*")), [])
+        self.assertEqual(len(list(self.storage.root.glob("VID-*"))), 1)
         with Session(self.engine) as db:
             stored = db.exec(select(VideoDetectionJob)).one()
             self.assertEqual(stored.job_id, job["job_id"])
-            self.assertIsNone(stored.original_path)
+            self.assertTrue(Path(stored.original_path).is_file())
 
     def test_legacy_avi_upload_is_accepted_by_preflight(self):
         with patch.object(service, "load_contract", return_value=(Path(self.temp.name), {})), patch.object(
@@ -1158,8 +1230,8 @@ class VideoDetectionTests(unittest.TestCase):
             self.assertEqual(saved.status, "failed")
             self.assertEqual(saved.current_stage, "pose-and-inference")
             self.assertEqual(saved.error_code, "interrupted")
-            self.assertIsNone(saved.original_path)
-        self.assertFalse((self.storage.root / job.job_id).exists())
+            self.assertTrue(Path(saved.original_path).is_file())
+        self.assertTrue((self.storage.root / job.job_id / "original" / "video.input.enc").is_file())
 
     def test_forced_expiry_removes_active_detection_job_media(self):
         job_id = self.seed()
@@ -1194,6 +1266,11 @@ class VideoDetectionTests(unittest.TestCase):
                     )
                 )
 
+        with Session(self.engine) as db:
+            historical = db.get(VideoDetectionJob, job.id)
+            historical.retention_expires_at = utc_now() + timedelta(hours=1)
+            db.add(historical)
+            db.commit()
         commands = []
 
         def fake_execute(command, timeout):
@@ -1390,7 +1467,7 @@ class VideoDetectionTests(unittest.TestCase):
             self.assertEqual(saved.status, "failed")
             self.assertEqual(saved.error_code, "visualization_failed")
             self.assertIsNone(saved.visualization_path)
-        self.assertFalse((self.storage.root / job.job_id).exists())
+        self.assertTrue((self.storage.root / job.job_id / "original" / "video.input.enc").is_file())
 
     def test_contract_manifest_requires_an_external_hash(self):
         root = Path(self.temp.name)

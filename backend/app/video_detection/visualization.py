@@ -208,8 +208,15 @@ def _redact_face(
         return _mask_frame(cv2, frame), False
 
 
-def _draw_pose(cv2: Any, frame: np.ndarray, keypoints: np.ndarray | None) -> None:
-    """Draw the same 18 keypoints that fed the model's 15-point representation."""
+def _draw_pose(
+    cv2: Any,
+    frame: np.ndarray,
+    keypoints: np.ndarray | None,
+    *,
+    label: str = "Track 1",
+    color: tuple[int, int, int] = (193, 179, 0),
+) -> None:
+    """Draw one detected person without implying that the track is the patient."""
 
     if keypoints is None or keypoints.shape != (18, 3):
         return
@@ -219,7 +226,7 @@ def _draw_pose(cv2: Any, frame: np.ndarray, keypoints: np.ndarray | None) -> Non
             continue
         first = tuple(np.round(keypoints[start, :2]).astype(int))
         second = tuple(np.round(keypoints[end, :2]).astype(int))
-        cv2.line(frame, first, second, (193, 179, 0), thickness, cv2.LINE_AA)
+        cv2.line(frame, first, second, color, thickness, cv2.LINE_AA)
     for x, y, confidence in keypoints:
         if confidence < 0.1:
             continue
@@ -235,8 +242,22 @@ def _draw_pose(cv2: Any, frame: np.ndarray, keypoints: np.ndarray | None) -> Non
             frame,
             (int(round(x)), int(round(y))),
             max(2, thickness),
-            (193, 179, 0),
+            color,
             -1,
+            cv2.LINE_AA,
+        )
+    visible = keypoints[(keypoints[:, 2] >= 0.1) & np.isfinite(keypoints).all(axis=1)]
+    if len(visible):
+        x = max(0, int(visible[:, 0].min()))
+        y = max(18, int(visible[:, 1].min()) - 8)
+        cv2.putText(
+            frame,
+            label,
+            (x, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            color,
+            2,
             cv2.LINE_AA,
         )
 
@@ -323,6 +344,7 @@ def render_visualization(
     pose_samples: list[tuple[float, np.ndarray]],
     *,
     preview_path: Path | None = None,
+    unblurred: bool = False,
 ) -> dict[str, Any]:
     """Create a face-blurred, skeleton-overlaid review artifact."""
 
@@ -385,6 +407,15 @@ def render_visualization(
         writer.release()
         render_path.unlink(missing_ok=True)
         raise DetectionError("visualization_failed")
+    tracks: dict[str, list[tuple[float, np.ndarray]]] = {}
+    for timestamp, poses in pose_samples:
+        if isinstance(poses, dict):
+            for label, keypoints in poses.items():
+                tracks.setdefault(label, []).append((timestamp, keypoints))
+        elif isinstance(poses, np.ndarray):
+            tracks.setdefault("Track 1", []).append((timestamp, poses))
+        else:
+            raise DetectionError("visualization_failed")
     frame_index = 0
     face_blurred_frames = 0
     started_at = time.monotonic()
@@ -400,11 +431,32 @@ def render_visualization(
                 raise DetectionError("visualization_failed")
             timestamp = frame_index / fps
             frame_index += 1
-            pose = _pose_at_time(pose_samples, sample_times, timestamp)
-            protected, face_blurred = _redact_face(cv2, frame, pose)
+            visible_tracks = []
+            for index, (label, samples) in enumerate(tracks.items()):
+                times = [sample[0] for sample in samples]
+                pose = _pose_at_time(samples, times, timestamp)
+                if pose is not None:
+                    color = (
+                        (193, 179, 0),
+                        (0, 180, 255),
+                        (255, 120, 60),
+                        (190, 90, 220),
+                    )[index % 4]
+                    visible_tracks.append((label, pose, color))
+            if unblurred:
+                protected, face_blurred = frame, False
+            elif len(visible_tracks) == 1:
+                protected, face_blurred = _redact_face(
+                    cv2, frame, visible_tracks[0][1]
+                )
+            else:
+                protected, face_blurred = _mask_frame(cv2, frame), False
             face_blurred_frames += int(face_blurred)
-            _draw_pose(cv2, protected, pose)
-            _overlay(cv2, protected, timestamp, pose_detected=pose is not None)
+            for label, pose, color in visible_tracks:
+                _draw_pose(cv2, protected, pose, label=label, color=color)
+            _overlay(
+                cv2, protected, timestamp, pose_detected=bool(visible_tracks)
+            )
             writer.write(protected)
             if frame_index == 1 and preview_path is not None:
                 if not cv2.imwrite(str(preview_path), protected):
@@ -485,21 +537,30 @@ def render_visualization(
         "available": True,
         "media_type": "video/mp4",
         "audio_included": False,
-        "privacy_method": "tracked-face-blur-with-full-frame-fallback-and-skeleton-overlay",
+        "privacy_method": "unblurred-owner-source-and-skeleton-overlay" if unblurred else "tracked-face-blur-with-full-frame-fallback-and-skeleton-overlay",
         "face_blur_coverage": face_blurred_frames / frame_index,
-        "full_frame_fallback_frames": frame_index - face_blurred_frames,
+        "full_frame_fallback_frames": 0 if unblurred else frame_index - face_blurred_frames,
         "quality_flags": ["full_frame_fallback_used"]
-        if face_blurred_frames < frame_index
+        if not unblurred and face_blurred_frames < frame_index
         else [],
         "frame_count": frame_index,
         "fps": fps,
         "width": width,
         "height": height,
         "duration_seconds": frame_index / fps,
-        "pose_overlay_available": bool(pose_samples),
-        "pose_sample_count": len(pose_samples),
+        "pose_overlay_available": any(
+            poses if isinstance(poses, dict) else isinstance(poses, np.ndarray)
+            for _, poses in pose_samples
+        ),
+        "pose_sample_count": sum(
+            bool(poses) if isinstance(poses, dict) else isinstance(poses, np.ndarray)
+            for _, poses in pose_samples
+        ),
         "overlay": {
-            "skeleton": bool(pose_samples),
+            "skeleton": any(
+                poses if isinstance(poses, dict) else isinstance(poses, np.ndarray)
+                for _, poses in pose_samples
+            ),
             "model_score": False,
             "event_markers": False,
         },

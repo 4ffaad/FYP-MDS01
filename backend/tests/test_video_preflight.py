@@ -28,6 +28,8 @@ POSE_READY = {
     "checked_frames": 30,
     "required_frames": 30,
     "window_seconds": 5,
+    "tracks_seen": 1,
+    "usable_tracks": 1,
     "frames_without_person": 0,
     "frames_with_multiple_people": 0,
     "frames_with_tracking_break": 0,
@@ -64,6 +66,27 @@ class VideoPreflightTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["checked_frames"], 30)
         self.assertEqual(result["missing_landmarks"], {})
         self.assertEqual(leftovers, [])
+
+    def test_readiness_accepts_multiple_people_when_one_track_is_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "private-source.mp4"
+            source.write_bytes(b"private fixture")
+            payload = {
+                **POSE_READY,
+                "tracks_seen": 2,
+                "usable_tracks": 1,
+                "frames_with_multiple_people": 12,
+            }
+
+            def write_result(command, _timeout):
+                Path(command[5]).write_text(json.dumps(payload), encoding="utf-8")
+
+            with patch.object(service, "execute", side_effect=write_result):
+                result = service._run_pose_readiness(source)
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["usable_tracks"], 1)
+        self.assertEqual(result["frames_with_multiple_people"], 12)
 
     async def test_preflight_decoder_timeout_uses_killable_secret_free_process(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

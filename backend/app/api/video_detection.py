@@ -10,7 +10,6 @@ from urllib.parse import unquote_to_bytes
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
 
 from sqlmodel import Session, select
 
@@ -39,6 +38,7 @@ _PUBLIC_RESULT_FIELDS = (
     "intervals",
     "events",
     "summary",
+    "subjects",
     "recording_probability_available",
     "duration_seconds",
     "fps",
@@ -278,6 +278,107 @@ def _public_detection_result(payload: object) -> dict:
                 ("skeleton", "model_score", "event_markers"),
             )
         public["visualization"] = visualization
+    if "subjects" in public:
+        subjects = public["subjects"]
+        if not isinstance(subjects, list) or len(subjects) > 100:
+            raise ValueError("Detection result contains an invalid track list.")
+        safe_subjects = []
+        seen_subjects = set()
+        for value in subjects:
+            subject = _allowlisted_mapping(
+                value,
+                (
+                    "subject_id",
+                    "label",
+                    "status",
+                    "unavailable_reason",
+                    "unscored_windows",
+                    "predictions",
+                    "timeline",
+                    "intervals",
+                    "events",
+                    "summary",
+                ),
+            )
+            subject_id = subject.get("subject_id")
+            label = subject.get("label")
+            suffix = (
+                subject_id.removeprefix("track-")
+                if isinstance(subject_id, str)
+                else ""
+            )
+            if (
+                not suffix.isdigit()
+                or int(suffix) < 1
+                or subject_id != f"track-{int(suffix)}"
+                or subject_id in seen_subjects
+                or label != f"Track {int(suffix)}"
+                or subject.get("status") not in {"scored", "unscored"}
+            ):
+                raise ValueError("Detection result contains an invalid track.")
+            seen_subjects.add(subject_id)
+            sections = _public_detection_result(
+                {
+                    "model": model,
+                    "predictions": subject.get("predictions"),
+                    "timeline": subject.get("timeline", []),
+                    "intervals": subject.get("intervals"),
+                    "events": subject.get("events", []),
+                    **(
+                        {"summary": subject["summary"]}
+                        if "summary" in subject
+                        else {}
+                    ),
+                    "recording_probability_available": False,
+                }
+            )
+            scored = subject["status"] == "scored"
+            if scored != bool(sections["predictions"]):
+                raise ValueError("Detection result contains an invalid track status.")
+            reason = subject.get("unavailable_reason")
+            if (scored and reason is not None) or (
+                not scored
+                and reason
+                not in {"incomplete_pose", "missing_pose", "no_usable_windows"}
+            ):
+                raise ValueError("Detection result contains an invalid track status.")
+            unscored = subject.get("unscored_windows", [])
+            if not isinstance(unscored, list) or len(unscored) > 10000:
+                raise ValueError("Detection result contains invalid unscored windows.")
+            safe_unscored = []
+            for window in unscored:
+                row = _allowlisted_mapping(
+                    window, ("start_time", "end_time", "reason")
+                )
+                start, end = row.get("start_time"), row.get("end_time")
+                if (
+                    not isinstance(start, (int, float))
+                    or isinstance(start, bool)
+                    or not math.isfinite(float(start))
+                    or not isinstance(end, (int, float))
+                    or isinstance(end, bool)
+                    or not math.isfinite(float(end))
+                    or not 0 <= start < end <= float(public.get("duration_seconds", end)) + 1e-3
+                    or row.get("reason") not in {"incomplete_pose", "missing_pose"}
+                ):
+                    raise ValueError("Detection result contains invalid unscored windows.")
+                safe_unscored.append(row)
+            safe_subject = {
+                field: sections[field]
+                for field in ("predictions", "timeline", "intervals", "events", "summary")
+                if field in sections
+            }
+            safe_subject.update(
+                {
+                    "subject_id": subject_id,
+                    "label": label,
+                    "status": subject["status"],
+                    "unavailable_reason": reason,
+                    "unscored_windows": safe_unscored,
+                }
+            )
+            safe_subjects.append(safe_subject)
+        public["subjects"] = safe_subjects
     return public
 
 
@@ -290,7 +391,7 @@ def account(user: User | None = Depends(require_api_auth)) -> User:
 def scoped_owner(user: User) -> int | None:
     """Return the shared owner filter for detection reads."""
 
-    return owner_id(user)
+    return user.id
 
 
 def owned(job_id, owner, db, storage):
@@ -312,11 +413,13 @@ async def create(
     db: Session = Depends(get_session),
 ):
     case_id = request.headers.get("x-case-id") or None
+    reference_only = request.headers.get("x-video-purpose") == "reference"
     try:
         blur_strength_percent = int(
-            request.headers.get("x-model-blur-percent", "100")
+            request.headers.get("x-model-blur-percent", "0")
         )
-        service.validate_blur_strength_percent(blur_strength_percent)
+        if blur_strength_percent != 0:
+            raise ValueError("New analyses use unblurred input.")
     except (ValueError, DetectionError) as exc:
         raise HTTPException(422, service.ERRORS["invalid_blur_strength"]) from exc
     source_name_header = request.headers.get("x-veeg-source-name")
@@ -339,7 +442,7 @@ async def create(
     except UnsupportedRawUpload as exc:
         raise HTTPException(415, str(exc)) from exc
     try:
-        if os.environ.get("VIDEO_DETECTION_ENABLED", "false").lower() != "true":
+        if not reference_only and os.environ.get("VIDEO_DETECTION_ENABLED", "false").lower() != "true":
             raise HTTPException(503, "Enable the local video detection runtime using the setup guide.")
         async with service.UPLOAD_LOCK:
             if repository.count_active_jobs(db) >= VIDEO_DETECTION_MAX_QUEUED_JOBS:
@@ -357,6 +460,7 @@ async def create(
                     blur_strength_percent,
                     source_video_name,
                     source_group_id,
+                    reference_only=reference_only,
                 )
                 if case_id
                 else await service.create_job(
@@ -367,6 +471,7 @@ async def create(
                     blur_strength_percent=blur_strength_percent,
                     source_video_name=source_video_name,
                     source_group_id=source_group_id,
+                    reference_only=reference_only,
                 )
             )
         if job.status == "queued":
@@ -548,16 +653,22 @@ def visualization(job_id: str, current_user: User = Depends(account), db: Sessio
     if job.status not in {"ready", "failed"} or not job.visualization_path:
         raise HTTPException(409, "The privacy-safe review video is not available.")
     try:
-        path = storage.materialize_visualization_for_playback(
-            job_id, Path(job.visualization_path)
-        )
-        return FileResponse(
-            path,
-            media_type="video/mp4",
-            headers={
-                "Cache-Control": "private, no-store, max-age=0",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+        return storage.visualization_response(job_id, Path(job.visualization_path))
     except Exception as exc:
         raise HTTPException(409, "The privacy-safe review video is unavailable.") from exc
+
+
+@router.get("/jobs/{job_id}/original")
+def original(job_id: str, current_user: User = Depends(account), db: Session = Depends(get_session)):
+    from backend.app.services.source_download_service import original_response
+    storage = VideoStorage()
+    job = owned(job_id, current_user.id, db, storage)
+    if not job.original_path:
+        raise HTTPException(404, "Original video is unavailable.")
+    path = Path(job.original_path)
+    if path != storage.root / job.job_id / "original" / "video.input.enc":
+        raise HTTPException(404, "Original video is unavailable.")
+    try:
+        return original_response(storage._storage, job.job_id, path, f"{job.job_id}.video")
+    except (StorageError, FileNotFoundError):
+        raise HTTPException(404, "Original video is unavailable.")

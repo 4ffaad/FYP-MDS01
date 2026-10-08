@@ -6,31 +6,22 @@ For the basic explanation, see [inference walkthrough](inference-walkthrough.md)
 
 ## How it works
 
-In the app, upload from **Video** and open jobs from **Video reviews**. A job
-that passes readiness runs VSViG and creates its protected review video. A
-readable clip rejected by the model gates can still get a privacy-only review
-copy; its job remains failed and has no VSViG score. The old `/video-privacy`
-page redirects to this workflow.
+In a combined VEEG case, every uploaded video is retained encrypted with the
+source archive. Owner-only reference playback creates an audio-free H.264 copy
+without requiring pose readiness, model assets, or VSViG admission. This lets
+review continue when analysis is unavailable or a clip cannot be aligned. The
+separate **Video** workflow submits a clip for VSViG analysis; it creates the
+same reference copy independently of inference success.
 
 ```text
-encrypted upload
-  → OpenPose readiness check on the opening five-second window
-  ├→ gate rejected → face blur (full-frame fallback) → encrypted review copy; no score
-  └→ gate passed → queue → temporary timestamp/geometry normalization
-       → OpenPose keypoints and 15 RGB patches from temporary source frames
-       → blur each patch ─────────────────────────────────────────→ VSViG window scores
-       → face-blurred review video, with full-frame fallback and skeleton
+combined video → encrypted original → metadata-only preflight → queued reference copy
+                                                    └→ unblurred audio-free H.264 → encrypted
+standalone analysis → encrypted original → OpenPose readiness → queue → normalization
+  → OpenPose keypoints + 15 RGB patches → VSViG window scores
+  → unblurred audio-free H.264 review copy
 ```
 
-Audio is not model input and is not kept in the review video. The encrypted
-source may contain audio while queued, then is deleted after processing. A
-rejected but readable clip is retained only until its privacy-only copy is
-validated; if that transform fails, its source is deleted and no player appears.
-VSViG receives pose coordinates and individually blurred 32×32 RGB patches; it
-never receives a full video frame. Keypoints, extracted patches, and
-source/intermediate frames are temporary. Encrypted predictions and the
-redacted review video are retained until job expiry when generated. Rejected
-clips retain only the review video, with no prediction artifact. EEG and video
+Audio is not model input and is not kept in the review video. The encrypted original remains available to its owner until case deletion. The review copy is unblurred; it is available when model admission or inference fails. VSViG receives pose coordinates and unblurred 32×32 RGB patches; it never receives a full video frame. Keypoints, extracted patches, and normalized frames are temporary. Encrypted predictions and review video are retained until case deletion for new jobs. Historical jobs retain their expiry and privacy labels. EEG and video
 jobs run independently. The combined view links them only when the uploaded
 clip group, VEEG clock anchors, frame counts, and frame rate produce a unique
 metadata match. Unmatched and ambiguous clips stay separate; a metadata match
@@ -104,34 +95,36 @@ details are MDS01 research choices.
 | Video formats               | AVI, MP4, MOV, WebM                                                                              |
 | Native geometry             | 1920×1080                                                                                        |
 | Local H5 profile adaptation | Experimental aspect-preserving resize/padding for smaller frames; not equivalent to native video |
-| Model-input blur            | Each of the 15 extracted patches is blurred independently; UI accepts 50–100%                    |
+| Model-input blur            | New analyses use unblurred RGB patches; historical jobs preserve their recorded setting         |
 | Sampling                    | 6 frames/second                                                                                  |
 | Model window                | 30 sampled frames (5 seconds)                                                                    |
 | Window stride               | 3 sampled frames (0.5 seconds)                                                                   |
-| Pose                        | One tracked person; confidence and bounds are checked on the 15 joints used by VSViG             |
+| Pose                        | Multiple tracked people; each person is scored as a separate stream using the 15 VSViG joints   |
 | Patches                     | 15 RGB patches per sampled frame, each 32×32, extracted from 128×128 keypoint crops              |
 | Model output                | One uncalibrated score per window; threshold is 0.5                                              |
 
 The runtime requires timestamps/frames that meet its bounds and all 15
-contract-selected pose points on every sampled frame. The pinned patch extractor
-drops three of OpenPose's 18 joints, so those unused joints do not gate VSViG;
-they are omitted from tracking when confidence is too low. `incomplete_pose`
-means at least one required point was missing, too uncertain, or out of frame.
-Inference stops before VSViG and no score is produced. It does not mean no
-seizure. Use one visible person with clear framing and lighting; do not weaken
-the pose gate for the 15 points that the model actually uses.
+contract-selected pose points for a person in each scored window. It tracks and
+scores each person separately, so additional people do not block inference and
+their scores are never combined. Track labels follow first detection order;
+they do not identify the patient. Three other OpenPose joints are not model
+inputs and do not gate inference. `incomplete_pose` and `missing_pose` mark
+individual windows without scores; other complete windows and tracks remain
+available. A clip with no complete person window produces no score. This is a
+model-input quality gate, not a seizure finding.
 
 Native 1920×1080 clips use the same source frames for admission and inference;
 they are not re-encoded before pose extraction. Only lower-resolution clips in
 the experimental adaptation path are resized and padded.
 
 Before queueing, upload admission runs the pinned pose model on the first
-30 samples (five seconds at 6 fps), without loading or calling VSViG. It checks
-for exactly one trackable person and all 15 landmarks at every sample. The
-preflight response reports counts and missing landmark names, never frames or
-coordinates. This is an early readiness check only: inference checks every
-sample in the full clip, so a later pose failure can still stop processing. The
-gate counts detected people; it cannot establish that the person is the patient.
+30 samples (five seconds at 6 fps), without loading or calling VSViG. It accepts
+the clip when at least one person has all 15 selected landmarks throughout a
+complete opening window. Multiple people are allowed. The preflight response
+reports counts and missing landmark names, never frames or coordinates. This is
+an early readiness check only: later windows can remain unscored when a track
+disappears or selected landmarks are incomplete. The gate cannot establish
+which track is the patient.
 
 The processing status shows the active backend stage (**Preparing video** or
 **OpenPose and VSViG**). Clips from a folder intake are uploaded as queue
@@ -142,9 +135,9 @@ is uncertain.
 
 The resize/padding option cannot recover missing detail. Keep adapted inputs
 labelled experimental and evaluate them separately from native 1920×1080 clips.
-The selected blur strength is recorded with the job. Values below 50% are
-rejected; reducing blur can expose more visual detail, so keep it at the
-reviewed default unless the research protocol explicitly requires a comparison.
+New analyses use unblurred RGB patches by design; the selected condition is
+recorded in job provenance. Historical jobs retain their original setting and
+privacy label.
 
 ## Review output and failures
 
@@ -156,17 +149,15 @@ contribution by sampled time and patch; it is not pixel-level localization or
 clinical cause. The API does not return source video. Use /api/video-detection/
 in the local [Swagger UI](http://127.0.0.1:8000/docs) for the complete schema.
 
-The review video is a separate owner-scoped encrypted artifact. Each output
-frame uses tracked OpenPose head landmarks to blur the face; missing, stale,
-incomplete, or ambiguous face landmarks trigger full-frame blur. The skeleton
-overlay is drawn after the privacy transform. In the browser, reviewers can
-add blur over the same 15 128×128 keypoint regions used to form VSViG's 32×32
-input patches, and can apply a full-frame display blur. These viewer overlays
-do not change the stored video or model result. The public example frame under
-`frontend/public/examples/` demonstrates upstream face blur and is labeled as
-a reference, not an MDS01 output. Playback uses a private cache that expires
-after ten idle minutes. The separate `/api/video-privacy/` utility retains its
-own face-local/full-frame fallback policy and does not run VSViG.
+The unblurred audio-free review video and original source are separate
+owner-scoped encrypted artifacts. Reference-copy generation bypasses pose and
+VSViG admission, so a model failure does not block playback. The browser offers
+slow motion, frame stepping, timestamped bookmarks, and source-clock alignment
+when the VEEG metadata has one unique match. Unmatched clips remain selectable
+and playable with their alignment status shown. A private range cache expires
+after ten idle minutes. Historical face-blurred videos and their labels remain
+unchanged. The separate `/api/video-privacy/` utility keeps its own documented
+face-local/full-frame fallback policy and does not run VSViG.
 
 Video decoding and model inference currently run in the backend container under
 the backend service account. Compose limits the service, but it does not isolate
@@ -180,7 +171,7 @@ uploads or a shared network deployment.
 | runtime_incompatible                                | A required dependency, source file, or checkpoint failed to load.                                                 |
 | video_incompatible                                  | The clip is unreadable or violates timing, frame-rate, duration, or size limits.                                  |
 | video_resolution_mismatch                           | The clip is not native 1920×1080 and experimental adaptation is disabled.                                         |
-| ambiguous_or_missing_pose, incomplete_pose          | The clip did not provide one acceptable full pose. No VSViG score was produced.                                   |
+| ambiguous_or_missing_pose, incomplete_pose          | No complete 15-point person window was available; incomplete windows remain unscored.                               |
 | visualization_failed                                | The protected review video could not be safely produced. No completed result is published.                        |
 
 Treat video output as an uncalibrated research score for human review. A

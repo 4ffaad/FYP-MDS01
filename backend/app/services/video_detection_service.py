@@ -68,10 +68,10 @@ ERRORS = {
     "runtime_incompatible": "The VSViG runtime could not load both published checkpoints. Run the documented runtime verification command.",
     "video_incompatible": "Use a readable AVI, MP4, MOV, or WebM clip of at least 5 seconds with stable frame timing.",
     "video_resolution_mismatch": "This clip does not use the required original 1920×1080 resolution. Select the matching 1920×1080 original, or ask the operator to enable experimental letterboxing.",
-    "ambiguous_or_missing_pose": "The pose stage did not find exactly one trackable person in at least one sampled frame. Use footage with one clearly visible person; no VSViG score was produced.",
+    "ambiguous_or_missing_pose": "No stable track with the 15 VSViG-selected landmarks was available for a complete model window. Multiple people are supported; each complete track is scored separately.",
     "incomplete_pose": "At least one sampled frame lacked a confident, in-frame body landmark required by VSViG. Try clearer lighting and framing; no VSViG score was produced.",
-    "pose_readiness_person_count": "The opening five-second pose check could not track exactly one person in every sampled frame. Keep one person clearly visible; no VSViG score was produced.",
-    "pose_readiness_landmarks": "The opening five-second pose check missed one or more of VSViG's 15 required landmarks, from the face through the ankles. Improve full-body framing and lighting; no score was produced.",
+    "pose_readiness_person_count": "The opening five-second pose check could not track a person in every sampled frame. Keep at least one person continuously visible; multiple people are supported.",
+    "pose_readiness_landmarks": "The opening five-second pose check found no track with all 15 required landmarks selected by VSViG in every sampled frame. Other OpenPose joints are not required; improve visibility of the selected landmarks for a score.",
     "pose_readiness_unavailable": "The pose readiness check could not complete safely. No video score was produced; check the local model runtime and retry.",
     "invalid_patch": "The clip could not produce valid model input patches.",
     "invalid_model_output": "The model returned invalid scores. No detection result was published.",
@@ -81,7 +81,7 @@ ERRORS = {
     "privacy_transform_failed": "The video could not be face-blurred safely. No detection result was published.",
     "processing_failed": "Video processing failed. Try a shorter supported clip or check the local runtime.",
     "interrupted": "Processing was interrupted by a server restart. Submit the video again.",
-    "invalid_blur_strength": "Model-input blur strength must be between 50 and 100 percent.",
+    "invalid_blur_strength": "New video analyses require unblurred model input (0 percent blur).",
     "sync_metadata_invalid": "Video synchronization metadata is invalid.",
 }
 LOGGER = logging.getLogger(__name__)
@@ -93,6 +93,8 @@ UPLOAD_LOCK = asyncio.Lock()
 
 def expired(job) -> bool:
     value = job.retention_expires_at
+    if value is None:
+        return False
     normalized = (
         value.astimezone(timezone.utc)
         if value.tzinfo is not None
@@ -208,6 +210,8 @@ def _run_pose_readiness(source: Path) -> dict[str, object]:
             "frames_with_multiple_people",
             "frames_with_tracking_break",
             "frames_with_incomplete_pose",
+            "tracks_seen",
+            "usable_tracks",
         )
         if (
             type(payload.get("ready")) is not bool
@@ -215,9 +219,12 @@ def _run_pose_readiness(source: Path) -> dict[str, object]:
             or payload["required_frames"] != required_frames
             or any(
                 type(payload.get(field)) is not int
-                or not 0 <= payload[field] <= required_frames
+                or not 0
+                <= payload[field]
+                <= (100 if field in {"tracks_seen", "usable_tracks"} else required_frames)
                 for field in count_fields
             )
+            or payload.get("usable_tracks", 0) > payload.get("tracks_seen", 0)
             or not isinstance(payload.get("missing_landmarks"), dict)
         ):
             raise ValueError("invalid pose readiness result")
@@ -234,8 +241,7 @@ def _run_pose_readiness(source: Path) -> dict[str, object]:
             raise ValueError("invalid pose readiness result")
         ready = (
             payload["checked_frames"] == required_frames
-            and not any(payload[field] for field in count_fields[1:])
-            and not missing
+            and payload["usable_tracks"] > 0
         )
         if payload["ready"] != ready:
             raise ValueError("inconsistent pose readiness result")
@@ -262,20 +268,19 @@ def _pose_readiness_error_code(readiness: object) -> str | None:
         return "pose_readiness_unavailable"
     if readiness["ready"]:
         return None
-    if any(
-        readiness.get(field, 0)
-        for field in (
-            "frames_without_person",
-            "frames_with_multiple_people",
-            "frames_with_tracking_break",
-        )
-    ):
-        return "pose_readiness_person_count"
     if readiness.get("frames_with_incomplete_pose") or readiness.get(
         "missing_landmarks"
     ):
         return "pose_readiness_landmarks"
-    return "video_incompatible"
+    if any(
+        readiness.get(field, 0)
+        for field in (
+            "frames_without_person",
+            "frames_with_tracking_break",
+        )
+    ):
+        return "pose_readiness_person_count"
+    return "pose_readiness_landmarks"
 
 
 def detection_error_detail(error: DetectionError) -> str:
@@ -489,6 +494,8 @@ def _make_private_review_copy(
 ) -> bool:
     """Retain an encrypted, audio-free review video after model rejection/failure."""
 
+    if job.retention_expires_at is None:
+        return _make_unblurred_review_copy(db, storage, job)
     source: Path | None = None
     try:
         if expired(job) or not job.original_path:
@@ -521,8 +528,9 @@ def _make_private_review_copy(
         job.visualization_path = str(
             storage.store_artifact(job.job_id, output, "video.visualization.mp4")
         )
-        storage.cleanup(job.job_id, keep_retained=True)
-        job.original_path = None
+        storage.cleanup(job.job_id, keep_retained=True, keep_original=job.retention_expires_at is None)
+        if job.retention_expires_at is not None:
+            job.original_path = None
         job.fps = result.fps
         job.duration_seconds = result.duration_seconds
         job.status = "failed"
@@ -639,6 +647,9 @@ def public_job(db, job, storage):
         "label": "Video detection " + job.job_id[-6:],
         "status": job.status, "current_stage": job.current_stage,
         "review_privacy_method": job.review_privacy_method,
+        "reference_only": job.reference_only,
+        "retention_policy": "until-deletion" if job.retention_expires_at is None else "legacy-expiry",
+        "source_available": bool(job.original_path and Path(job.original_path).is_file()),
         "duration_seconds": job.duration_seconds, "fps": job.fps,
         "blur_strength_percent": job.blur_strength_percent,
         "created_at": job.created_at, "retention_expires_at": job.retention_expires_at,
@@ -654,7 +665,7 @@ def validate_blur_strength_percent(value: object) -> int:
 
     if (
         type(value) is not int
-        or not MODEL_INPUT_BLUR_MIN_PERCENT <= value <= MODEL_INPUT_BLUR_MAX_PERCENT
+        or (value != 0 and not MODEL_INPUT_BLUR_MIN_PERCENT <= value <= MODEL_INPUT_BLUR_MAX_PERCENT)
     ):
         raise DetectionError("invalid_blur_strength")
     return value
@@ -666,9 +677,10 @@ async def create_job(
     upload: UploadFile,
     owner: int,
     case_id: str | None = None,
-    blur_strength_percent: int = MODEL_INPUT_BLUR_MAX_PERCENT,
+    blur_strength_percent: int = 0,
     source_video_name: str | None = None,
     source_group_id: str | None = None,
+    reference_only: bool = False,
 ):
     validate_blur_strength_percent(blur_strength_percent)
     if Path(upload.filename or "").suffix.lower() not in {".avi", ".mp4", ".mov", ".webm"}:
@@ -706,17 +718,19 @@ async def create_job(
             raise DetectionError("sync_metadata_invalid") from exc
     ensure_case_reference(db, case_id, owner)
     # Verify the expensive assets off the event loop, before accepting patient bytes.
-    await asyncio.to_thread(load_contract)
+    if not reference_only:
+        await asyncio.to_thread(load_contract)
     if case_id is not None:
         lock_owner_case_mutations(db, owner)
         ensure_case_reference(db, case_id, owner)
     job = VideoDetectionJob(owner_user_id=owner, case_id=case_id or new_case_id(), job_id=f"VID-{secrets.token_hex(16).upper()}",
-                            review_privacy_method="tracked-face-blur-with-full-frame-fallback",
+                            review_privacy_method="unblurred-owner-source",
+                            reference_only=reference_only,
                             source_name_token=source_name_token,
                             source_group_id=source_group_id,
                             eeg_sync_status=("pending" if source_group_id else "unavailable"),
                             blur_strength_percent=blur_strength_percent,
-                            retention_expires_at=utc_now() + timedelta(seconds=VIDEO_RETENTION_SECONDS))
+                            retention_expires_at=None)
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -724,15 +738,22 @@ async def create_job(
         encrypted = await storage.save_upload(job.job_id, upload)
         job.original_path = str(encrypted)
         try:
-            info = await asyncio.to_thread(
-                _preflight_uploaded_video, storage, job.job_id, encrypted
-            )
+            if reference_only:
+                def metadata_only():
+                    source = storage.materialize_original(job.job_id, encrypted)
+                    try:
+                        return VideoPrivacyProcessor.preflight(source)
+                    finally:
+                        storage.delete_work_file(source)
+                info = await asyncio.to_thread(metadata_only)
+            else:
+                info = await asyncio.to_thread(_preflight_uploaded_video, storage, job.job_id, encrypted)
         except VideoProcessorError:
             return _record_admission_failure(
                 db, storage, job, "video_incompatible"
             )
         admission = _video_admission(info)
-        if not admission["accepted"]:
+        if not reference_only and not admission["accepted"]:
             metadata_admission = _video_metadata_admission(info)
             if metadata_admission["accepted"]:
                 error_code = _pose_readiness_error_code(info.get("pose_readiness"))
@@ -797,6 +818,13 @@ def process_job(_trigger_job_id: str):
             db.add(job)
             db.commit()
             source = storage.materialize_original(job_id, Path(job.original_path))
+            if job.reference_only:
+                if not _make_unblurred_review_copy(db, storage, job, source):
+                    raise DetectionError("visualization_failed")
+                job.status, job.current_stage = "ready", "reference-review-ready"
+                db.add(job)
+                db.commit()
+                return
             source_metadata = VideoPrivacyProcessor.preflight(source)
             source_width = int(source_metadata["width"])
             source_height = int(source_metadata["height"])
@@ -833,7 +861,7 @@ def process_job(_trigger_job_id: str):
             db.commit()
             output = storage.work_path(job_id, "predictions.json")
             visualization = storage.work_path(job_id, "privacy-safe-review.mp4")
-            expires_at = job.retention_expires_at
+            expires_at = job.retention_expires_at or (utc_now() + timedelta(seconds=3600))
             normalized_expiry = (
                 expires_at.astimezone(timezone.utc)
                 if expires_at.tzinfo is not None
@@ -871,13 +899,20 @@ def process_job(_trigger_job_id: str):
                 or not math.isclose(float(runtime_fps), job.fps, rel_tol=0.01, abs_tol=0.01)
             ):
                 raise DetectionError("invalid_model_output")
+            subjects = result.get("subjects")
+            has_subject_predictions = isinstance(subjects, list) and any(
+                isinstance(subject, dict)
+                and subject.get("status") == "scored"
+                and bool(subject.get("predictions"))
+                for subject in subjects
+            )
             if (
-                not result.get("predictions")
+                (not result.get("predictions") and not has_subject_predictions)
                 or not isinstance(visualization_meta, dict)
                 or visualization_meta.get("available") is not True
                 or visualization_meta.get("media_type") != "video/mp4"
                 or visualization_meta.get("audio_included") is not False
-                or visualization_meta.get("privacy_method") != "tracked-face-blur-with-full-frame-fallback-and-skeleton-overlay"
+                or visualization_meta.get("privacy_method") != ("unblurred-owner-source-and-skeleton-overlay" if job.blur_strength_percent == 0 else "tracked-face-blur-with-full-frame-fallback-and-skeleton-overlay")
                 or not isinstance(visualization_meta.get("overlay"), dict)
                 or visualization_meta["overlay"].get("skeleton") is not True
                 or not isinstance(visualization_meta.get("quality_flags"), list)
@@ -920,10 +955,10 @@ def process_job(_trigger_job_id: str):
                 expected_duration=job.duration_seconds,
             )
             result["privacy"] = {
-                "method": "tracked-face-blur-with-full-frame-fallback",
-                "model_input": "15 individually blurred RGB patches per sampled frame",
+                "method": "unblurred-owner-source" if job.blur_strength_percent == 0 else "tracked-face-blur-with-full-frame-fallback",
+                "model_input": "15 unblurred RGB patches per sampled frame" if job.blur_strength_percent == 0 else "15 individually blurred RGB patches per sampled frame",
                 "blur_strength_percent": job.blur_strength_percent,
-                "pose_model_input": "transient unblurred model frames; only pose coordinates and individually blurred RGB patches reach VSViG",
+                "pose_model_input": "unblurred normalized frames; pose coordinates and 15 RGB patches reach VSViG" if job.blur_strength_percent == 0 else "transient unblurred model frames; only pose coordinates and individually blurred RGB patches reach VSViG",
                 "model_input_adaptation": normalization["adaptation"],
                 "adaptation_experimental": normalization["adaptation"] == "letterbox",
                 "source_resolution": [normalization["source_width"], normalization["source_height"]],
@@ -932,7 +967,7 @@ def process_job(_trigger_job_id: str):
                 "face_blur_coverage": visualization_meta["face_blur_coverage"],
                 "quality_flags": visualization_meta["quality_flags"],
                 "review_required": bool(visualization_meta["quality_flags"]),
-                "audio_policy": "audio is excluded; only the face-blurred, audio-free review video and encrypted predictions are retained until expiry",
+                "audio_policy": "review playback excludes audio; encrypted originals and results are retained until case deletion" if job.retention_expires_at is None else "audio is excluded; only the face-blurred, audio-free review video and encrypted predictions are retained until expiry",
             }
             output.write_text(json.dumps(result, allow_nan=False))
             if expired(job):
@@ -943,15 +978,16 @@ def process_job(_trigger_job_id: str):
             job.visualization_path = str(
                 storage.store_artifact(job_id, visualization, "video.visualization.mp4")
             )
-            storage.cleanup(job_id, keep_retained=True)
-            job.original_path = None
+            storage.cleanup(job_id, keep_retained=True, keep_original=job.retention_expires_at is None)
+            if job.retention_expires_at is not None:
+                job.original_path = None
             job.video_path = None
             job.status, job.current_stage = "ready", "complete"
         except asyncio.CancelledError:
             db.rollback()
             cleanup_succeeded = True
             try:
-                storage.delete_job(job_id)
+                storage.cleanup(job_id, keep_retained=True, keep_original=job.retention_expires_at is None)
             except Exception:
                 cleanup_succeeded = False
                 LOGGER.warning("Cancelled video cleanup unavailable; retrying next sweep.")
@@ -959,7 +995,9 @@ def process_job(_trigger_job_id: str):
             job.current_stage = job.current_stage or "failed"
             job.error_code = "interrupted"
             if cleanup_succeeded:
-                job.original_path = job.video_path = job.visualization_path = job.predictions_path = None
+                if job.retention_expires_at is not None:
+                    job.original_path = None
+                job.video_path = job.visualization_path = job.predictions_path = None
             db.add(job)
             db.commit()
             raise
@@ -988,12 +1026,14 @@ def process_job(_trigger_job_id: str):
             if not review_available:
                 cleanup_succeeded = True
                 try:
-                    storage.delete_job(job_id)
+                    storage.cleanup(job_id, keep_retained=True, keep_original=job.retention_expires_at is None)
                 except Exception:
                     cleanup_succeeded = False
                     LOGGER.warning("Failed video cleanup unavailable; retrying next sweep.")
             if cleanup_succeeded:
-                job.original_path = job.video_path = job.predictions_path = None
+                if job.retention_expires_at is not None:
+                    job.original_path = None
+                job.video_path = job.predictions_path = None
                 if not review_available:
                     job.visualization_path = None
             job.status = "failed"
@@ -1023,6 +1063,7 @@ def sweep(*, startup=False):
                         ready_job.job_id,
                         keep_retained=True,
                         preserve_playback=True,
+                        keep_original=ready_job.retention_expires_at is None,
                     )
                 except Exception:
                     logging.getLogger(__name__).warning(
@@ -1049,37 +1090,42 @@ def sweep(*, startup=False):
                             job.job_id,
                             keep_retained=True,
                             preserve_playback=True,
+                            keep_original=job.retention_expires_at is None,
                         )
                     except Exception:
                         LOGGER.warning("Failed-job review cleanup is pending.")
                     continue
                 cleanup_succeeded = True
                 try:
-                    storage.delete_job(job.job_id)
+                    storage.cleanup(job.job_id, keep_retained=True, keep_original=job.retention_expires_at is None)
                 except Exception:
                     cleanup_succeeded = False
                     LOGGER.warning("Failed video cleanup unavailable; retrying next sweep.")
                 if cleanup_succeeded:
-                    job.original_path = job.video_path = job.visualization_path = job.predictions_path = None
+                    if job.retention_expires_at is not None:
+                        job.original_path = None
+                    job.video_path = job.visualization_path = job.predictions_path = None
                     db.add(job)
                     db.commit()
                 continue
             if startup and job.status in {"queued", "processing"}:
                 cleanup_succeeded = True
                 try:
-                    storage.delete_job(job.job_id)
+                    storage.cleanup(job.job_id, keep_retained=True, keep_original=job.retention_expires_at is None)
                 except Exception:
                     cleanup_succeeded = False
                     logging.getLogger(__name__).warning(
                         "Interrupted video cleanup unavailable; retrying next sweep."
                     )
                 if cleanup_succeeded:
-                    job.original_path = job.video_path = job.visualization_path = job.predictions_path = None
+                    if job.retention_expires_at is not None:
+                        job.original_path = None
+                    job.video_path = job.visualization_path = job.predictions_path = None
                 job.status, job.error_code = "failed", "interrupted"
                 db.add(job)
                 db.commit()
             if startup and job.status == "ready":
-                storage.cleanup(job.job_id, keep_retained=True)
+                storage.cleanup(job.job_id, keep_retained=True, keep_original=job.retention_expires_at is None)
             expire_job(db, job, storage)
 
 
@@ -1092,3 +1138,29 @@ async def retention_loop():
             # Database availability is reported by health; retry cleanup next tick.
             import logging
             logging.getLogger(__name__).warning("Video retention cleanup unavailable; retrying.")
+
+
+def _make_unblurred_review_copy(db, storage, job, source=None):
+    """Reference playback needs readable media, never pose or inference admission."""
+    try:
+        source = source or storage.materialize_original(job.job_id, Path(job.original_path))
+        info = VideoPrivacyProcessor.preflight(source)
+        output = storage.work_path(job.job_id, "owner-review.mp4")
+        from backend.app.services.video_privacy_service import finalize_protected_video
+        finalize_protected_video(source, source, output)
+        validate_visualization_artifact(output, expected_fps=float(info["fps"]),
+                                       expected_width=int(info["width"]), expected_height=int(info["height"]),
+                                       expected_frame_count=int(info["frame_count"]),
+                                       expected_duration=int(info["frame_count"]) / float(info["fps"]))
+        job.visualization_path = str(storage.store_artifact(job.job_id, output, "video.visualization.mp4"))
+        job.review_privacy_method = "unblurred-owner-source"
+        job.fps = float(info["fps"])
+        job.duration_seconds = int(info["frame_count"]) / job.fps
+        storage.cleanup(job.job_id, keep_retained=True, keep_original=True)
+        db.add(job)
+        db.commit()
+        return True
+    except Exception as exc:
+        LOGGER.warning("Owner review conversion failed (error_type=%s).", type(exc).__name__)
+        storage.cleanup(job.job_id, keep_retained=True, keep_original=True)
+        return False

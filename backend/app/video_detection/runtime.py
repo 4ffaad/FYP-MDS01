@@ -148,6 +148,16 @@ def _last_model_sample_index(sample_count, window_frames, stride_frames):
     )
 
 
+def _complete_subject_window(rows):
+    """Return model-ready samples or the first explicit pose gap reason."""
+
+    if any(row is None or row.get("reason") == "missing_pose" for row in rows):
+        return None, "missing_pose"
+    if any(row.get("reason") for row in rows):
+        return None, next(row["reason"] for row in rows if row.get("reason"))
+    return rows, None
+
+
 def _missing_required_keypoints(keypoints, indices, width, height, minimum_score):
     """Return required landmark indexes that fail the inference gate."""
 
@@ -165,6 +175,41 @@ def _missing_required_keypoints(keypoints, indices, width, height, minimum_score
         | (points[:, 1] >= height)
     )
     return [int(index) for index, is_invalid in zip(indices, invalid) if is_invalid]
+
+
+def _keypoints_for_entry(entry, points, scale, pad):
+    """Convert one pinned OpenPose group into source-frame COCO coordinates."""
+
+    import numpy as np
+
+    keypoints = np.zeros((18, 3), dtype=np.float32)
+    keypoints[:, :2] = -1
+    for index, point_id in enumerate(entry[:18]):
+        if point_id >= 0:
+            point = points[int(point_id)]
+            keypoints[index] = (
+                (point[0] * 2 - pad[1]) / scale,
+                (point[1] * 2 - pad[0]) / scale,
+                point[2],
+            )
+    return keypoints
+
+
+def _sanitize_keypoints(keypoints, width, height, minimum_score):
+    """Keep malformed or low-confidence points out of tracking geometry."""
+
+    import numpy as np
+
+    invalid = (
+        ~np.isfinite(keypoints).all(axis=1)
+        | (keypoints[:, 2] < minimum_score)
+        | (keypoints[:, 0] < 0)
+        | (keypoints[:, 1] < 0)
+        | (keypoints[:, 0] >= width)
+        | (keypoints[:, 1] >= height)
+    )
+    keypoints[invalid] = (-1, -1, 0)
+    return keypoints
 
 
 def _track_single_pose(previous_poses, keypoints, pose_class, track_function):
@@ -275,7 +320,6 @@ def run(
 
     p = contract["preprocessing"]
     required_keypoints = sorted(set(p["keypoint_order"]) | set(p["patch_order"]))
-    required_keypoint_set = set(required_keypoints)
     model_capture = cv2.VideoCapture(str(model_source))
     same_source = pose_source is None or pose_source == model_source
     pose_capture = model_capture if same_source else cv2.VideoCapture(str(pose_source))
@@ -312,10 +356,9 @@ def run(
         if pose_capture is not model_capture:
             pose_capture.release()
         raise DetectionError("video_incompatible")
-    patches, coordinates, times, rows = [], [], [], []
+    streams = {}
     pose_samples = []
     previous_poses = []
-    strongest_window = None
     frame_index, next_sample = 0, 0
     # The upstream extractor removes slots 1, 14, and 15. Place the reviewed
     # 15-point model order into its surviving slots before calling it.
@@ -347,6 +390,7 @@ def run(
                 next_sample += 1
                 if next_sample - 1 > last_model_sample_index:
                     continue
+                sample_index = next_sample - 1
                 heatmaps, pafs, scale, pad = infer_fast(
                     pose, pose_frame, int(p["pose_height"]), 8, 4, True
                 )
@@ -354,82 +398,145 @@ def run(
                 for k in range(18):
                     total += extract_keypoints(heatmaps[:, :, k], by_type, total)
                 entries, points = group_keypoints(by_type, pafs)
-                # A single visible person is the v1 ceiling. Never choose a
-                # clinician/bystander automatically when multiple people appear.
-                if len(entries) != 1:
-                    raise DetectionError("ambiguous_or_missing_pose")
-                keypoints = np.zeros((18, 3), dtype=np.float32)
-                keypoints[:, :2] = -1
-                for k, point_id in enumerate(entries[0][:18]):
-                    if point_id < 0:
+                current_poses = []
+                keypoints_by_pose = {}
+                for entry in entries:
+                    keypoints = _sanitize_keypoints(
+                        _keypoints_for_entry(entry, points, scale, pad),
+                        pose_frame.shape[1],
+                        pose_frame.shape[0],
+                        p["min_keypoint_score"],
+                    )
+                    tracked_pose = Pose(
+                        keypoints[:, :2].copy(), float(keypoints[:, 2].mean())
+                    )
+                    current_poses.append(tracked_pose)
+                    keypoints_by_pose[id(tracked_pose)] = keypoints
+
+                if current_poses:
+                    track_poses(
+                        previous_poses, current_poses, threshold=3, smooth=False
+                    )
+                else:
+                    previous_poses = []
+
+                frame_tracks = {}
+                frame_rows = {}
+                model_frame_for_patches = (
+                    cv2.cvtColor(model_frame, cv2.COLOR_BGR2RGB)
+                    if p["color_order"] == "RGB"
+                    else model_frame
+                )
+                for tracked_pose in current_poses:
+                    keypoints = keypoints_by_pose[id(tracked_pose)]
+                    track_id = tracked_pose.id
+                    if track_id not in streams:
+                        streams[track_id] = {
+                            "label": f"Track {len(streams) + 1}",
+                            "buffer": [],
+                            "buffer_start_index": sample_index,
+                            "active": True,
+                            "rows": [],
+                            "unscored_windows": [],
+                            "strongest_window": None,
+                        }
+                    stream = streams[track_id]
+                    label = stream["label"]
+                    frame_tracks[label] = keypoints.copy()
+                    missing = _missing_required_keypoints(
+                        keypoints,
+                        required_keypoints,
+                        pose_frame.shape[1],
+                        pose_frame.shape[0],
+                        p["min_keypoint_score"],
+                    )
+                    if missing:
+                        frame_rows[track_id] = {
+                            "reason": "incomplete_pose"
+                        }
                         continue
-                    point = points[int(point_id)]
-                    keypoints[k] = ((point[0] * 2 - pad[1]) / scale, (point[1] * 2 - pad[0]) / scale, point[2])
-                _validate_required_keypoints(
-                    keypoints,
-                    required_keypoints,
-                    pose_frame.shape[1],
-                    pose_frame.shape[0],
-                    p["min_keypoint_score"],
-                )
-                for keypoint_index in range(18):
-                    if keypoint_index in required_keypoint_set:
+
+                    reordered = keypoints.copy()
+                    reordered[kept] = keypoints[p["patch_order"]]
+                    patch = patches_module.extract_patches(
+                        model_frame_for_patches,
+                        reordered,
+                        kernel_size=int(p["patch_kernel_size"]),
+                        kernel_sigma=float(p["patch_sigma"]),
+                        scale=float(p["patch_scale"]),
+                    )
+                    if patch.shape != (15, 32, 32, 3) or not np.isfinite(patch).all():
+                        raise DetectionError("invalid_patch")
+                    if blur_strength_percent:
+                        patch = blur_rgb_patches(patch, blur_strength_percent, cv2)
+                    kpts = keypoints[p["keypoint_order"]].copy()
+                    kpts[:, :2] *= p["coordinate_scale"]
+                    frame_rows[track_id] = {
+                        "patches": patch.transpose(0, 3, 1, 2).astype(np.float32)
+                        * p["pixel_scale"],
+                        "coordinates": kpts,
+                        "keypoints": keypoints.copy(),
+                        "timestamp": index / fps,
+                    }
+
+                for track_id, stream in streams.items():
+                    if not stream["active"]:
                         continue
-                    point = keypoints[keypoint_index]
-                    if (
-                        not np.isfinite(point).all()
-                        or point[2] < p["min_keypoint_score"]
-                        or point[0] < 0
-                        or point[1] < 0
-                        or point[0] >= pose_frame.shape[1]
-                        or point[1] >= pose_frame.shape[0]
-                    ):
-                        keypoints[keypoint_index] = (-1, -1, 0)
-                previous_poses = _track_single_pose(
-                    previous_poses,
-                    keypoints,
-                    Pose,
-                    track_poses,
-                )
-                pose_samples.append((index / fps, keypoints.copy()))
-                reordered = keypoints.copy()
-                reordered[kept] = keypoints[p["patch_order"]]
-                if p["color_order"] == "RGB":
-                    model_frame = cv2.cvtColor(model_frame, cv2.COLOR_BGR2RGB)
-                patch = patches_module.extract_patches(
-                    model_frame,
-                    reordered,
-                    kernel_size=int(p["patch_kernel_size"]),
-                    kernel_sigma=float(p["patch_sigma"]),
-                    scale=float(p["patch_scale"]),
-                )
-                patch_shape = (15, 32, 32, 3)
-                if patch.shape != patch_shape or not np.isfinite(patch).all():
-                    raise DetectionError("invalid_patch")
-                patch = blur_rgb_patches(patch, blur_strength_percent, cv2)
-                kpts = keypoints[p["keypoint_order"]].copy()
-                kpts[:, :2] *= p["coordinate_scale"]
-                patches.append(patch.transpose(0, 3, 1, 2).astype(np.float32) * p["pixel_scale"])
-                coordinates.append(kpts)
-                times.append(index / fps)
-                if len(patches) == p["frames"]:
-                    tensor = torch.from_numpy(np.stack(patches)[None])
-                    k_tensor = torch.from_numpy(np.stack(coordinates)[None])
-                    result = model(tensor, k_tensor)
-                    if result.numel() != 1:
-                        raise DetectionError("invalid_model_output")
-                    score = result.item()
-                    rows.append({"start_time": times[0], "end_time": min(duration, times[-1] + 1 / p["sample_fps"]), "raw_score": score})
-                    if strongest_window is None or score > strongest_window[0]:
-                        strongest_window = (
-                            score,
-                            len(rows) - 1,
-                            tensor,
-                            k_tensor,
-                            list(times),
+                    sample = frame_rows.get(track_id, {"reason": "missing_pose"})
+                    stream["buffer"].append(sample)
+                    if len(stream["buffer"]) == p["frames"]:
+                        window, reason = _complete_subject_window(stream["buffer"])
+                        start_time = stream["buffer_start_index"] / p["sample_fps"]
+                        end_time = min(
+                            duration,
+                            (stream["buffer_start_index"] + p["frames"])
+                            / p["sample_fps"],
                         )
-                    step = p["stride_frames"]
-                    del patches[:step], coordinates[:step], times[:step]
+                        if reason:
+                            stream["unscored_windows"].append(
+                                {
+                                    "start_time": start_time,
+                                    "end_time": end_time,
+                                    "reason": reason,
+                                }
+                            )
+                        else:
+                            patch_tensor = torch.from_numpy(
+                                np.stack([row["patches"] for row in window])[None]
+                            )
+                            keypoint_tensor = torch.from_numpy(
+                                np.stack([row["coordinates"] for row in window])[None]
+                            )
+                            prediction = model(patch_tensor, keypoint_tensor)
+                            if prediction.numel() != 1:
+                                raise DetectionError("invalid_model_output")
+                            score = prediction.item()
+                            stream["rows"].append(
+                                {
+                                    "start_time": start_time,
+                                    "end_time": end_time,
+                                    "raw_score": score,
+                                }
+                            )
+                            if (
+                                stream["strongest_window"] is None
+                                or score > stream["strongest_window"][0]
+                            ):
+                                stream["strongest_window"] = (
+                                    score,
+                                    len(stream["rows"]) - 1,
+                                    patch_tensor,
+                                    keypoint_tensor,
+                                    [row["timestamp"] for row in window],
+                                )
+                        stride = p["stride_frames"]
+                        del stream["buffer"][:stride]
+                        stream["buffer_start_index"] += stride
+                    if sample.get("reason") == "missing_pose":
+                        stream["active"] = False
+                if current_poses:
+                    previous_poses = current_poses
+                pose_samples.append((index / fps, frame_tracks))
     finally:
         if pose_capture is not model_capture:
             pose_capture.release()
@@ -450,42 +557,137 @@ def run(
         "source_repository": contract.get("upstream_repository"),
         "pose_repository": contract.get("pose_repository"),
         "pose_model": "Lightweight OpenPose",
-        "privacy_input": "OpenPose receives transient normalized frames; VSViG receives the resulting pose coordinates and 15 RGB patches extracted from each frame and blurred individually before inference",
+        "privacy_input": "unblurred RGB patches and pose coordinates" if blur_strength_percent == 0 else "individually blurred RGB patches and pose coordinates",
         "blur_strength_percent": blur_strength_percent,
         "postprocessing": "per-window threshold; score is not calibrated",
     }
-    if strongest_window is not None:
-        score, row_index, tensor, k_tensor, evidence_times = strongest_window
-        evidence = _vsvig_gradcam(
-            model, tensor, k_tensor, evidence_times, contract["threshold"]
-        )
-        width, height = p["width"], p["height"]
-        evidence["pose_samples"] = [
-            {
-                "timestamp": round(timestamp, 4),
-                "points": [
-                    {
-                        "patch_index": patch_index,
-                        "x": round(
-                            max(0.0, min(1.0, float(k_tensor[0, frame_index, patch_index, 0]) / width)),
-                            5,
-                        ),
-                        "y": round(
-                            max(0.0, min(1.0, float(k_tensor[0, frame_index, patch_index, 1]) / height)),
-                            5,
-                        ),
-                        "confidence": round(
-                            max(0.0, min(1.0, float(k_tensor[0, frame_index, patch_index, 2]))),
-                            4,
-                        ),
-                    }
-                    for patch_index in range(15)
-                ],
+    subjects = []
+    for stream in streams.values():
+        rows = stream["rows"]
+        unscored_windows = stream["unscored_windows"]
+        strongest_window = stream["strongest_window"]
+        if strongest_window is not None:
+            score, row_index, patch_tensor, keypoint_tensor, evidence_times = strongest_window
+            evidence = _vsvig_gradcam(
+                model,
+                patch_tensor,
+                keypoint_tensor,
+                evidence_times,
+                contract["threshold"],
+            )
+            evidence["pose_samples"] = [
+                {
+                    "timestamp": round(timestamp, 4),
+                    "points": [
+                        {
+                            "patch_index": patch_index,
+                            "x": round(
+                                max(
+                                    0.0,
+                                    min(
+                                        1.0,
+                                        float(
+                                            keypoint_tensor[
+                                                0, frame_index, patch_index, 0
+                                            ]
+                                        )
+                                        / p["width"],
+                                    ),
+                                ),
+                                5,
+                            ),
+                            "y": round(
+                                max(
+                                    0.0,
+                                    min(
+                                        1.0,
+                                        float(
+                                            keypoint_tensor[
+                                                0, frame_index, patch_index, 1
+                                            ]
+                                        )
+                                        / p["height"],
+                                    ),
+                                ),
+                                5,
+                            ),
+                            "confidence": round(
+                                max(
+                                    0.0,
+                                    min(
+                                        1.0,
+                                        float(
+                                            keypoint_tensor[
+                                                0, frame_index, patch_index, 2
+                                            ]
+                                        ),
+                                    ),
+                                ),
+                                4,
+                            ),
+                        }
+                        for patch_index in range(15)
+                    ],
+                }
+                for frame_index, timestamp in enumerate(evidence_times)
+            ]
+            rows[row_index]["model_evidence"] = evidence
+
+        track_result = (
+            validate_predictions(rows, duration, metadata)
+            if rows
+            else {
+                "model": metadata,
+                "predictions": [],
+                "timeline": [],
+                "intervals": [],
+                "events": [],
+                "recording_probability_available": False,
             }
-            for frame_index, timestamp in enumerate(evidence_times)
-        ]
-        rows[row_index]["model_evidence"] = evidence
-    result = validate_predictions(rows, duration, metadata)
+        )
+        reasons = {window["reason"] for window in unscored_windows}
+        track_result.update(
+            {
+                "subject_id": stream["label"].lower().replace(" ", "-"),
+                "label": stream["label"],
+                "status": "scored" if rows else "unscored",
+                "unavailable_reason": (
+                    None
+                    if rows
+                    else "incomplete_pose"
+                    if "incomplete_pose" in reasons
+                    else "missing_pose"
+                    if "missing_pose" in reasons
+                    else "no_usable_windows"
+                ),
+                "unscored_windows": unscored_windows,
+            }
+        )
+        subjects.append(track_result)
+
+    if len(subjects) == 1 and subjects[0]["status"] == "scored":
+        result = {
+            field: subjects[0][field]
+            for field in (
+                "model",
+                "predictions",
+                "timeline",
+                "intervals",
+                "events",
+                "summary",
+                "recording_probability_available",
+            )
+        }
+    else:
+        result = {
+            "model": metadata,
+            "predictions": [],
+            "timeline": [],
+            "intervals": [],
+            "events": [],
+            "recording_probability_available": False,
+        }
+    result["subjects"] = subjects
     result["duration_seconds"] = frame_index / fps
     result["fps"] = fps
     result["frame_count"] = frame_index
@@ -494,6 +696,7 @@ def run(
             pose_source or model_source,
             visualization_output,
             pose_samples,
+            unblurred=blur_strength_percent == 0,
         )
     else:
         result["visualization"] = {
@@ -576,6 +779,7 @@ def inspect_pose_readiness(
     frames_with_multiple_people = 0
     frames_with_tracking_break = 0
     frames_with_incomplete_pose = 0
+    tracks = {}
     previous_poses = []
     frame_index = 0
     next_sample = 0
@@ -646,59 +850,84 @@ def inspect_pose_readiness(
                     frames_without_person += 1
                     previous_poses = []
                     continue
-                if len(entries) != 1:
+                if len(entries) > 1:
                     frames_with_multiple_people += 1
-                    previous_poses = []
-                    continue
 
-                keypoints = np.zeros((18, 3), dtype=np.float32)
-                keypoints[:, :2] = -1
-                for joint_index, point_id in enumerate(entries[0][:18]):
-                    if point_id < 0:
-                        continue
-                    point = points[int(point_id)]
-                    keypoints[joint_index] = (
-                        (point[0] * 2 - pad[1]) / scale,
-                        (point[1] * 2 - pad[0]) / scale,
-                        point[2],
+                current_poses = []
+                keypoints_by_pose = {}
+                for entry in entries:
+                    keypoints = _sanitize_keypoints(
+                        _keypoints_for_entry(entry, points, scale, pad),
+                        frame.shape[1],
+                        frame.shape[0],
+                        preprocessing["min_keypoint_score"],
                     )
-                missing = _missing_required_keypoints(
-                    keypoints,
-                    required_keypoints,
-                    frame.shape[1],
-                    frame.shape[0],
-                    preprocessing["min_keypoint_score"],
+                    tracked_pose = Pose(
+                        keypoints[:, :2].copy(), float(keypoints[:, 2].mean())
+                    )
+                    current_poses.append(tracked_pose)
+                    keypoints_by_pose[id(tracked_pose)] = keypoints
+                previous_ids = {tracked_pose.id for tracked_pose in previous_poses}
+                track_poses(
+                    previous_poses, current_poses, threshold=3, smooth=False
                 )
-                if missing:
-                    frames_with_incomplete_pose += 1
-                    for landmark_index in missing:
-                        missing_landmarks[label_by_index[landmark_index]] += 1
-                    previous_poses = []
-                    continue
-                try:
-                    previous_poses = _track_single_pose(
-                        previous_poses, keypoints, Pose, track_poses
-                    )
-                except DetectionError:
+                if previous_ids and any(
+                    tracked_pose.id not in previous_ids
+                    for tracked_pose in current_poses
+                ):
                     frames_with_tracking_break += 1
-                    previous_poses = []
+
+                missing_this_frame = set()
+                for tracked_pose in current_poses:
+                    track_id = tracked_pose.id
+                    keypoints = keypoints_by_pose[id(tracked_pose)]
+                    track = tracks.setdefault(
+                        track_id,
+                        {
+                            "first_frame": checked_frames - 1,
+                            "last_frame": checked_frames - 1,
+                            "frames": 0,
+                            "complete_frames": 0,
+                        },
+                    )
+                    track["last_frame"] = checked_frames - 1
+                    track["frames"] += 1
+                    missing = _missing_required_keypoints(
+                        keypoints,
+                        required_keypoints,
+                        frame.shape[1],
+                        frame.shape[0],
+                        preprocessing["min_keypoint_score"],
+                    )
+                    if missing:
+                        missing_this_frame.update(missing)
+                    else:
+                        track["complete_frames"] += 1
+                if missing_this_frame:
+                    frames_with_incomplete_pose += 1
+                    for landmark_index in missing_this_frame:
+                        missing_landmarks[label_by_index[landmark_index]] += 1
+                previous_poses = current_poses
     finally:
         capture.release()
 
     missing_landmarks = {
         label: count for label, count in missing_landmarks.items() if count
     }
-    ready = (
-        checked_frames == required_frames
-        and frames_without_person == 0
-        and frames_with_multiple_people == 0
-        and frames_with_tracking_break == 0
-        and frames_with_incomplete_pose == 0
+    usable_tracks = sum(
+        track["first_frame"] == 0
+        and track["last_frame"] == required_frames - 1
+        and track["frames"] == required_frames
+        and track["complete_frames"] == required_frames
+        for track in tracks.values()
     )
+    ready = checked_frames == required_frames and usable_tracks > 0
     return {
         "ready": ready,
         "checked_frames": checked_frames,
         "required_frames": required_frames,
+        "tracks_seen": len(tracks),
+        "usable_tracks": usable_tracks,
         "window_seconds": required_frames / sample_fps,
         "frames_without_person": frames_without_person,
         "frames_with_multiple_people": frames_with_multiple_people,

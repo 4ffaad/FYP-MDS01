@@ -80,7 +80,7 @@ DEFAULT_PREPROCESSING = {
     "coordinate_scale": 1.0,
     "color_order": "BGR",
     # OpenPose suppresses heatmap candidates below 0.1; this adapter keeps the
-    # same lower bound while still requiring a complete single-person pose.
+    # same lower bound for each independently tracked person stream.
     "min_keypoint_score": 0.1,
 }
 DEFAULT_THRESHOLD = 0.5
