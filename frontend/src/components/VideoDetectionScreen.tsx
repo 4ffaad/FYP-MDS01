@@ -4,7 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/button";
-import { pollRetryDelay, shouldRetryRequest } from "@/lib/api";
+import { apiMediaUrl, pollRetryDelay, shouldRetryRequest } from "@/lib/api";
 import {
   VideoJobLoadingState,
   VideoProcessingStatus,
@@ -17,10 +17,11 @@ import {
   detectionVisualizationUrl,
   type DetectionJob,
   type DetectionResult,
+  type DetectionTrackResult,
   videoJobFailureMessage,
 } from "@/lib/video-detection";
+import { SyncedVideoReview } from "./SyncedVideoReview";
 import { VideoReviewPanel } from "@/components/VideoReviewPanel";
-import { VideoBlurStrengthControl } from "@/components/VideoBlurStrengthControl";
 import { ModalityWorkspaceTabs } from "./ModalityWorkspaceTabs";
 
 function formatTime(seconds: number) {
@@ -34,6 +35,33 @@ function formatRetentionExpiry(value: string) {
   }).format(new Date(value));
 }
 
+function resultForTrack(
+  result: DetectionResult,
+  track: DetectionTrackResult | undefined,
+): DetectionResult {
+  return {
+    ...result,
+    predictions: track?.predictions ?? [],
+    timeline: track?.timeline ?? [],
+    intervals: track?.intervals ?? [],
+    events: track?.events ?? [],
+    summary: track?.summary,
+  };
+}
+
+function trackAvailability(track: DetectionTrackResult) {
+  if (track.status === "scored") {
+    return `${track.predictions.length} scored window${track.predictions.length === 1 ? "" : "s"}`;
+  }
+  if (track.unavailable_reason === "incomplete_pose") {
+    return "No score · selected pose points were incomplete";
+  }
+  if (track.unavailable_reason === "missing_pose") {
+    return "No score · track was not visible for a complete window";
+  }
+  return "No complete five-second model window";
+}
+
 export function VideoDetectionUploadScreen() {
   const [file, setFile] = useState<File | null>(null);
   const [submittedJobId, setSubmittedJobId] = useState<string | null>(null);
@@ -43,7 +71,6 @@ export function VideoDetectionUploadScreen() {
     "uploading",
   );
   const [error, setError] = useState<string | null>(null);
-  const [blurStrengthPercent, setBlurStrengthPercent] = useState(100);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -63,7 +90,7 @@ export function VideoDetectionUploadScreen() {
         },
         undefined,
         undefined,
-        blurStrengthPercent,
+        0,
       );
       setSubmittedJobId(job.job_id);
       setFile(null);
@@ -83,7 +110,7 @@ export function VideoDetectionUploadScreen() {
         <p className="eyebrow">Video workspace</p>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">Video</h1>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-muted">
-          Upload a clip once. MDS01 scores movement and creates a face-blurred
+          Upload a clip once. MDS01 scores movement and creates an owner-only
           review copy automatically.
         </p>
         <ModalityWorkspaceTabs modality="video" active="upload" />
@@ -131,11 +158,6 @@ export function VideoDetectionUploadScreen() {
                 setFile(event.target.files?.[0] ?? null);
               }}
             />
-            <VideoBlurStrengthControl
-              value={blurStrengthPercent}
-              onChange={setBlurStrengthPercent}
-              disabled={busy}
-            />
           </div>
 
           <details className="rounded-lg border border-rule px-4 py-3 text-sm">
@@ -143,9 +165,9 @@ export function VideoDetectionUploadScreen() {
               Privacy and model details
             </summary>
             <p className="mt-3 leading-6 text-ink-muted">
-              VSViG receives pose coordinates and 15 blurred patches. The review
-              copy blurs the tracked face; uncertain detection falls back to
-              full-frame blur.
+              VSViG receives pose coordinates and 15 unblurred RGB patches.
+              Originals and the unblurred review copy are encrypted until case
+              deletion.
             </p>
           </details>
           {error && (
@@ -187,6 +209,7 @@ export function VideoDetectionJobScreen({
 }) {
   const [job, setJob] = useState<DetectionJob | null>(null);
   const [result, setResult] = useState<DetectionResult | null>(null);
+  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resultRetryKey, setResultRetryKey] = useState(0);
 
@@ -201,7 +224,7 @@ export function VideoDetectionJobScreen({
         if (abort.signal.aborted) return;
 
         setJob(nextJob);
-        if (nextJob.status === "ready") {
+        if (nextJob.status === "ready" && !nextJob.reference_only) {
           try {
             const nextResult = await getDetectionResults(jobId, abort.signal);
             if (abort.signal.aborted) return;
@@ -252,6 +275,16 @@ export function VideoDetectionJobScreen({
   }, [jobId, resultRetryKey]);
 
   const duration = job?.duration_seconds || 1;
+  const tracks = result?.subjects ?? [];
+  const selectedTrack =
+    tracks.length === 1
+      ? tracks[0]
+      : tracks.find((track) => track.subject_id === selectedTrackId);
+  const trackResult = result
+    ? tracks.length
+      ? resultForTrack(result, selectedTrack)
+      : result
+    : null;
 
   return (
     <div className="page-frame">
@@ -293,9 +326,49 @@ export function VideoDetectionJobScreen({
         ) : (
           <>
             <VideoProcessingStatus job={job} />
-            <p className="mt-3 text-sm text-ink-muted">
-              VSViG patch-blur setting: {job.blur_strength_percent}%.
-            </p>
+            {job.source_available && (
+              <a
+                className="mt-3 inline-block text-sm underline"
+                href={apiMediaUrl(
+                  `/api/video-detection/jobs/${encodeURIComponent(jobId)}/original`,
+                )}
+              >
+                Download original video
+              </a>
+            )}
+            {job.retention_policy === "until-deletion" && (
+              <p className="mt-2 text-xs text-ink-muted">
+                Encrypted originals and results are retained until case
+                deletion.
+              </p>
+            )}
+            {job.reference_only && job.video_available && (
+              <SyncedVideoReview
+                clips={[job]}
+                selectedJobId={jobId}
+                onSelectedJobIdChange={() => {}}
+                selectedEegTime={null}
+                onEegTimeSelect={() => {}}
+                onPlaybackEegTime={() => {}}
+                recordingDurationSeconds={0}
+                seekRequest={
+                  typeof initialVideoTimeSeconds === "number"
+                    ? {
+                        jobId,
+                        videoSeconds: initialVideoTimeSeconds,
+                        requestId: 0,
+                      }
+                    : null
+                }
+              />
+            )}
+
+            {job.blur_strength_percent > 0 && (
+              <p className="mt-3 text-sm text-ink-muted">
+                Historical VSViG patch-blur setting: {job.blur_strength_percent}
+                %.
+              </p>
+            )}
             {job.error && (
               <p
                 role="alert"
@@ -314,49 +387,130 @@ export function VideoDetectionJobScreen({
               </p>
             )}
 
-            {job.status === "failed" && job.video_available && (
-              <section className="panel mt-6 overflow-hidden p-5 sm:p-6">
-                <div>
-                  <h2 className="text-lg font-semibold">
-                    Privacy-safe video review
-                  </h2>
-                  <p className="mt-2 text-sm leading-6 text-ink-muted">
-                    VSViG did not produce a score for this clip. You can still
-                    review its timing alongside the EEG. The retained video
-                    blurs the face; the viewer can also show the 15 model
-                    patches and their Grad-CAM evidence.
-                  </p>
-                </div>
-                <video
-                  className="mt-4 aspect-video w-full rounded-xl bg-black object-contain"
-                  src={detectionVisualizationUrl(jobId)}
-                  controls
-                  playsInline
-                  preload="metadata"
-                  crossOrigin="use-credentials"
-                  aria-label="Privacy-safe video review without a VSViG score"
-                  onLoadedMetadata={(event) => {
-                    if (
-                      typeof initialVideoTimeSeconds === "number" &&
-                      Number.isFinite(initialVideoTimeSeconds)
-                    ) {
-                      event.currentTarget.currentTime = Math.max(
-                        0,
-                        Math.min(
-                          event.currentTarget.duration,
-                          initialVideoTimeSeconds,
-                        ),
-                      );
-                    }
-                  }}
-                >
-                  Your browser cannot play this review video.
-                </video>
-              </section>
-            )}
+            {job.status === "failed" &&
+              job.video_available &&
+              !job.reference_only && (
+                <section className="panel mt-6 overflow-hidden p-5 sm:p-6">
+                  <div>
+                    <h2 className="text-lg font-semibold">
+                      Privacy-safe video review
+                    </h2>
+                    <p className="mt-2 text-sm leading-6 text-ink-muted">
+                      VSViG did not produce a score for this clip. You can still
+                      review its timing alongside the EEG. The retained video
+                      blurs the face; the viewer can also show the 15 model
+                      patches and their Grad-CAM evidence.
+                    </p>
+                  </div>
+                  <video
+                    className="mt-4 aspect-video w-full rounded-xl bg-black object-contain"
+                    src={detectionVisualizationUrl(jobId)}
+                    controls
+                    playsInline
+                    preload="metadata"
+                    crossOrigin="use-credentials"
+                    aria-label="Privacy-safe video review without a VSViG score"
+                    onLoadedMetadata={(event) => {
+                      if (
+                        typeof initialVideoTimeSeconds === "number" &&
+                        Number.isFinite(initialVideoTimeSeconds)
+                      ) {
+                        event.currentTarget.currentTime = Math.max(
+                          0,
+                          Math.min(
+                            event.currentTarget.duration,
+                            initialVideoTimeSeconds,
+                          ),
+                        );
+                      }
+                    }}
+                  >
+                    Your browser cannot play this review video.
+                  </video>
+                </section>
+              )}
 
             {result && (
               <>
+                {tracks.length > 0 && (
+                  <section
+                    className="panel mt-6 p-5 sm:p-6"
+                    aria-labelledby="video-track-heading"
+                  >
+                    <h2
+                      id="video-track-heading"
+                      className="text-lg font-semibold"
+                    >
+                      Person tracks
+                    </h2>
+                    <p className="mt-2 text-sm leading-6 text-ink-muted">
+                      Each complete track is scored separately. Track labels
+                      follow detection order and do not identify the patient.
+                    </p>
+                    <fieldset className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <legend className="sr-only">
+                        Choose a person track for review
+                      </legend>
+                      {tracks.map((track) => (
+                        <label
+                          key={track.subject_id}
+                          className="flex min-h-14 cursor-pointer items-start gap-3 rounded-lg border border-rule p-3 hover:bg-surface-soft"
+                        >
+                          <input
+                            className="mt-1 size-4 accent-teal"
+                            type="radio"
+                            name={"video-track-" + jobId}
+                            value={track.subject_id}
+                            checked={
+                              selectedTrack?.subject_id === track.subject_id
+                            }
+                            onChange={() =>
+                              setSelectedTrackId(track.subject_id)
+                            }
+                          />
+                          <span className="min-w-0">
+                            <span className="block text-sm font-semibold">
+                              {track.label}
+                            </span>
+                            <span className="block text-xs text-ink-muted">
+                              {trackAvailability(track)}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </fieldset>
+                    {tracks.length > 1 && !selectedTrack && (
+                      <p className="mt-4 text-sm text-ink-muted" role="status">
+                        The video shows all detected track labels. Choose a
+                        track to see its separate score timeline.
+                      </p>
+                    )}
+                    {selectedTrack?.status === "unscored" && (
+                      <p
+                        className="mt-4 rounded-md border border-amber/40 bg-amber-soft px-4 py-3 text-sm leading-6"
+                        role="status"
+                      >
+                        {selectedTrack.label} remains viewable, but VSViG
+                        produced no score for it. The selected 15 model points
+                        must be present in a complete five-second window.
+                      </p>
+                    )}
+                    {!!selectedTrack?.unscored_windows.length &&
+                      selectedTrack.status === "scored" && (
+                        <p
+                          className="mt-4 rounded-md border border-amber/40 bg-amber-soft px-4 py-3 text-sm leading-6"
+                          role="status"
+                        >
+                          {selectedTrack.unscored_windows.length} window
+                          {selectedTrack.unscored_windows.length === 1
+                            ? " was"
+                            : "s were"}{" "}
+                          left unscored because the track was missing or one of
+                          the selected model points was incomplete.
+                        </p>
+                      )}
+                  </section>
+                )}
                 {result.privacy?.model_input_adaptation === "letterbox" && (
                   <section
                     className="mt-6 rounded-lg border border-amber/40 bg-amber-soft px-5 py-4"
@@ -377,19 +531,23 @@ export function VideoDetectionJobScreen({
                   </section>
                 )}
                 <VideoReviewPanel
-                  result={result}
+                  result={trackResult ?? result}
                   duration={duration}
                   videoAvailable={job.video_available}
                   videoUrl={detectionVisualizationUrl(jobId)}
                   initialTimeSeconds={initialVideoTimeSeconds}
                 />
-                <VideoGradCamSummary
-                  prediction={result.predictions.find(
-                    (prediction) => prediction.model_evidence,
-                  )}
-                  patchLabels={result.model.patch_labels ?? []}
-                />
-                <WindowScores predictions={result.predictions} />
+                {(!tracks.length || selectedTrack) && (
+                  <VideoGradCamSummary
+                    prediction={trackResult?.predictions.find(
+                      (prediction) => prediction.model_evidence,
+                    )}
+                    patchLabels={result.model.patch_labels ?? []}
+                  />
+                )}
+                {!!trackResult?.predictions.length && (
+                  <WindowScores predictions={trackResult.predictions} />
+                )}
                 <ModelDetails model={result.model} privacy={result.privacy} />
               </>
             )}

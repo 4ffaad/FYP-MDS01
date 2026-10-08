@@ -169,7 +169,7 @@ export function VideoUploadStatus({
               {preparing
                 ? "The EEG session is being created so both results can share this patient case. EEG and video inference run independently."
                 : checkingPose
-                  ? "The upload is complete. OpenPose checks the first five-second window for one trackable person and all 15 required landmarks. Later frames are checked again during inference."
+                  ? "The upload is complete. OpenPose checks for at least one continuous person track with the 15 VSViG-selected landmarks. Multiple people can be scored separately."
                   : uploadAcknowledged
                     ? "The upload is complete. The backend is acknowledging the file and creating the processing job."
                     : "The selected video is moving from your browser to the private backend. Audio is not used by the visual model."}

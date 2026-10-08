@@ -72,11 +72,15 @@ export interface DetectionJob {
   fps: number;
   blur_strength_percent: number;
   review_privacy_method?:
+    | "unblurred-owner-source"
     | "legacy-face-blur"
     | "pose-region-patient-blur-with-full-frame-fallback"
     | "tracked-face-blur-with-full-frame-fallback";
   created_at: string;
-  retention_expires_at: string;
+  retention_expires_at: string | null;
+  reference_only?: boolean;
+  source_available?: boolean;
+  retention_policy?: "until-deletion" | "legacy-expiry";
   video_available: boolean;
   error: string | null;
   sync?: VideoEegSync;
@@ -102,13 +106,13 @@ export function videoJobFailureMessage(
     normalized.includes("opening five-second pose check") &&
     normalized.includes("landmark")
   ) {
-    return "OpenPose could not find all 15 required landmarks in the opening five seconds. These include points from the face through both ankles; this is a body-pose failure, not a face-blur failure. The clip has no VSViG score.";
+    return "No person track had all 15 VSViG-selected landmarks in every opening sample. Multiple people are supported; other OpenPose joints are not required.";
   }
   if (normalized.includes("landmark")) {
-    return "OpenPose missed one or more of the 15 body landmarks VSViG needs in a sampled frame. Keep the face through both ankles visible. This clip has no score; clearer lighting and full-body framing may help.";
+    return "Some sampled windows lacked one or more of the 15 VSViG-selected landmarks. Those windows remain unscored; other complete person tracks or windows may still have scores.";
   }
   if (normalized.includes("single patient") || normalized.includes("person")) {
-    return "Pose extraction could not track exactly one person through this clip, so VSViG did not produce a score. Check for occlusion or other people entering the frame.";
+    return "Pose extraction could not establish a stable person stream for a complete model window. Multiple people are supported and scored separately when their selected landmarks are visible.";
   }
   if (
     normalized.includes("readable avi") ||
@@ -198,13 +202,17 @@ export interface DetectionResult {
     event_count: number;
     threshold: number;
   };
+  subjects?: DetectionTrackResult[];
   recording_probability_available: false;
   privacy?: {
     method:
+      | "unblurred-owner-source"
       | "pose-region-patient-blur-with-full-frame-fallback"
       | "tracked-face-blur-with-full-frame-fallback"
       | "face-detection-and-full-frame-blur";
-    model_input: "15 individually blurred RGB patches per sampled frame";
+    model_input:
+      | "15 individually blurred RGB patches per sampled frame"
+      | "15 unblurred RGB patches per sampled frame";
     blur_strength_percent?: number;
     pose_model_input?: string;
     model_input_adaptation?: "none" | "letterbox";
@@ -229,6 +237,7 @@ export interface DetectionResult {
     media_type: "video/mp4";
     audio_included: false;
     privacy_method:
+      | "unblurred-owner-source-and-skeleton-overlay"
       | "pose-region-patient-blur-with-full-frame-fallback-and-skeleton-overlay"
       | "tracked-face-blur-with-full-frame-fallback-and-skeleton-overlay"
       | "face-blur-with-full-frame-fallback-and-skeleton-overlay";
@@ -238,6 +247,27 @@ export interface DetectionResult {
     full_frame_fallback_frames: number;
     quality_flags: string[];
   };
+}
+
+export interface DetectionTrackResult {
+  subject_id: string;
+  label: string;
+  status: "scored" | "unscored";
+  unavailable_reason:
+    | "incomplete_pose"
+    | "missing_pose"
+    | "no_usable_windows"
+    | null;
+  unscored_windows: {
+    start_time: number;
+    end_time: number;
+    reason: "incomplete_pose" | "missing_pose";
+  }[];
+  predictions: DetectionResult["predictions"];
+  timeline?: DetectionResult["timeline"];
+  intervals: DetectionResult["intervals"];
+  events?: DetectionResult["events"];
+  summary?: DetectionResult["summary"];
 }
 
 export interface VideoPreflightResult {
@@ -255,6 +285,8 @@ export interface VideoPreflightResult {
     checked_frames: number;
     required_frames: number;
     window_seconds: number;
+    tracks_seen: number;
+    usable_tracks: number;
     frames_without_person: number;
     frames_with_multiple_people: number;
     frames_with_tracking_break: number;
@@ -285,8 +317,9 @@ export async function uploadDetection(
   progress: (value: number) => void,
   caseId?: string,
   signal?: AbortSignal,
-  blurStrengthPercent = 100,
+  blurStrengthPercent = 0,
   veegSync?: { sourceName: string; groupId: string },
+  referenceOnly = false,
 ) {
   const safeName = prepareVideoUploadFile(file);
   const extension = safeName.name.split(".").pop() ?? "";
@@ -297,6 +330,7 @@ export async function uploadDetection(
     signal,
     {
       "X-Video-Format": extension,
+      ...(referenceOnly ? { "X-Video-Purpose": "reference" } : {}),
       "X-Model-Blur-Percent": String(blurStrengthPercent),
       ...(caseId ? { "X-Case-ID": caseId } : {}),
       ...(veegSync

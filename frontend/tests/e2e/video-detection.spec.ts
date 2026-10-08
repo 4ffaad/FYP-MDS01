@@ -162,10 +162,40 @@ test.beforeEach(async ({ page }) => {
     }
     return route.fulfill({
       json: url.endsWith("/predictions")
-        ? result
+        ? uploadBlurStrength === 0
+          ? {
+              ...result,
+              privacy: {
+                ...result.privacy,
+                method: "unblurred-owner-source",
+                model_input: "15 unblurred RGB patches per sampled frame",
+                blur_strength_percent: 0,
+                face_blur_coverage: null,
+                quality_flags: [],
+              },
+              visualization: {
+                ...result.visualization,
+                privacy_method: "unblurred-owner-source-and-skeleton-overlay",
+                face_blur_coverage: null,
+                full_frame_fallback_frames: 0,
+                quality_flags: [],
+              },
+            }
+          : result
         : url.endsWith("/jobs") && route.request().method() === "GET"
           ? { jobs: [job] }
-          : { job: { ...job, blur_strength_percent: uploadBlurStrength } },
+          : {
+              job: {
+                ...job,
+                blur_strength_percent: uploadBlurStrength,
+                review_privacy_method:
+                  uploadBlurStrength === 0
+                    ? "unblurred-owner-source"
+                    : job.review_privacy_method,
+                retention_policy: "until-deletion",
+                retention_expires_at: null,
+              },
+            },
       headers: {
         "Access-Control-Allow-Origin": "http://127.0.0.1:3001",
         "Access-Control-Allow-Credentials": "true",
@@ -178,27 +208,12 @@ test("uploads and reviews window supports without confidence percentages", async
   page,
 }) => {
   await page.goto("/video-detection");
-  const blurStrength = page.getByRole("slider", {
-    name: "VSViG patch blur strength",
-  });
-  await expect(blurStrength).toHaveValue("100");
-  await blurStrength.focus();
-  await blurStrength.press("Home");
-  await expect(blurStrength).toHaveValue("50");
   await expect(
     page.getByText(
-      "Upload a clip once. MDS01 scores movement and creates a face-blurred review copy automatically.",
+      "Upload a clip once. MDS01 scores movement and creates an owner-only review copy automatically.",
     ),
   ).toBeVisible();
-  await page.getByText("Preview face blur", { exact: true }).click();
-  await expect(
-    page.getByRole("img", {
-      name: "VSViG example video frame with the face blurred and body pose overlaid",
-    }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Public VSViG example · face blurred, body visible."),
-  ).toBeVisible();
+  await expect(page.getByRole("slider", { name: /blur/i })).toHaveCount(0);
   await page.getByLabel("Video", { exact: true }).setInputFiles({
     name: "synthetic.mp4",
     mimeType: "video/mp4",
@@ -210,13 +225,17 @@ test("uploads and reviews window supports without confidence percentages", async
       request.method() === "POST",
   );
   await page.getByRole("button", { name: "Upload video", exact: true }).click();
-  expect((await uploadRequest).headers()["x-model-blur-percent"]).toBe("50");
+  expect((await uploadRequest).headers()["x-model-blur-percent"]).toBe("0");
   await expect(page).toHaveURL(/\/video-detection$/);
   await page
     .getByRole("link", { name: "open its review when you’re ready" })
     .click();
   await expect(page).toHaveURL(/video-detection\/VID-synthetic/);
-  await expect(page.getByText("VSViG patch-blur setting: 50%.")).toBeVisible();
+  await expect(
+    page
+      .getByTestId("video-review-frame")
+      .getByText("Owner reference · unblurred"),
+  ).toBeVisible();
   await expect(page.locator("video")).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "VSViG score over time" }),
@@ -225,21 +244,8 @@ test("uploads and reviews window supports without confidence percentages", async
     page.getByRole("heading", { name: "Threshold crossed" }),
   ).toBeVisible();
   await expect(
-    page.getByText(
-      "Face blur · 80% of frames · full-frame fallback 20 frames",
-      {
-        exact: true,
-      },
-    ),
-  ).toBeVisible();
-  const displayBlur = page.getByRole("group", { name: "Video display blur" });
-  await displayBlur.getByRole("radio", { name: "Blur all" }).check();
-  await expect(page.locator("video").locator("..")).toHaveClass(/blur-\[8px\]/);
-  await displayBlur.getByRole("radio", { name: "Face blur only" }).check();
-  await expect(page.locator("video").locator("..")).not.toHaveClass(
-    /blur-\[8px\]/,
-  );
-  await displayBlur.getByRole("radio", { name: "Face + 15 patches" }).check();
+    page.getByRole("group", { name: "Video display blur" }),
+  ).toHaveCount(0);
   const videoFrame = page.getByTestId("video-review-frame");
   const supportsFullscreen = await videoFrame.evaluate(
     (frame) => typeof frame.requestFullscreen === "function",
@@ -254,7 +260,11 @@ test("uploads and reviews window supports without confidence percentages", async
   } else {
     await expect(videoFrame).toHaveClass(/fixed/);
   }
-  await expect(videoFrame.getByText("Face + 15 patches")).toBeVisible();
+  await expect(
+    page
+      .getByTestId("video-review-frame")
+      .getByText("Owner reference · unblurred"),
+  ).toBeVisible();
   await videoFrame.getByRole("button", { name: "Exit full screen" }).click();
   if (supportsFullscreen) {
     await expect
@@ -287,9 +297,9 @@ test("uploads and reviews window supports without confidence percentages", async
     "left: 80%;",
   );
   await expect(
-    page.getByText("Encrypted result expires", {
-      exact: false,
-    }),
+    page.getByText(
+      "Encrypted originals and results are retained until case deletion.",
+    ),
   ).toBeVisible();
   await expect(
     page.getByText("Selected video time", { exact: true }),
@@ -298,7 +308,7 @@ test("uploads and reviews window supports without confidence percentages", async
     page.getByRole("progressbar", { name: "Video review completion" }),
   ).toHaveAttribute("aria-valuenow", "100");
   await expect(page.locator("main")).not.toContainText(/confidence/i);
-  // Only the authenticated, redacted visualization is fetched for playback.
+  // Only the authenticated owner reference is fetched for playback.
   expect(mediaAssetRequests).toEqual([
     "/api/video-detection/jobs/VID-synthetic/visualization",
   ]);
@@ -318,12 +328,79 @@ test("uploads and reviews window supports without confidence percentages", async
   ).toBeVisible();
   await page.getByText("Model and processing details", { exact: true }).click();
   await expect(
-    page.getByText("50% of default strength", { exact: true }),
+    page.getByText("0% of default strength", { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText("Source timestamp offset", { exact: true }),
   ).toHaveCount(0);
   await expect(page.getByText("+0.118 s", { exact: true })).toHaveCount(0);
+});
+
+test("separates scores for multiple people and lets the reviewer choose a track", async ({
+  page,
+}) => {
+  const firstTrack = {
+    subject_id: "track-1",
+    label: "Track 1",
+    status: "unscored",
+    unavailable_reason: "incomplete_pose",
+    unscored_windows: [
+      {
+        start_time: 0,
+        end_time: 5,
+        reason: "incomplete_pose",
+      },
+    ],
+    predictions: [],
+    timeline: [],
+    intervals: [],
+    events: [],
+  };
+  const secondTrack = {
+    subject_id: "track-2",
+    label: "Track 2",
+    status: "scored",
+    unavailable_reason: null,
+    unscored_windows: [],
+    predictions: result.predictions,
+    timeline: result.timeline,
+    intervals: result.intervals,
+    events: result.events,
+    summary: result.summary,
+  };
+  await page.route(
+    "**/api/video-detection/jobs/VID-synthetic/predictions",
+    (route) =>
+      route.fulfill({
+        json: {
+          ...result,
+          predictions: [],
+          timeline: [],
+          intervals: [],
+          events: [],
+          summary: undefined,
+          subjects: [firstTrack, secondTrack],
+        },
+      }),
+  );
+
+  await page.goto("/video-detection/VID-synthetic");
+  await expect(
+    page.getByText(
+      "Track labels follow detection order and do not identify the patient.",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "No scored window selected" }),
+  ).toBeVisible();
+  await page.getByRole("radio", { name: /Track 2/ }).check();
+  await expect(
+    page.getByRole("heading", { name: "Threshold crossed" }),
+  ).toBeVisible();
+  await page.getByText("All window scores", { exact: true }).click();
+  await expect(
+    page.getByRole("table").getByText("0:01.0–0:03.0", { exact: true }),
+  ).toBeVisible();
 });
 
 test("zero face-blur coverage reports full-frame fallback in the retained review", async ({
@@ -372,7 +449,7 @@ test("video review history keeps rejected clips and shows the failure reason", a
     duration_seconds: 5.08,
     video_available: false,
     error:
-      "The opening five-second pose check missed one or more of VSViG's 15 required landmarks, from the face through the ankles.",
+      "The opening five-second pose check found no track with all 15 required landmarks selected by VSViG.",
   };
   await page.route("**/api/video-detection/jobs", (route) =>
     route.fulfill({ json: { jobs: [failedJob] } }),
@@ -386,11 +463,11 @@ test("video review history keeps rejected clips and shows the failure reason", a
   const failedReview = page.getByRole("link", {
     name: /Synthetic rejected video/,
   });
-  await expect(failedReview).toContainText("OpenPose could not find all 15");
+  await expect(failedReview).toContainText("No person track had all 15");
   await failedReview.click();
   await expect(page).toHaveURL(/\/video-detection\/VID-failed$/);
   await expect(page.locator('p[role="alert"]')).toContainText(
-    "body-pose failure",
+    "other OpenPose joints are not required",
   );
   await expect(
     page.getByRole("heading", { name: "VSViG score over time" }),
@@ -581,8 +658,8 @@ test("shows where a failed pose run stopped", async ({ page }) => {
   await expect(steps.getByText("Pose + VSViG", { exact: true })).toBeVisible();
   await expect(steps.getByText("Stopped here", { exact: true })).toBeVisible();
   await expect(
-    page.getByRole("alert").filter({ hasText: "OpenPose missed" }),
-  ).toContainText("no score");
+    page.getByRole("alert").filter({ hasText: "Some sampled windows lacked" }),
+  ).toContainText("remain unscored");
 });
 
 test("shows the upload handoff while the backend acknowledges the video", async ({

@@ -38,13 +38,13 @@ test("explains why the video pose gate prevented VSViG from running", () => {
       "failed",
       "Too many patient landmarks were missing or obscured for this model.",
     ),
-  ).toContain("the 15 body landmarks VSViG needs");
+  ).toContain("15 VSViG-selected landmarks");
   expect(
     videoJobFailureMessage(
       "failed",
       "A single patient could not be identified throughout this clip.",
     ),
-  ).toContain("track exactly one person");
+  ).toContain("Multiple people are supported");
 });
 
 test("classifies one explicitly selected folder without filename-based cross-modal pairing", () => {
@@ -1530,9 +1530,7 @@ test("one case queues all videos independently from EEG before polling", async (
     await videoList.locator("summary").click();
     await expect(videoList.getByText("Video 1", { exact: true })).toBeVisible();
     await expect(videoList.getByText("Video 9", { exact: true })).toBeVisible();
-    await expect(videoList).toContainText(
-      "Pose extraction could not find all 15 body landmarks required by VSViG",
-    );
+    await expect(videoList).toContainText("VSViG-selected landmarks");
     await page.getByRole("link", { name: "Open patient review" }).click();
     await expect(page).toHaveURL(/\/cases\/CASE-VIDEO-SYNTHETIC$/);
     await expect(

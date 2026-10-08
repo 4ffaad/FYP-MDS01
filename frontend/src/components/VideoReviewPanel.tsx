@@ -109,18 +109,25 @@ export function VideoReviewPanel({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const timeline = useMemo(() => timelineFor(result), [result]);
   const events = useMemo(() => eventsFor(result, timeline), [result, timeline]);
+  const hasScores = timeline.length > 0;
   const peakScore =
     result.summary?.peak_score ??
-    Math.max(...timeline.map((point) => point.score), 0);
+    (hasScores ? Math.max(...timeline.map((point) => point.score), 0) : 0);
   const hasPotentialEvent =
-    result.summary?.potential_event_detected ?? events.length > 0;
+    result.summary?.potential_event_detected ??
+    (hasScores && events.length > 0);
   const usesPatientBlur =
     result.visualization?.privacy_method.includes("patient-blur") ??
     result.privacy?.method.includes("patient-blur") ??
     false;
-  const selectiveBlurLabel = usesPatientBlur
-    ? "Legacy patient blur"
-    : "Face blur";
+  const unblurred =
+    result.visualization?.privacy_method.startsWith("unblurred-owner-source") ??
+    false;
+  const selectiveBlurLabel = unblurred
+    ? "Owner reference · unblurred"
+    : usesPatientBlur
+      ? "Legacy patient blur"
+      : "Face blur";
   const blurCoverage =
     result.visualization?.face_blur_coverage ??
     result.privacy?.face_blur_coverage ??
@@ -132,19 +139,20 @@ export function VideoReviewPanel({
       : typeof faceDetectionCoverage === "number"
         ? `${formatPercent(faceDetectionCoverage)} face detections`
         : null;
-  const currentPoint =
-    timeline.find(
-      (point) =>
-        currentTime >= point.start_time && currentTime < point.end_time,
-    ) ??
-    timeline.reduce(
-      (closest, point) =>
-        Math.abs(point.timestamp - currentTime) <
-        Math.abs(closest.timestamp - currentTime)
-          ? point
-          : closest,
-      timeline[0],
-    );
+  const currentPoint = hasScores
+    ? (timeline.find(
+        (point) =>
+          currentTime >= point.start_time && currentTime < point.end_time,
+      ) ??
+      timeline.reduce(
+        (closest, point) =>
+          Math.abs(point.timestamp - currentTime) <
+          Math.abs(closest.timestamp - currentTime)
+            ? point
+            : closest,
+        timeline[0],
+      ))
+    : undefined;
   const currentEvent = events.find(
     (event) => currentTime >= event.start_time && currentTime <= event.end_time,
   );
@@ -163,8 +171,9 @@ export function VideoReviewPanel({
     currentTime,
     result.model.sample_fps,
   );
-  const selectedBlurModeLabel =
-    blurMode === "all"
+  const selectedBlurModeLabel = unblurred
+    ? "Owner reference · unblurred"
+    : blurMode === "all"
       ? "Full-frame blur"
       : blurMode === "face"
         ? `${selectiveBlurLabel} only`
@@ -239,10 +248,20 @@ export function VideoReviewPanel({
             </h2>
           </div>
           <Label
-            variant={hasPotentialEvent ? "attention" : "success"}
+            variant={
+              !hasScores
+                ? "secondary"
+                : hasPotentialEvent
+                  ? "attention"
+                  : "success"
+            }
             size="large"
           >
-            {hasPotentialEvent ? "Threshold crossed" : "No flagged intervals"}
+            {!hasScores
+              ? "No track score"
+              : hasPotentialEvent
+                ? "Threshold crossed"
+                : "No flagged intervals"}
           </Label>
         </div>
       </div>
@@ -250,41 +269,45 @@ export function VideoReviewPanel({
       <div className="grid gap-6 p-5 sm:p-7 lg:grid-cols-[minmax(0,1.15fr)_minmax(17rem,0.85fr)]">
         <div className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <fieldset className="flex flex-wrap gap-3 text-xs text-ink-muted">
-              <legend className="sr-only">Video display blur</legend>
-              <label className="inline-flex cursor-pointer items-center gap-2">
-                <input
-                  className="size-4 accent-teal"
-                  type="radio"
-                  name={`video-display-blur-${result.model.model_version}`}
-                  checked={blurMode === "face+patches"}
-                  onChange={() => setBlurMode("face+patches")}
-                />
-                Face + 15 patches
-              </label>
-              <label className="inline-flex cursor-pointer items-center gap-2">
-                <input
-                  className="size-4 accent-teal"
-                  type="radio"
-                  name={`video-display-blur-${result.model.model_version}`}
-                  checked={blurMode === "face"}
-                  onChange={() => setBlurMode("face")}
-                />
-                {selectiveBlurLabel} only
-              </label>
-              <label className="inline-flex cursor-pointer items-center gap-2">
-                <input
-                  className="size-4 accent-teal"
-                  type="radio"
-                  name={`video-display-blur-${result.model.model_version}`}
-                  checked={blurMode === "all"}
-                  onChange={() => setBlurMode("all")}
-                />
-                Blur all
-              </label>
-            </fieldset>
+            {!unblurred && (
+              <fieldset className="flex flex-wrap gap-3 text-xs text-ink-muted">
+                <legend className="sr-only">Video display blur</legend>
+                <label className="inline-flex cursor-pointer items-center gap-2">
+                  <input
+                    className="size-4 accent-teal"
+                    type="radio"
+                    name={`video-display-blur-${result.model.model_version}`}
+                    checked={blurMode === "face+patches"}
+                    onChange={() => setBlurMode("face+patches")}
+                  />
+                  Face + 15 patches
+                </label>
+                <label className="inline-flex cursor-pointer items-center gap-2">
+                  <input
+                    className="size-4 accent-teal"
+                    type="radio"
+                    name={`video-display-blur-${result.model.model_version}`}
+                    checked={blurMode === "face"}
+                    onChange={() => setBlurMode("face")}
+                  />
+                  {selectiveBlurLabel} only
+                </label>
+                <label className="inline-flex cursor-pointer items-center gap-2">
+                  <input
+                    className="size-4 accent-teal"
+                    type="radio"
+                    name={`video-display-blur-${result.model.model_version}`}
+                    checked={blurMode === "all"}
+                    onChange={() => setBlurMode("all")}
+                  />
+                  Blur all
+                </label>
+              </fieldset>
+            )}
             <span className="text-xs text-ink-muted">
-              Face blur · patch blur{" "}
+              {unblurred
+                ? "Unblurred model input · owner-only playback"
+                : "Face blur · patch blur"}{" "}
               {result.privacy?.blur_strength_percent ?? "—"}%
             </span>
             <button
@@ -317,7 +340,7 @@ export function VideoReviewPanel({
                 }
               >
                 <div
-                  className={`absolute inset-0 ${blurMode === "all" ? "blur-[8px]" : ""}`}
+                  className={`absolute inset-0 ${!unblurred && blurMode === "all" ? "blur-[8px]" : ""}`}
                 >
                   <video
                     ref={videoRef}
@@ -355,7 +378,7 @@ export function VideoReviewPanel({
                     strengthPercent={
                       result.privacy?.blur_strength_percent ?? 100
                     }
-                    enabled={blurMode === "face+patches"}
+                    enabled={!unblurred && blurMode === "face+patches"}
                   />
                   <VideoGradCamOverlay
                     poseSample={currentPoseSample}
@@ -440,9 +463,11 @@ export function VideoReviewPanel({
         >
           <p className="eyebrow">Model assessment</p>
           <h3 id="assessment-heading" className="mt-2 text-lg font-semibold">
-            {hasPotentialEvent
-              ? "Threshold crossed"
-              : "No threshold-crossing interval found"}
+            {!hasScores
+              ? "No scored window selected"
+              : hasPotentialEvent
+                ? "Threshold crossed"
+                : "No threshold-crossing interval found"}
           </h3>
           <p className="mt-2 text-sm text-ink-muted">
             Research output · not a diagnosis.
@@ -451,13 +476,17 @@ export function VideoReviewPanel({
             <div className="flex items-end justify-between gap-4">
               <dt className="text-xs text-ink-muted">Peak model score</dt>
               <dd className="font-mono text-2xl font-semibold tabular-nums text-teal-dark">
-                {peakScore.toFixed(2)}
+                {hasScores ? peakScore.toFixed(2) : "—"}
               </dd>
             </div>
             <div
               className="-mt-2"
               role="img"
-              aria-label={`Peak score ${peakScore.toFixed(3)} on a fixed 0 to 1 display scale; threshold ${result.model.threshold.toFixed(3)}`}
+              aria-label={
+                hasScores
+                  ? `Peak score ${peakScore.toFixed(3)} on a fixed 0 to 1 display scale; threshold ${result.model.threshold.toFixed(3)}`
+                  : "No model score is selected"
+              }
             >
               <div className="relative mx-1 h-2 rounded-full bg-rule">
                 <span
@@ -467,13 +496,15 @@ export function VideoReviewPanel({
                   }}
                   aria-hidden="true"
                 />
-                <span
-                  className="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-teal-dark"
-                  style={{
-                    left: `${Math.max(0, Math.min(100, peakScore * 100))}%`,
-                  }}
-                  aria-hidden="true"
-                />
+                {hasScores && (
+                  <span
+                    className="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-teal-dark"
+                    style={{
+                      left: `${Math.max(0, Math.min(100, peakScore * 100))}%`,
+                    }}
+                    aria-hidden="true"
+                  />
+                )}
               </div>
               <div className="mt-2 flex justify-between text-[0.65rem] tabular-nums text-ink-muted">
                 <span>0.0</span>
@@ -484,7 +515,7 @@ export function VideoReviewPanel({
             <div className="flex items-end justify-between gap-4">
               <dt className="text-xs text-ink-muted">Event windows</dt>
               <dd className="font-mono text-lg font-semibold tabular-nums text-ink">
-                {events.length}
+                {hasScores ? events.length : "—"}
               </dd>
             </div>
             {events[0] && (
@@ -595,6 +626,12 @@ function RiskTimeline({
         </div>
         <p className="text-xs text-ink-muted">Select a score point or event.</p>
       </div>
+      {!timeline.length && (
+        <p className="mt-3 text-sm text-ink-muted">
+          Choose a track with scores to show its VSViG timeline. Video remains
+          available for review.
+        </p>
+      )}
       <svg
         className="mt-5 h-auto w-full cursor-crosshair overflow-visible text-ink-muted"
         viewBox="0 0 900 190"
