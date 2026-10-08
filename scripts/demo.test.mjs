@@ -15,7 +15,43 @@ test("the local demo defaults to H5 and keeps the development stub opt-in", () =
   );
 });
 
-test("the default H5 launcher fails closed before setup if its local assets are absent", async () => {
+test("the default launcher starts the reviewed local H5 profile", async () => {
+  const commands = [];
+  const messages = [];
+  await startDemo({
+    root: "/project",
+    platform: "linux",
+    run: (command, args, options) => {
+      commands.push([command, args]);
+    },
+    hasResearchH5Assets: () => true,
+    initializeConfig: () => [],
+    hasFrontendDependencies: () => true,
+    waitForBackend: async () => {},
+    launchFrontend: () => ({ exitCode: null }),
+    waitForFrontend: async () => {},
+    logger: (message) => messages.push(message),
+  });
+
+  assert.deepEqual(commands[1], [
+    "docker",
+    [
+      "compose",
+      "--profile",
+      "local-research",
+      "-f",
+      "docker-compose.yml",
+      "-f",
+      "docker-compose.local-research.yml",
+      "up",
+      "-d",
+      "--build",
+    ],
+  ]);
+  assert.ok(messages.some((message) => /uncalibrated and non-diagnostic/.test(message)));
+});
+
+test("the default H5 launcher fails closed if its local model or contract is absent", async () => {
   const commands = [];
   await assert.rejects(
     startDemo({
@@ -106,12 +142,13 @@ test("development stub overrides inherited MODEL_RUNTIME only for the Compose ch
   }
 });
 
-test("the default H5 candidate runs through the local research overlay", async () => {
+test("the explicit H5 profile runs through the local research overlay", async () => {
   const commands = [];
   const messages = [];
   await startDemo({
     root: "/project",
     platform: "linux",
+    researchH5: true,
     run: (command, args) => commands.push([command, args]),
     initializeConfig: () => [],
     hasResearchH5Assets: () => true,
@@ -142,7 +179,7 @@ test("the default H5 candidate runs through the local research overlay", async (
   );
 });
 
-test("the H5 research launcher fails closed when the exact local assets are absent", async () => {
+test("the explicit H5 research launcher fails closed when local assets are absent", async () => {
   const commands = [];
   await assert.rejects(
     startDemo({

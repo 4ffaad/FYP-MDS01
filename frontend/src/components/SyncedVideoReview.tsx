@@ -8,6 +8,7 @@ import {
   VideoGradCamOverlay,
   VideoModelPatchBlurOverlay,
 } from "@/components/VideoModelEvidenceOverlay";
+import { apiMediaUrl } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/format";
 import {
   detectionVisualizationUrl,
@@ -49,6 +50,10 @@ export function SyncedVideoReview({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoFrameRef = useRef<HTMLDivElement>(null);
+  const continuePlayback = useRef(false);
+  const [bookmarks, setBookmarks] = useState<
+    Array<{ jobId: string; seconds: number }>
+  >([]);
   const [unavailableJobId, setUnavailableJobId] = useState<string | null>(null);
   const [blurMode, setBlurMode] = useState<"face+patches" | "face" | "all">(
     "face+patches",
@@ -74,8 +79,11 @@ export function SyncedVideoReview({
   )
     ? "Legacy patient blur"
     : "Face blur";
-  const selectedBlurModeLabel =
-    blurMode === "all"
+  const unblurred =
+    selectedClip?.review_privacy_method === "unblurred-owner-source";
+  const selectedBlurModeLabel = unblurred
+    ? "Owner reference · unblurred"
+    : blurMode === "all"
       ? "Full-frame blur"
       : blurMode === "face"
         ? `${selectiveBlurLabel} only`
@@ -118,7 +126,9 @@ export function SyncedVideoReview({
     if (
       !selectedJobIdForResult ||
       selectedStatusForResult !== "ready" ||
-      !selectedVideoAvailable
+      !selectedVideoAvailable ||
+      clips.find((clip) => clip.job_id === selectedJobIdForResult)
+        ?.reference_only
     )
       return;
     const controller = new AbortController();
@@ -131,10 +141,16 @@ export function SyncedVideoReview({
         if (!controller.signal.aborted) setResultState({ jobId, result: null });
       });
     return () => controller.abort();
-  }, [selectedJobIdForResult, selectedStatusForResult, selectedVideoAvailable]);
+  }, [
+    selectedJobIdForResult,
+    selectedStatusForResult,
+    selectedVideoAvailable,
+    clips,
+  ]);
 
   useEffect(() => {
     if (
+      selectedClip?.sync?.status === "linked" &&
       selectedEegTime !== null &&
       videoTimeForEegTime(
         selectedClip?.sync?.mapped_segments,
@@ -301,7 +317,7 @@ export function SyncedVideoReview({
           </div>
         )}
 
-        {!compact && (
+        {!compact && !unblurred && (
           <fieldset className="flex flex-wrap items-center gap-3 text-xs">
             <legend className="sr-only">Video display blur</legend>
             <label className="inline-flex cursor-pointer items-center gap-2">
@@ -377,7 +393,7 @@ export function SyncedVideoReview({
                 }
               >
                 <div
-                  className={`absolute inset-0 ${blurMode === "all" ? "blur-[8px]" : ""}`}
+                  className={`absolute inset-0 ${!unblurred && blurMode === "all" ? "blur-[8px]" : ""}`}
                 >
                   <video
                     key={selectedClip.job_id}
@@ -390,9 +406,13 @@ export function SyncedVideoReview({
                     preload="metadata"
                     crossOrigin="use-credentials"
                     data-testid="synchronized-video-player"
-                    aria-label={`${clipLabel(selectedClip, clips.indexOf(selectedClip))}, ${blurMode === "all" ? "full-frame blurred" : selectiveBlurLabel.toLocaleLowerCase()} review video`}
+                    aria-label={`${clipLabel(selectedClip, clips.indexOf(selectedClip))}, ${unblurred ? "unblurred owner-only" : blurMode === "all" ? "full-frame blurred" : selectiveBlurLabel.toLocaleLowerCase()} review video`}
                     onLoadedMetadata={(event) => {
                       const video = event.currentTarget;
+                      if (continuePlayback.current) {
+                        continuePlayback.current = false;
+                        void video.play();
+                      }
                       if (seekRequest?.jobId === selectedClip.job_id) {
                         video.currentTime = Math.max(
                           0,
@@ -417,6 +437,23 @@ export function SyncedVideoReview({
                         ),
                       );
                     }}
+                    onEnded={() => {
+                      const end = eegTimeForVideoTime(
+                        selectedClip.sync?.mapped_segments,
+                        selectedClip.duration_seconds,
+                      );
+                      if (end === null) return;
+                      const next = timeline.find(
+                        (segment) =>
+                          segment.clip.job_id !== selectedClip.job_id &&
+                          Math.abs(segment.eeg_source_start_seconds - end) <
+                            0.2,
+                      );
+                      if (next) {
+                        continuePlayback.current = true;
+                        onEegTimeSelect(next.eeg_source_start_seconds);
+                      }
+                    }}
                     onError={() => setUnavailableJobId(selectedClip.job_id)}
                   >
                     Your browser cannot play this protected review video.
@@ -425,7 +462,7 @@ export function SyncedVideoReview({
                     videoRef={videoRef}
                     poseSample={currentPoseSample}
                     strengthPercent={selectedClip.blur_strength_percent}
-                    enabled={blurMode === "face+patches"}
+                    enabled={!unblurred && blurMode === "face+patches"}
                   />
                   <VideoGradCamOverlay
                     poseSample={currentPoseSample}
@@ -460,12 +497,110 @@ export function SyncedVideoReview({
             </p>
           </div>
         )}
-        {!compact && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <label>
+            Speed{" "}
+            <select
+              aria-label="Video playback speed"
+              defaultValue="1"
+              onChange={(event) => {
+                if (videoRef.current)
+                  videoRef.current.playbackRate = Number(event.target.value);
+              }}
+            >
+              <option value="0.25">0.25×</option>
+              <option value="0.5">0.5×</option>
+              <option value="1">1×</option>
+            </select>
+          </label>
+          {[-1, 1].map((direction) => (
+            <button
+              className="min-h-9 rounded border border-rule px-3"
+              type="button"
+              key={direction}
+              onClick={() => {
+                const video = videoRef.current;
+                if (video) {
+                  video.pause();
+                  video.currentTime = Math.max(
+                    0,
+                    Math.min(
+                      video.duration,
+                      video.currentTime +
+                        direction / Math.max(selectedClip.fps, 1),
+                    ),
+                  );
+                }
+              }}
+            >
+              {direction < 0 ? "Previous frame" : "Next frame"}
+            </button>
+          ))}
+          <button
+            className="min-h-9 rounded border border-rule px-3"
+            type="button"
+            onClick={() =>
+              setBookmarks((items) => [
+                ...items,
+                {
+                  jobId: selectedClip.job_id,
+                  seconds: videoRef.current?.currentTime ?? 0,
+                },
+              ])
+            }
+          >
+            Bookmark {formatRelativeTime(currentVideoTime)}
+          </button>
+          {selectedClip.source_available && (
+            <a
+              className="underline"
+              href={apiMediaUrl(
+                `/api/video-detection/jobs/${encodeURIComponent(selectedClip.job_id)}/original`,
+              )}
+            >
+              Download original video
+            </a>
+          )}
+        </div>
+        {bookmarks
+          .filter((item) => item.jobId === selectedClip.job_id)
+          .map((item, index) => (
+            <button
+              className="mr-2 min-h-9 text-xs underline"
+              key={index}
+              type="button"
+              onClick={() => {
+                if (videoRef.current)
+                  videoRef.current.currentTime = item.seconds;
+              }}
+            >
+              Bookmark {formatRelativeTime(item.seconds)}
+            </button>
+          ))}
+        {selectedClip.sync?.status === "linked" && (
+          <p role="status" className="text-xs text-ink-muted">
+            EEG{" "}
+            {formatRelativeTime(
+              eegTimeForVideoTime(
+                selectedClip.sync.mapped_segments,
+                currentVideoTime,
+              ) ?? 0,
+            )}{" "}
+            · Video {String(clips.indexOf(selectedClip) + 1).padStart(2, "0")} ·{" "}
+            {formatRelativeTime(currentVideoTime)}
+          </p>
+        )}
+        <p className="text-xs text-ink-muted">
+          {selectedClip.sync?.status === "linked"
+            ? "Unique metadata match · partial coverage may apply."
+            : `Alignment ${selectedClip.sync?.status ?? "unavailable"}. This clip remains viewable independently.`}
+        </p>
+        {!compact && !unblurred && (
           <p className="text-xs text-ink-muted">
             Face blur · VSViG patch blur {selectedClip.blur_strength_percent}%
           </p>
         )}
-        {!compact && typeof reviewBlurCoverage === "number" && (
+        {!compact && !unblurred && typeof reviewBlurCoverage === "number" && (
           <p className="text-xs text-ink-muted">
             {selectiveBlurLabel} · {Math.round(reviewBlurCoverage * 1000) / 10}%
             {" of frames"}

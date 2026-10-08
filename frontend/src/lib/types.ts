@@ -35,7 +35,7 @@ export interface SignalPreviewChannel {
 
 export interface SignalPreview {
   recordId: string;
-  representation: "metadata-scrubbed" | "signal-obfuscated";
+  representation: "metadata-scrubbed" | "signal-obfuscated" | "original-source";
   displayFilter?: string | null;
   samplingRate: number;
   channels: SignalPreviewChannel[];
@@ -59,6 +59,8 @@ export type RecordingStatus =
   | "failed";
 
 export interface Recording {
+  sourceAvailable?: boolean;
+  retentionPolicy?: string;
   recordId: string;
   sequenceIndex: number;
   displayName: string;
@@ -141,6 +143,8 @@ export type SessionStatus =
   | "failed";
 
 export interface Session {
+  sourceAvailable?: boolean;
+  retentionPolicy?: string;
   sessionId: string;
   caseId: string | null;
   privacyMethod: PrivacyMethod;

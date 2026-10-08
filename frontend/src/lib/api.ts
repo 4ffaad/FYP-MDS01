@@ -49,10 +49,10 @@ const USE_STUB = process.env.NEXT_PUBLIC_USE_API_STUB === "true";
 export const API_STUB_ENABLED = USE_STUB;
 export const AUTH_MODE = process.env.NEXT_PUBLIC_AUTH_MODE ?? "backend";
 export const ENABLE_SIGNAL_PREVIEW =
-  process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW === "true";
+  process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW !== "false";
 export const ENABLE_FULL_SIGNAL_PREVIEW =
   ENABLE_SIGNAL_PREVIEW &&
-  process.env.NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW === "true";
+  process.env.NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW !== "false";
 const JOBS_KEY = "mds01.jobs.v1";
 const DRAFTS_KEY = "mds01.upload-drafts.v1";
 const VIDEO_JOBS_KEY = "mds01.video-privacy.v1";
@@ -474,6 +474,8 @@ function methodsForProfile(
 }
 
 type BackendSession = {
+  source_available?: boolean;
+  retention_policy?: string;
   session_id: string;
   case_id?: string | null;
   privacy_method: string;
@@ -502,6 +504,8 @@ type BackendSession = {
 };
 
 type BackendRecording = {
+  source_available?: boolean;
+  retention_policy?: string;
   record_id: string;
   sequence_index: number;
   status: RecordingStatus;
@@ -706,6 +710,8 @@ export function recordingFromBackend(
     sequenceIndex: recording.sequence_index,
     displayName: `Recording ${String(recording.sequence_index).padStart(2, "0")}`,
     sourceFormat: recording.source_format ?? undefined,
+    sourceAvailable: recording.source_available ?? false,
+    retentionPolicy: recording.retention_policy,
     status: recording.status,
     durationSeconds: recording.duration_seconds,
     samplingRate: recording.sampling_rate,
@@ -737,6 +743,8 @@ export function recordingFromBackend(
 
 function sessionFromBackend(session: BackendSession): Session {
   return {
+    sourceAvailable: session.source_available ?? false,
+    retentionPolicy: session.retention_policy,
     sessionId: session.session_id,
     caseId: session.case_id ?? null,
     privacyMethod: methodForId(session.privacy_method),
@@ -1801,7 +1809,10 @@ export async function getSignalPreview(
   });
   const response = await getJson<{
     record_id: string;
-    representation: "metadata-scrubbed" | "signal-obfuscated";
+    representation:
+      | "metadata-scrubbed"
+      | "signal-obfuscated"
+      | "original-source";
     display_filter?: string | null;
     sampling_rate: number;
     channels: Array<{

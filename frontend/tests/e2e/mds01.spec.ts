@@ -462,24 +462,24 @@ test("EEG source markers seek the matching synchronized video clip", async ({
 
   const review = page.getByRole("region", { name: "Shared timeline" });
   await expect(review).toBeVisible();
-  await expect(
-    review.getByRole("region", { name: "Synchronized video review" }),
-  ).toBeVisible();
-  await expect(
-    review
-      .getByRole("region", { name: "Synchronized video review" })
-      .getByRole("combobox"),
-  ).toHaveValue("VID-SYNCED-STUB");
   await page
     .getByRole("button", { name: /Select manual event at EEG 0:42/ })
     .click();
+  await page.getByRole("button", { name: "Open synchronized video" }).click();
+  const synchronizedReview = page.getByRole("region", {
+    name: "Synchronized camera video",
+  });
+  await expect(synchronizedReview).toBeVisible();
+  await expect(
+    synchronizedReview.getByLabel("Select synchronized video"),
+  ).toHaveValue("VID-SYNCED-STUB");
   const player = page.getByTestId("synchronized-video-player");
   await expect
     .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
     .toBeCloseTo(2, 0);
-  await expect(review.getByTestId("video-vsvig-gradcam")).toBeVisible();
+  await expect(page.getByTestId("video-vsvig-gradcam")).toBeVisible();
   await expect(
-    page.getByRole("status", { name: /EEG 0:42 · Video 01 · 0:02/ }),
+    page.getByText("EEG 0:42 · Video 01 · 0:02", { exact: true }),
   ).toBeVisible();
 
   await player.evaluate((video: HTMLVideoElement) => {
@@ -487,14 +487,17 @@ test("EEG source markers seek the matching synchronized video clip", async ({
     video.dispatchEvent(new Event("timeupdate", { bubbles: true }));
   });
   await expect(
-    page.getByRole("status", { name: /EEG 0:41 · Video 01 · 0:01/ }),
+    page.getByText("EEG 0:41 · Video 01 · 0:01", { exact: true }),
   ).toBeVisible();
-  await expect(review.getByTestId("video-vsvig-gradcam")).toHaveCount(0);
+  await expect(page.getByTestId("video-vsvig-gradcam")).toHaveCount(0);
 
+  await page.getByRole("button", { name: "Close" }).click();
   await page.getByRole("button", { name: /Window 21, 0:40–0:44/ }).click();
+  await page.getByRole("button", { name: "Open synchronized video" }).click();
   await expect
     .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
     .toBeCloseTo(2, 0);
+  await page.getByRole("button", { name: "Close" }).click();
   const sharedTimeline = page.getByRole("group", {
     name: "Shared EEG timeline. Click or drag any lane to seek; use arrow keys to move one second.",
   });
@@ -506,9 +509,6 @@ test("EEG source markers seek the matching synchronized video clip", async ({
   await expect(
     page.getByRole("status", { name: "EEG 0:46 · No video" }),
   ).toBeVisible();
-  await expect
-    .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
-    .toBeCloseTo(2, 0);
 
   const markerLane = sharedTimeline.locator("[data-timeline-track]").nth(1);
   const markerLaneBounds = await markerLane.boundingBox();

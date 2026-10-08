@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useRef, useState, type PointerEvent } from "react";
 import { formatSubmittedAt } from "@/lib/format";
-import { toDisplayStatus } from "@/lib/api";
+import { apiMediaUrl, toDisplayStatus } from "@/lib/api";
 import type { Recording, Session } from "@/lib/types";
 import {
   AlertDialog,
@@ -93,6 +93,27 @@ export function SessionRecordings({ session }: { session: Session }) {
   const pendingCount = session.recordings.length - processedRecordings.length;
   return (
     <div>
+      {session.sourceAvailable && (
+        <div className="flex flex-wrap gap-4 border-b border-rule px-5 py-3 text-sm">
+          <a
+            className="underline"
+            href={apiMediaUrl(
+              `/api/sessions/${encodeURIComponent(session.sessionId)}/original`,
+            )}
+          >
+            Download original archive
+          </a>
+          <a
+            className="underline"
+            href={apiMediaUrl(
+              `/api/sessions/${encodeURIComponent(session.sessionId)}/original-report`,
+            )}
+          >
+            Download original report, if included
+          </a>
+          <span className="text-ink-muted">Retained until case deletion</span>
+        </div>
+      )}
       <div className="border-b border-rule bg-surface">
         <Tabs
           value={activeFilter}
@@ -241,7 +262,7 @@ function RecordingRow({
   );
 
   const rowClass = `grid gap-3 px-4 py-4 sm:grid-cols-[minmax(0,1.6fr)_minmax(110px,0.8fr)_minmax(150px,1fr)_20px] sm:items-center sm:px-5 ${hasModelAlert ? alertClass : ""}`;
-  if (recording.status !== "inferred")
+  if (recording.status !== "inferred" && !recording.sourceAvailable)
     return <div className={rowClass}>{content}</div>;
   return (
     <Link

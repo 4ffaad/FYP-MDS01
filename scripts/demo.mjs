@@ -223,6 +223,10 @@ export async function startDemo({
     logger(
       "H5 scores are uncalibrated and non-diagnostic; the backend validates the pinned artifact and reviewed contract at startup.",
     );
+  } else {
+    logger(
+      "EEG uses the development stub; its scores are synthetic and do not come from seizure detection.",
+    );
   }
   logger(
     "Ctrl-C stops the frontend. Docker services and their data remain; use `docker compose down` to stop them.",

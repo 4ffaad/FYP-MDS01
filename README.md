@@ -13,10 +13,11 @@ node scripts/demo.mjs
 ```
 
 This starts the Docker backend, PostgreSQL, pinned video assets, and browser UI.
-Open [MDS01](http://127.0.0.1:3000). The default demo uses the local H5 EEG
-profile and requires the ignored, reviewed model files listed in
-[setup](docs/setup.md). For synthetic development scores, run
-node scripts/demo.mjs --development-stub.
+Open [MDS01](http://127.0.0.1:3000). The default demo uses the reviewed H5 EEG
+model and requires the ignored model artifact and contract listed in
+[setup](docs/setup.md). Standalone video analysis uses the pinned VSViG model
+assets. Use `node scripts/demo.mjs --development-stub` only for a synthetic
+workflow demo; those EEG scores are not model analysis.
 
 Use docker compose down to stop Docker services while keeping local data.
 docker compose down -v deletes the database, encrypted files, and video-model

@@ -188,6 +188,7 @@ export function classifyPatientFolder(
 export async function buildEegArchive(
   bundle: EegBundle | EegBundle[],
   onProgress: (percent: number) => void = () => {},
+  sourceReport?: File | null,
 ): Promise<File> {
   const bundles = Array.isArray(bundle) ? bundle : [bundle];
   const entries = bundles.flatMap((source, index) =>
@@ -202,6 +203,15 @@ export async function buildEegArchive(
       return { ...entry, archiveName: name };
     }),
   );
+  if (sourceReport) {
+    const extension = sourceReport.name.split(".").pop()?.toLowerCase();
+    if (!["doc", "docx", "pdf"].includes(extension ?? ""))
+      throw new Error("Unsupported source report format.");
+    entries.push({
+      file: sourceReport,
+      archiveName: `source-report.${extension}`,
+    });
+  }
   if (bundles.length === 0 || entries.length === 0) {
     throw new Error("Select at least one EEG recording.");
   }

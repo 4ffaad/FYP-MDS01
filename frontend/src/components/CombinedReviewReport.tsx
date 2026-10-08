@@ -91,7 +91,10 @@ export function CombinedReviewReport({
       sync.eeg_coverage_seconds !== undefined &&
       sync.eeg_coverage_seconds + 0.5 < sync.video_duration_seconds,
   );
-  const activeVideoJobId = videoJob?.status === "ready" ? videoJob.job_id : "";
+  const activeVideoJobId =
+    videoJob?.status === "ready" && !videoJob.reference_only
+      ? videoJob.job_id
+      : "";
   const sessionCaseId = hasEegLink ? session?.caseId : null;
   const videoCaseId = hasVideoLink ? videoJob?.case_id : null;
   const profileCaseId =
@@ -365,13 +368,13 @@ export function CombinedReviewReport({
               </div>
               <div className="mt-5 border-t border-rule pt-4">
                 <h4 className="text-xs font-bold uppercase tracking-[0.08em] text-ink-muted">
-                  EEG attribution evidence
+                  Model contribution
                 </h4>
                 {eegResult.researchAttributions.length > 0 ? (
                   <p className="mt-2 text-sm leading-6 text-ink-muted">
-                    {eegResult.researchAttributions.length} model-specific
-                    sensitivity artifact(s) available. These are not clinical
-                    explanations or causal evidence.
+                    {eegResult.researchAttributions.length} model contribution
+                    artifact(s) available. These are not clinical explanations
+                    or causal evidence.
                   </p>
                 ) : (
                   <p className="mt-2 text-sm leading-6 text-ink-muted">
@@ -553,6 +556,11 @@ export function CombinedReviewReport({
                 </p>
               </div>
             </>
+          ) : videoJob?.reference_only ? (
+            <p className="mt-4 text-sm text-ink-muted">
+              Reference video is available without VSViG analysis. Open video
+              review for playback.
+            </p>
           ) : videoJob?.status === "failed" ||
             videoJob?.status === "expired" ? (
             <p className="mt-4 text-sm text-ink-muted">

@@ -259,8 +259,7 @@ export function PatientFolderScreen({
   const [reportTruncated, setReportTruncated] = useState(false);
   const [reportMessage, setReportMessage] = useState<string | null>(null);
   const [reportReading, setReportReading] = useState(false);
-  const [signalObfuscation, setSignalObfuscation] = useState(false);
-  const [videoBlurStrengthPercent, setVideoBlurStrengthPercent] = useState(100);
+
   const [videoDetectionErrors, setVideoDetectionErrors] = useState<
     Record<number, VideoUploadIssue>
   >({});
@@ -324,7 +323,6 @@ export function PatientFolderScreen({
       includeVideos: !eegOnly,
     });
     setSelection(nextSelection);
-    setVideoBlurStrengthPercent(100);
     setIntakeStep("media");
     setDraftId(null);
     setPatientDetails([]);
@@ -510,7 +508,11 @@ export function PatientFolderScreen({
       if (!activeWorkflowRef.current.sessionId) {
         if (!pendingDraftId) {
           setStep(`Preparing ${selectedEegBundles.length} EEG recordings`);
-          const archive = await buildEegArchive(selectedEegBundles);
+          const archive = await buildEegArchive(
+            selectedEegBundles,
+            undefined,
+            selection.report,
+          );
           throwIfAborted(signal);
           setStep("Encrypting the EEG upload");
           const draft = await stageUpload(
@@ -528,9 +530,7 @@ export function PatientFolderScreen({
         setStep("Creating the EEG session");
         const finalized = await finalizeUploadDraft(
           pendingDraftId,
-          signalObfuscation
-            ? ["metadata-scrub", "signal-obfuscation"]
-            : ["metadata-scrub"],
+          ["metadata-scrub"],
           undefined,
           signal,
         );
@@ -708,10 +708,11 @@ export function PatientFolderScreen({
                     },
                     activeCaseId!,
                     signal,
-                    videoBlurStrengthPercent,
+                    0,
                     sourceGroupId
                       ? { sourceName: videoFile.name, groupId: sourceGroupId }
                       : undefined,
+                    true,
                   );
                   jobId = job.job_id;
                   videoIds = { ...videoIds, [index]: jobId };
@@ -1114,16 +1115,11 @@ export function PatientFolderScreen({
                   videoCount={selection.videos.length}
                   showVideoInput={!eegOnly}
                   showPatientDetails={Boolean(selection.report)}
-                  signalObfuscation={signalObfuscation}
-                  videoBlurStrengthPercent={videoBlurStrengthPercent}
-                  signalDescription={PRIVACY_METHODS[1].description}
                   patientDetails={patientDetails}
                   reportTruncated={reportTruncated}
                   reportMessage={reportMessage}
                   reportReading={reportReading}
                   canContinue={canContinue}
-                  onSignalObfuscationChange={setSignalObfuscation}
-                  onVideoBlurStrengthChange={setVideoBlurStrengthPercent}
                   onContinue={() => void submitReview()}
                 />
                 {API_STUB_ENABLED && (

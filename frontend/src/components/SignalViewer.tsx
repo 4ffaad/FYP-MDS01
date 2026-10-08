@@ -14,8 +14,8 @@ const CONTEXT_BEFORE_SECONDS = 600;
 const DEFAULT_VIEWPORT_SECONDS = 10;
 const VIEWPORT_OPTIONS = [5, 10, 20, 60, 110];
 const VIEWPORT_POINTS = 10_000;
-const CHANNEL_ROW_HEIGHT = 52;
-const PLOT_LEFT = 72;
+const CHANNEL_ROW_HEIGHT = 64;
+const PLOT_LEFT = 120;
 const PLOT_RIGHT = 14;
 const CHANNEL_DISPLAY_ORDER = [
   "FP2-F8",
@@ -91,14 +91,16 @@ export function SignalViewer({
   );
   const maxStart = Math.max(browseStart, browseEnd - viewportDuration);
   const requestedTime =
-    selectionRequest?.timeSeconds ??
     selectedEegTime ??
+    selectionRequest?.timeSeconds ??
     ((firstAlert?.startSeconds ?? browseStart) +
       (firstAlert?.endSeconds ?? browseStart)) /
       2;
   const requestId = selectionRequest?.requestId ?? 0;
   const requestedStart = clamp(
-    requestedTime - viewportDuration / 2,
+    selectionRequest?.timeSeconds === requestedTime
+      ? requestedTime - viewportDuration / 2
+      : Math.floor(requestedTime / viewportDuration) * viewportDuration,
     browseStart,
     maxStart,
   );
@@ -130,7 +132,7 @@ export function SignalViewer({
     (ENABLE_FULL_SIGNAL_PREVIEW || Boolean(firstAlert)) &&
     requestInsideRetainedRange &&
     !selectedInsidePreview &&
-    previewState?.requestId !== requestId;
+    !(previewState?.requestId === requestId && previewState.error);
   const unavailable = !requestInsideRetainedRange
     ? "No EEG signal is retained at this time."
     : requestError;
@@ -141,7 +143,7 @@ export function SignalViewer({
       (!ENABLE_FULL_SIGNAL_PREVIEW && !firstAlert) ||
       !requestInsideRetainedRange ||
       selectedInsidePreview ||
-      previewState?.requestId === requestId
+      (previewState?.requestId === requestId && previewState.error)
     )
       return;
     const controller = new AbortController();
@@ -175,6 +177,7 @@ export function SignalViewer({
   }, [
     firstAlert,
     previewState?.requestId,
+    previewState?.error,
     recordId,
     requestId,
     requestInsideRetainedRange,
@@ -183,7 +186,7 @@ export function SignalViewer({
     viewportDuration,
   ]);
 
-  if (!firstAlert)
+  if (!firstAlert && !ENABLE_FULL_SIGNAL_PREVIEW)
     return (
       <div
         className={embedded ? "px-4 py-4 sm:px-6" : "panel px-5 py-5 sm:px-7"}
@@ -220,17 +223,33 @@ export function SignalViewer({
         </p>
         <div className="flex shrink-0 gap-1.5">
           <select
-            aria-label="EEG trace gain"
+            aria-label="EEG sensitivity"
             className="h-8 rounded-lg border border-rule-strong bg-surface px-2 text-xs font-medium text-ink"
             value={traceGain}
             onChange={(event) =>
               setTraceGain(Number(event.currentTarget.value))
             }
           >
-            <option value={0.25}>0.25×</option>
-            <option value={0.5}>0.5×</option>
-            <option value={1}>1×</option>
-            <option value={2}>2×</option>
+            <option value={0.25}>
+              {preview?.representation === "original-source"
+                ? "40 µV/div"
+                : "0.25×"}
+            </option>
+            <option value={0.5}>
+              {preview?.representation === "original-source"
+                ? "20 µV/div"
+                : "0.5×"}
+            </option>
+            <option value={1}>
+              {preview?.representation === "original-source"
+                ? "10 µV/div"
+                : "1×"}
+            </option>
+            <option value={2}>
+              {preview?.representation === "original-source"
+                ? "5 µV/div"
+                : "2×"}
+            </option>
           </select>
           <select
             aria-label="EEG time window"
@@ -315,7 +334,7 @@ function SignalHeader({ preview }: { preview: SignalPreview | null }) {
   return (
     <div className="flex min-h-10 items-center justify-between border-b border-rule px-4 py-2 sm:px-6">
       <h2 id="signal-heading" className="text-sm font-bold tracking-[-0.01em]">
-        EEG Viewer
+        EEG waveform · left (L) / right (R) / midline (M)
       </h2>
       <span className="text-xs font-medium text-ink-muted">
         {preview?.channels.length ?? 18} channels
@@ -408,7 +427,10 @@ function SignalCanvas({
         ...preview.channels.filter(
           (channel) => !orderedLabels.has(channel.label.toUpperCase()),
         ),
-      ];
+      ].sort(
+        (left, right) =>
+          channelGroup(left.label).order - channelGroup(right.label).order,
+      );
       const times = preview.timeSeconds;
       const orderedIndices: number[] = [];
       let latestTime = Number.NEGATIVE_INFINITY;
@@ -457,7 +479,12 @@ function SignalCanvas({
         context.fillStyle = "#596271";
         context.font = "11px SFMono-Regular, Consolas, monospace";
         context.textBaseline = "middle";
-        context.fillText(channel.label, 10, center);
+        context.fillText(
+          `${channelGroup(channel.label).label} · ${channel.label}`,
+          10,
+          center,
+          PLOT_LEFT - 14,
+        );
       });
 
       preview.flaggedIntervals.forEach((interval) => {
@@ -511,13 +538,9 @@ function SignalCanvas({
           ? channel.samples.map((_sample, index) => index)
           : channelIndices;
         const { mean } = channelStats[channelIndex];
-        const group = Math.floor(Math.min(channelIndex, 17) / 4);
+        const group = channelGroup(channel.label).order;
         context.strokeStyle =
-          group === 0 || group === 2
-            ? "#bd2929"
-            : group === 1 || group === 3
-              ? "#214f9a"
-              : "#343a40";
+          group === 1 ? "#bd2929" : group === 0 ? "#214f9a" : "#343a40";
         context.lineWidth = 0.9;
         context.beginPath();
         plottedIndices.forEach((index, pointIndex) => {
@@ -528,16 +551,20 @@ function SignalCanvas({
               time >= segment.sourceStartSeconds &&
               time <= segment.sourceEndSeconds,
           );
-          const normalized = Math.max(
-            -3,
-            Math.min(
-              3,
-              (sample - mean) /
-                Math.max(0.0001, channelStats[channelIndex].standardDeviation),
-            ),
-          );
+          const microvolts =
+            preview.representation === "original-source"
+              ? (sample - mean) * 1_000_000
+              : sample;
           const x = xFor(time);
-          const y = center - normalized * (rowHeight / 16) * traceGain;
+          const amplitude =
+            preview.representation !== "original-source"
+              ? (sample - mean) /
+                Math.max(0.0001, channelStats[channelIndex].standardDeviation)
+              : microvolts / 10;
+          const y =
+            center -
+            (Math.max(-1.5, Math.min(1.5, amplitude * traceGain)) * rowHeight) /
+              3;
           if (
             pointIndex === 0 ||
             segmentIndex !==
@@ -697,4 +724,16 @@ function formatTime(seconds: number): string {
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`
     : `${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`;
+}
+
+function channelGroup(label: string): { label: string; order: number } {
+  const upper = label.toUpperCase();
+  if (upper.includes("LEFT")) return { label: "L", order: 0 };
+  if (upper.includes("RIGHT")) return { label: "R", order: 1 };
+  if (/^(FP|F|C|P|O|T)[13579](?:[- ]|$)/.test(upper))
+    return { label: "L", order: 0 };
+  if (/^(FP|F|C|P|O|T)[2468](?:[- ]|$)/.test(upper))
+    return { label: "R", order: 1 };
+  if (/^(FZ|CZ|PZ)(?:[- ]|$)/.test(upper)) return { label: "M", order: 2 };
+  return { label: "Aux", order: 3 };
 }

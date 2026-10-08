@@ -1,10 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { PRIVACY_METHODS } from "@/lib/api";
 import { Icon } from "./Icon";
-import { PrivacyPreview } from "./PrivacyPreview";
-import { VideoBlurStrengthControl } from "./VideoBlurStrengthControl";
 import {
   PatientDetailsSummary,
   type PatientDetailDraft,
@@ -15,16 +12,11 @@ interface PatientFolderMediaStepProps {
   videoCount: number;
   showVideoInput?: boolean;
   showPatientDetails?: boolean;
-  signalObfuscation: boolean;
-  videoBlurStrengthPercent: number;
-  signalDescription: string;
   patientDetails: PatientDetailDraft[];
   reportTruncated: boolean;
   reportMessage: string | null;
   reportReading: boolean;
   canContinue: boolean;
-  onSignalObfuscationChange: (checked: boolean) => void;
-  onVideoBlurStrengthChange: (value: number) => void;
   onContinue: () => void;
 }
 
@@ -33,16 +25,11 @@ export function PatientFolderMediaStep({
   videoCount,
   showVideoInput = true,
   showPatientDetails = true,
-  signalObfuscation,
-  videoBlurStrengthPercent,
-  signalDescription,
   patientDetails,
   reportTruncated,
   reportMessage,
   reportReading,
   canContinue,
-  onSignalObfuscationChange,
-  onVideoBlurStrengthChange,
   onContinue,
 }: PatientFolderMediaStepProps) {
   return (
@@ -69,32 +56,11 @@ export function PatientFolderMediaStep({
                 included automatically and analyzed independently
               </p>
               <p className="mt-2 text-sm leading-6 text-ink-muted">
-                Required metadata scrubbing is always applied to EEG. Signal
-                obfuscation is the optional EEG privacy setting.
+                Original recordings are encrypted and retained until you delete
+                the case. Model analysis uses the reviewed EEG channels without
+                signal obfuscation.
               </p>
-              <label className="mt-4 flex cursor-pointer items-start gap-3 border-t border-teal/20 pt-4 text-sm text-ink">
-                <input
-                  className="mt-1 size-4 accent-teal"
-                  type="checkbox"
-                  checked={signalObfuscation}
-                  onChange={(event) =>
-                    onSignalObfuscationChange(event.target.checked)
-                  }
-                />
-                <span>
-                  <strong className="block">Signal obfuscation</strong>
-                  <span className="text-xs leading-5 text-ink-muted">
-                    {signalDescription}
-                  </span>
-                </span>
-              </label>
             </div>
-          </div>
-          <div className="mt-5 min-w-0">
-            <PrivacyPreview
-              method={PRIVACY_METHODS[signalObfuscation ? 1 : 0]}
-              compact
-            />
           </div>
         </section>
 
@@ -115,15 +81,9 @@ export function PatientFolderMediaStep({
               included automatically
             </p>
             <p className="mt-2 text-sm leading-6 text-ink-muted">
-              VSViG receives pose coordinates and 15 blurred patches. The review
-              video blurs the patient, with full-frame fallback.
+              Video is retained for unblurred, owner-only reference playback.
+              Viewing does not require pose detection or video model inference.
             </p>
-            {videoCount > 0 && (
-              <VideoBlurStrengthControl
-                value={videoBlurStrengthPercent}
-                onChange={onVideoBlurStrengthChange}
-              />
-            )}
             <p className="mt-3 border-t border-rule pt-3 text-xs leading-5 text-ink-muted">
               Video model output is research-only and is not a diagnosis.
             </p>

@@ -24,8 +24,8 @@ docs appear at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 First startup can take a while as Docker downloads dependencies and initializes
 the pinned video-model volume.
 
-The default demo selects the local H5 EEG profile. It requires these local
-files:
+The default demo selects the real H5 EEG research profile and requires these
+local files:
 
 ```text
 backend/model/best_seizure_model.h5
@@ -33,17 +33,18 @@ backend/model/model-contract.json
 ```
 
 The backend checks the model hash and reviewed contract at startup. Missing or
-mismatched files stop H5 inference; do not change the contract just to bypass
-that check.
+mismatched files stop startup; there is no automatic fallback to synthetic
+scores. Do not change the contract just to bypass that check.
 
-To use synthetic EEG scores instead:
+To use synthetic EEG scores for a workflow-only development demo, explicitly
+run:
 
 ```sh
 node scripts/demo.mjs --development-stub
 ```
 
 The stub is useful for demonstrating upload and review screens. Its scores do
-not come from seizure detection.
+not come from seizure detection or the H5 model.
 
 On first visit, create a local account or sign in. The app does not infer an
 EEG/video match from filenames or claim that their clocks are synchronized.
@@ -115,7 +116,7 @@ Docker is the documented local runtime.
 | --- | --- |
 | Docker is unavailable | Start Docker Desktop and run docker info. |
 | Backend exits | Run docker compose ps and docker compose logs backend. Never share secrets or patient data from logs. |
-| H5 model is missing | Check the two local files listed above; keep their reviewed contract unchanged. |
+| H5 model is missing | The default workflow requires the two local files above. Keep their reviewed contract unchanged; use `--development-stub` only for a synthetic workflow demo. |
 | Video model assets are missing | Restart with node scripts/demo.mjs; the Compose initializer downloads and verifies the pinned bundle. |
-| Video reports incomplete_pose | The clip did not pass the full-pose gate, so VSViG did not produce a score. Use one clearly visible person with adequate framing and lighting. |
+| Video reports incomplete_pose | A scored window needs the 15 VSViG-selected pose points. Other OpenPose joints are not required; incomplete person windows remain unscored. |
 | A port is busy | Stop the conflicting process or change the Compose port and matching frontend API/CORS settings together. |

@@ -1,14 +1,20 @@
 "use client";
 
 import Link from "next/link";
+import { Dialog } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getResult, getSession } from "@/lib/api";
+import { apiMediaUrl, getRecording, getResult, getSession } from "@/lib/api";
 import {
   listDetections,
   videoTimeForEegTime,
   type DetectionJob,
 } from "@/lib/video-detection";
-import type { AnalysisResult, PredictionLabel, Session } from "@/lib/types";
+import type {
+  AnalysisResult,
+  PredictionLabel,
+  Recording,
+  Session,
+} from "@/lib/types";
 import { Icon } from "./Icon";
 import { LoadingOrb } from "./LoadingOrb";
 import { RecordingNavigator } from "./RecordingNavigator";
@@ -24,6 +30,7 @@ export function ResultScreen({ recordId }: { recordId: string }) {
 
 /** Load and render a fresh result whenever the selected recording changes. */
 function ResultContent({ recordId }: { recordId: string }) {
+  const [sourceOnly, setSourceOnly] = useState<Recording | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +69,20 @@ function ResultContent({ recordId }: { recordId: string }) {
             return;
         }
       } catch (loadError: unknown) {
+        try {
+          const recording = await getRecording(recordId, controller.signal);
+          if (
+            !controller.signal.aborted &&
+            recording.status === "failed" &&
+            recording.sourceAvailable
+          ) {
+            setSourceOnly(recording);
+            return;
+          }
+        } catch {
+          /* The original request error remains actionable. */
+        }
+
         if (
           loadError instanceof DOMException &&
           loadError.name === "AbortError"
@@ -105,7 +126,7 @@ function ResultContent({ recordId }: { recordId: string }) {
   const linkedVideoClips = caseVideoJobs
     .filter(
       (job) =>
-        job.sync?.status === "linked" &&
+        job.sync?.status !== "linked" ||
         job.sync.record_id === result?.recordId,
     )
     .sort(
@@ -161,6 +182,46 @@ function ResultContent({ recordId }: { recordId: string }) {
     [linkedVideoClips],
   );
 
+  if (sourceOnly)
+    return (
+      <div className="page-frame">
+        <h1 className="text-2xl font-semibold">
+          {sourceOnly.displayName} · source review
+        </h1>
+        <p className="my-4 text-sm text-ink-muted">
+          Analysis unavailable. The original recording remains available for
+          owner review.
+        </p>
+        <div className="mb-4 flex gap-4 text-sm">
+          <a
+            className="underline"
+            href={apiMediaUrl(
+              `/api/recordings/${encodeURIComponent(recordId)}/original`,
+            )}
+          >
+            Download original EEG
+          </a>
+          {sourceOnly.sessionId && (
+            <a
+              className="underline"
+              href={apiMediaUrl(
+                `/api/sessions/${encodeURIComponent(sourceOnly.sessionId)}/original`,
+              )}
+            >
+              Download original archive
+            </a>
+          )}
+        </div>
+        <SignalViewer
+          recordId={recordId}
+          predictionWindows={[]}
+          recordingDurationSeconds={sourceOnly.durationSeconds ?? 10}
+          selectedEegTime={selectedEegTimeOverride ?? 0}
+          selectionRequest={signalSeekRequest}
+          onEegTimeSelect={selectEegTime}
+        />
+      </div>
+    );
   if (error) return <ResultError message={error} />;
   if (!result)
     return (
@@ -202,6 +263,50 @@ function ResultContent({ recordId }: { recordId: string }) {
           >
             {result.recordingLabel}
           </h1>
+          <div className="mt-3 flex flex-wrap gap-4 text-sm">
+            {session?.sourceAvailable && (
+              <a
+                className="underline"
+                href={apiMediaUrl(
+                  `/api/recordings/${encodeURIComponent(result.recordId)}/original`,
+                )}
+              >
+                Download original EEG
+              </a>
+            )}
+            {session?.sourceAvailable && (
+              <a
+                className="underline"
+                href={apiMediaUrl(
+                  `/api/sessions/${encodeURIComponent(result.sessionId)}/original`,
+                )}
+              >
+                Download original archive
+              </a>
+            )}
+          </div>
+          {session?.sourceAvailable && (
+            <a
+              className="mt-2 inline-block text-sm underline"
+              href={apiMediaUrl(
+                `/api/sessions/${encodeURIComponent(result.sessionId)}/original-report`,
+              )}
+            >
+              Download original report, if included
+            </a>
+          )}
+          {session && !session.sourceAvailable && (
+            <p className="mt-2 text-xs text-ink-muted">
+              Original sources unavailable. Previously deleted originals cannot
+              be recovered.
+            </p>
+          )}
+          {session?.retentionPolicy === "until-deletion" && (
+            <p className="mt-2 text-xs text-ink-muted">
+              Encrypted sources and results remain available until you delete
+              this case.
+            </p>
+          )}
         </header>
 
         <div className="mt-5 space-y-5">
@@ -246,43 +351,77 @@ function ResultContent({ recordId }: { recordId: string }) {
                     : "min-w-0"
                 }
               >
-                <SignalViewer
-                  recordId={result.recordId}
-                  predictionWindows={result.predictionWindows}
-                  recordingDurationSeconds={result.recordingDurationSeconds}
-                  selectedEegTime={selectedEegTime}
-                  selectionRequest={
-                    signalSeekRequest ??
-                    (selectedEegTime === null
-                      ? null
-                      : { timeSeconds: selectedEegTime, requestId: 0 })
-                  }
-                  onEegTimeSelect={selectEegTime}
-                  embedded
-                />
+                <section
+                  role="region"
+                  aria-label="EEG Viewer"
+                  className="min-w-0"
+                >
+                  <SignalViewer
+                    recordId={result.recordId}
+                    predictionWindows={result.predictionWindows}
+                    recordingDurationSeconds={result.recordingDurationSeconds}
+                    selectedEegTime={selectedEegTime}
+                    selectionRequest={
+                      signalSeekRequest ??
+                      (selectedEegTime === null
+                        ? null
+                        : { timeSeconds: selectedEegTime, requestId: 0 })
+                    }
+                    onEegTimeSelect={selectEegTime}
+                    embedded
+                  />
+                </section>
               </div>
               {linkedVideoClips.length > 0 && (
                 <aside className="min-w-0 border-t border-rule p-3 xl:border-l xl:border-t-0">
-                  <SyncedVideoReview
-                    clips={linkedVideoClips}
-                    selectedJobId={
-                      mappedVideoClip?.job_id ??
-                      selectedVideoJobId ??
-                      linkedVideoClips[0].job_id
-                    }
-                    onSelectedJobIdChange={(jobId) => {
-                      setSelectedVideoJobId(jobId);
-                      setSelectedEegTimeOverride(null);
-                      setSignalSeekRequest(null);
-                      setVideoSeekRequest(null);
-                    }}
-                    selectedEegTime={selectedEegTime}
-                    onEegTimeSelect={selectEegTime}
-                    onPlaybackEegTime={setSelectedEegTimeOverride}
-                    recordingDurationSeconds={result.recordingDurationSeconds}
-                    seekRequest={videoSeekRequest}
-                    compact
-                  />
+                  <Dialog.Root>
+                    <Dialog.Trigger asChild>
+                      <button
+                        className="min-h-10 rounded-lg border border-rule px-3 text-sm font-semibold"
+                        type="button"
+                      >
+                        Open synchronized video
+                      </button>
+                    </Dialog.Trigger>
+                    <Dialog.Portal>
+                      <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50" />
+                      <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-[min(960px,95vw)] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-xl bg-surface p-5 shadow-xl">
+                        <div className="mb-4 flex items-center justify-between">
+                          <Dialog.Title className="font-semibold">
+                            Synchronized video
+                          </Dialog.Title>
+                          <Dialog.Close className="min-h-9 rounded border border-rule px-3">
+                            Close
+                          </Dialog.Close>
+                        </div>
+                        <Dialog.Description className="sr-only">
+                          Owner-only reference playback, synchronized when
+                          metadata uniquely matches the EEG.
+                        </Dialog.Description>
+                        <SyncedVideoReview
+                          clips={linkedVideoClips}
+                          selectedJobId={
+                            mappedVideoClip?.job_id ??
+                            selectedVideoJobId ??
+                            linkedVideoClips[0].job_id
+                          }
+                          onSelectedJobIdChange={(jobId) => {
+                            setSelectedVideoJobId(jobId);
+                            setSelectedEegTimeOverride(null);
+                            setSignalSeekRequest(null);
+                            setVideoSeekRequest(null);
+                          }}
+                          selectedEegTime={selectedEegTime}
+                          onEegTimeSelect={selectEegTime}
+                          onPlaybackEegTime={setSelectedEegTimeOverride}
+                          recordingDurationSeconds={
+                            result.recordingDurationSeconds
+                          }
+                          seekRequest={videoSeekRequest}
+                        />
+                      </Dialog.Content>
+                    </Dialog.Portal>
+                  </Dialog.Root>
                 </aside>
               )}
             </div>
@@ -338,6 +477,87 @@ function ResultContent({ recordId }: { recordId: string }) {
                 </dd>
               </div>
             </dl>
+          </section>
+
+          <section
+            className="panel p-5"
+            aria-labelledby="model-contribution-heading"
+          >
+            <h2 id="model-contribution-heading" className="font-semibold">
+              Model contribution
+            </h2>
+            <p className="mt-2 text-sm text-ink-muted">
+              Attribution describes the model score. It does not localize
+              seizure origin.
+            </p>
+            {result.researchAttributions.length ? (
+              result.researchAttributions.map((attribution) => (
+                <div key={attribution.windowIndex} className="mt-4">
+                  <button
+                    type="button"
+                    className="text-sm underline"
+                    onClick={() =>
+                      selectEegTime(attribution.windowStartSeconds)
+                    }
+                  >
+                    Window {attribution.windowStartSeconds.toFixed(1)}–
+                    {attribution.windowEndSeconds.toFixed(1)} s
+                  </button>
+                  <ol className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-xs">
+                    {[...attribution.channelScores]
+                      .sort(
+                        (left, right) =>
+                          right.meanAbsoluteAttribution -
+                          left.meanAbsoluteAttribution,
+                      )
+                      .map((channel) => (
+                        <li key={channel.label}>
+                          {channel.label}:{" "}
+                          {channel.meanAbsoluteAttribution.toPrecision(3)}
+                        </li>
+                      ))}
+                  </ol>
+                  <div className="mt-3 flex" aria-label="Time attribution">
+                    {attribution.timeBins.map((bin) => {
+                      const magnitude = bin.channelScores.reduce(
+                        (sum, value) => sum + Math.abs(value),
+                        0,
+                      );
+                      const peak = Math.max(
+                        ...attribution.timeBins.map((item) =>
+                          item.channelScores.reduce(
+                            (sum, value) => sum + Math.abs(value),
+                            0,
+                          ),
+                        ),
+                        1e-12,
+                      );
+                      return (
+                        <button
+                          type="button"
+                          key={bin.startSeconds}
+                          className="h-8 flex-1 bg-teal"
+                          style={{ opacity: 0.2 + (0.8 * magnitude) / peak }}
+                          aria-label={`Model contribution at ${(attribution.windowStartSeconds + bin.startSeconds).toFixed(2)} seconds`}
+                          title={`${(attribution.windowStartSeconds + bin.startSeconds).toFixed(2)} s · ${magnitude.toPrecision(3)}`}
+                          onClick={() =>
+                            selectEegTime(
+                              attribution.windowStartSeconds + bin.startSeconds,
+                            )
+                          }
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="mt-3 text-sm text-ink-muted">
+                Attribution unavailable. A compatible model and reviewed
+                background dataset are required; scores alone do not explain the
+                model.
+              </p>
+            )}
           </section>
 
           <section
