@@ -215,35 +215,141 @@ def match_sync_video_group(
             return None
 
         video_end = source_start + float(duration)
-        mapped_segments: list[dict[str, float]] = []
+        recording_start = validated_segments[0]["source_start_seconds"]
+        recording_end = max(
+            segment["source_start_seconds"] + segment["duration_seconds"]
+            for segment in validated_segments
+        )
+        mapping_start = max(source_start, recording_start)
+        mapping_end = min(video_end, recording_end)
+        if mapping_end <= mapping_start:
+            return None
+
+        signal_coverage_seconds = 0.0
+        signal_coverage_end = source_start
         for segment in validated_segments:
             segment_start = segment["source_start_seconds"]
             segment_end = segment_start + segment["duration_seconds"]
-            overlap_start = max(source_start, segment_start)
-            overlap_end = min(video_end, segment_end)
-            if overlap_end <= overlap_start:
-                continue
-            video_start = overlap_start - source_start
-            video_segment_end = overlap_end - source_start
-            mapped_segments.append(
-                {
-                    "video_start_seconds": video_start,
-                    "video_end_seconds": video_segment_end,
-                    "eeg_source_start_seconds": overlap_start,
-                }
-            )
-        if not mapped_segments:
-            return None
+            signal_overlap_start = max(source_start, segment_start)
+            signal_overlap_end = min(video_end, segment_end)
+            unique_overlap_start = max(signal_overlap_start, signal_coverage_end)
+            if signal_overlap_end > unique_overlap_start:
+                signal_coverage_seconds += signal_overlap_end - unique_overlap_start
+                signal_coverage_end = signal_overlap_end
+        mapped_segments = [
+            {
+                "video_start_seconds": mapping_start - source_start,
+                "video_end_seconds": mapping_end - source_start,
+                "eeg_source_start_seconds": mapping_start,
+            }
+        ]
         links[job_id] = {
             "eeg_source_start_seconds": source_start,
             "video_duration_seconds": float(duration),
-            "eeg_coverage_seconds": sum(
-                segment["video_end_seconds"] - segment["video_start_seconds"]
-                for segment in mapped_segments
-            ),
+            "eeg_coverage_seconds": signal_coverage_seconds,
             "mapped_segments": mapped_segments,
         }
     return links if len(links) == len(samples_by_token) else None
+
+
+def _diagnose_sync_clip(
+    manifest: dict[str, Any] | None,
+    group_jobs: list[Any],
+    job: Any,
+) -> str:
+    """Return a safe reason code when one clip cannot produce a unique map."""
+
+    token = getattr(job, "source_name_token", None)
+    if not isinstance(token, str):
+        return "missing_reference"
+    if sum(getattr(item, "source_name_token", None) == token for item in group_jobs) != 1:
+        return "ambiguous"
+    if not isinstance(manifest, dict):
+        return "unavailable"
+    markers = manifest.get("markers")
+    if not isinstance(markers, list):
+        return "missing_reference"
+    samples = [
+        marker
+        for marker in markers
+        if isinstance(marker, dict) and marker.get("source_name_token") == token
+    ]
+    if len(samples) < 2:
+        return "missing_reference"
+    if any(
+        type(marker.get("frame_index")) is not int
+        or marker["frame_index"] < 0
+        or not _valid_number(marker.get("eeg_clock_seconds"), minimum=-1)
+        for marker in samples
+    ):
+        return "missing_reference"
+    samples.sort(key=lambda marker: marker["frame_index"])
+    frames = [marker["frame_index"] for marker in samples]
+    times = [float(marker["eeg_clock_seconds"]) for marker in samples]
+    if any(right <= left for left, right in zip(frames, frames[1:])):
+        return "frame_mismatch"
+    if any(right <= left for left, right in zip(times, times[1:])):
+        return "clock_mismatch"
+
+    fps = getattr(job, "fps", 0.0)
+    duration = getattr(job, "duration_seconds", 0.0)
+    if not _valid_number(fps, minimum=0.001) or not _valid_number(
+        duration, minimum=0.001
+    ):
+        return "unavailable"
+    offsets = [time - frame / float(fps) for frame, time in zip(frames, times)]
+    source_start = median(offsets)
+    if max(abs(offset - source_start) for offset in offsets) > max(0.2, 0.5 / fps):
+        return "clock_mismatch"
+    observed_frames = round(float(duration) * float(fps))
+    expected_frames = max(frames) + 1
+    if abs(observed_frames - expected_frames) > max(10, round(float(fps) * 0.5)):
+        return "frame_mismatch"
+
+    segments = manifest.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return "missing_reference"
+    video_end = source_start + float(duration)
+    for segment in segments:
+        if not isinstance(segment, dict):
+            return "missing_reference"
+        start = segment.get("source_start_seconds")
+        span = segment.get("duration_seconds")
+        if not _valid_number(start) or not _valid_number(span, minimum=0.001):
+            return "missing_reference"
+        if min(video_end, float(start) + float(span)) > max(source_start, float(start)):
+            return "unmatched"
+    return "unmatched"
+
+
+def _match_sync_clip(
+    manifest: dict[str, Any] | None,
+    group_jobs: list[Any],
+    job: Any,
+) -> tuple[dict[str, Any] | None, str]:
+    token = getattr(job, "source_name_token", None)
+    if not isinstance(token, str):
+        return None, "missing_reference"
+    if sum(getattr(item, "source_name_token", None) == token for item in group_jobs) != 1:
+        return None, "ambiguous"
+    if not isinstance(manifest, dict):
+        return None, "unavailable"
+    markers = manifest.get("markers")
+    if not isinstance(markers, list):
+        return None, "missing_reference"
+    filtered_manifest = {
+        "markers": [
+            marker
+            for marker in markers
+            if isinstance(marker, dict)
+            and marker.get("source_name_token") == token
+        ],
+        "segments": manifest.get("segments"),
+    }
+    links = match_sync_video_group(filtered_manifest, [job])
+    if links is not None and getattr(job, "job_id", None) in links:
+        return links[job.job_id], "linked"
+    return None, _diagnose_sync_clip(manifest, group_jobs, job)
 
 
 def _recording_manifest(
@@ -324,46 +430,60 @@ def resolve_case_video_sync(
         for recording in recordings
         if recording.id is not None
     }
-    candidates: list[tuple[int, str, dict[str, dict[str, Any]]]] = []
+    candidates: dict[str, list[tuple[int, str, dict[str, Any]]]] = {}
+    diagnostics: dict[str, set[str]] = {job.job_id: set() for job in jobs}
+    groups_by_recording: dict[int, set[str]] = {}
+    same_token_candidates: dict[tuple[int, str], set[str]] = {}
     for recording_id, (_recording, manifest) in manifests.items():
-        if manifest is None:
-            continue
         for group_id, group in group_jobs.items():
             if not all(job.sync_group_complete for job in group):
+                for job in group:
+                    diagnostics[job.job_id].add("incomplete_folder")
                 continue
-            links = match_sync_video_group(manifest, group)
-            if links is not None:
-                candidates.append((recording_id, group_id, links))
-
-    by_recording: dict[int, list[tuple[int, str, dict[str, dict[str, Any]]]]] = {}
-    by_group: dict[str, list[tuple[int, str, dict[str, dict[str, Any]]]]] = {}
-    for candidate in candidates:
-        by_recording.setdefault(candidate[0], []).append(candidate)
-        by_group.setdefault(candidate[1], []).append(candidate)
+            if manifest is not None and match_sync_video_group(manifest, group) is not None:
+                groups_by_recording.setdefault(recording_id, set()).add(group_id)
+            for job in group:
+                mapping, reason = _match_sync_clip(manifest, group, job)
+                if mapping is None:
+                    diagnostics[job.job_id].add(reason)
+                    continue
+                candidates.setdefault(job.job_id, []).append(
+                    (recording_id, group_id, mapping)
+                )
+                if isinstance(job.source_name_token, str):
+                    same_token_candidates.setdefault(
+                        (recording_id, job.source_name_token), set()
+                    ).add(job.job_id)
 
     linked_jobs = 0
     for job in jobs:
         job.eeg_recording_db_id = None
         job.eeg_sync_nonce = None
         job.eeg_sync_ciphertext = None
-        if not job.sync_group_complete or not recordings:
+        if not job.sync_group_complete:
+            job.eeg_sync_status = "incomplete_folder"
+        elif not recordings:
             job.eeg_sync_status = "pending"
         elif not job.source_name_token:
-            job.eeg_sync_status = "unavailable"
+            job.eeg_sync_status = "missing_reference"
         elif not any(manifest is not None for _, manifest in manifests.values()):
             job.eeg_sync_status = "unavailable"
         else:
             job.eeg_sync_status = "unmatched"
 
-        matching = [
-            candidate
-            for candidate in by_group.get(job.source_group_id or "", [])
-            if job.job_id in candidate[2]
-        ]
+        matching = candidates.get(job.job_id, [])
         if len(matching) == 1:
-            candidate = matching[0]
-            recording_id, _group_id, link_map = candidate
-            if len(by_recording[recording_id]) == 1:
+            recording_id, group_id, mapping = matching[0]
+            token_match_count = len(
+                same_token_candidates.get(
+                    (recording_id, job.source_name_token or ""), set()
+                )
+            )
+            full_group_ambiguity = (
+                group_id in groups_by_recording.get(recording_id, set())
+                and len(groups_by_recording.get(recording_id, set())) > 1
+            )
+            if not full_group_ambiguity and token_match_count == 1:
                 recording = next(
                     recording
                     for recording in recordings
@@ -378,14 +498,20 @@ def resolve_case_video_sync(
                         job,
                         owner_user_id=owner_user_id,
                         case_id=case_id,
-                        mapping=link_map[job.job_id],
+                        mapping=mapping,
                     )
                     job.eeg_sync_status = "linked"
                     linked_jobs += 1
             else:
                 job.eeg_sync_status = "ambiguous"
-        elif matching:
+        elif len(matching) > 1:
             job.eeg_sync_status = "ambiguous"
+        elif job.eeg_sync_status == "unmatched":
+            job_diagnostics = diagnostics.get(job.job_id, set())
+            if len(job_diagnostics) == 1:
+                job.eeg_sync_status = next(iter(job_diagnostics))
+            elif "ambiguous" in job_diagnostics:
+                job.eeg_sync_status = "ambiguous"
         db.add(job)
     if commit:
         db.commit()

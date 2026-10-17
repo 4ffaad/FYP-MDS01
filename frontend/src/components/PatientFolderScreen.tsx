@@ -34,7 +34,7 @@ import { ModalityWorkspaceTabs } from "./ModalityWorkspaceTabs";
 import {
   getDetection,
   finalizeVideoSyncGroup,
-  uploadDetection,
+  uploadVideoReference,
   videoJobFailureMessage,
 } from "@/lib/video-detection";
 
@@ -123,25 +123,6 @@ async function waitForJob<T extends { status: string }>(
   }
 }
 
-function jobStatusLabel(status: string): string {
-  switch (status) {
-    case "pending":
-      return "Pending upload";
-    case "queued":
-      return "Queued by service";
-    case "ready":
-      return "Complete";
-    case "needs_review":
-      return "Needs review";
-    case "failed":
-      return "Failed";
-    case "expired":
-      return "Expired";
-    default:
-      return "Processing";
-  }
-}
-
 function videoUploadIssue(
   error: unknown,
   acceptedJob = false,
@@ -166,8 +147,8 @@ function videoUploadIssue(
       case 403:
         return {
           message:
-            "The signed-in account cannot access this patient case. Reopen the patient review; no video result was produced.",
-          retryable: false,
+            "Reference video review is disabled by the current runtime setting. This clip was not retained. Enable MDS01_CLINICAL_VIDEO_REVIEW_ENABLED and retry; EEG processing can continue meanwhile.",
+          retryable: true,
           disposition: "not-accepted",
         };
       case 409:
@@ -185,15 +166,14 @@ function videoUploadIssue(
         };
       case 415:
         return {
-          message:
-            "This video format is not supported by the active model runtime.",
+          message: "The video format is not supported for reference playback.",
           retryable: false,
           disposition: "not-accepted",
         };
       case 422:
         return {
           message:
-            "This clip does not meet the active VSViG input contract. No video inference result was produced.",
+            "The server could not prepare a browser-playable reference copy from this clip. Combined review does not run pose detection or video model inference.",
           retryable: false,
           disposition: "not-accepted",
         };
@@ -206,7 +186,7 @@ function videoUploadIssue(
         };
       case 503:
         return {
-          message: "Video detection is unavailable in this runtime.",
+          message: "Clinical video review is unavailable in this runtime.",
           retryable: true,
           disposition: "not-accepted",
         };
@@ -319,7 +299,7 @@ export function PatientFolderScreen({
     videoSyncGroups.current.clear();
     event.target.value = "";
     const nextSelection = classifyPatientFolder(files, {
-      requireReport: !eegOnly,
+      requireReport: false,
       includeVideos: !eegOnly,
     });
     setSelection(nextSelection);
@@ -345,16 +325,22 @@ export function PatientFolderScreen({
     setError(null);
 
     if (!nextSelection.report) return;
+    const reportExtension = nextSelection.report.name
+      .split(".")
+      .pop()
+      ?.toLocaleLowerCase("en-US");
+    if (reportExtension === "pdf") {
+      setReportMessage(
+        "The PDF report will be retained with the encrypted EEG source. Text is not extracted from PDF files.",
+      );
+      return;
+    }
     setReportReading(true);
     setReportMessage("Reading the report on this device…");
     const controller = new AbortController();
     reportAbortController.current = controller;
     try {
       const body = new FormData();
-      const reportExtension = nextSelection.report.name
-        .split(".")
-        .pop()
-        ?.toLocaleLowerCase("en-US");
       body.append(
         "report",
         nextSelection.report,
@@ -431,7 +417,7 @@ export function PatientFolderScreen({
       setError(
         eegOnly
           ? "Select one or more supported EEG recordings."
-          : "Select one or more EEG recordings and one report folder.",
+          : "Select one or more supported EEG recordings from one patient folder.",
       );
       return;
     }
@@ -570,7 +556,9 @@ export function PatientFolderScreen({
 
       if (!activeSessionId)
         throw new Error("The EEG session reference is unavailable.");
-      setStep("EEG and video processing are running independently");
+      setStep(
+        "EEG analysis and reference-video preparation are running independently",
+      );
       const eegCompletion = waitForJob(
         () => getSession(activeSessionId!, signal),
         ["completed", "completed_with_errors", "failed"],
@@ -692,11 +680,11 @@ export function PatientFolderScreen({
           try {
             if (!jobId) {
               setStep(
-                `Uploading video analysis ${position + 1} of ${indexes.length}`,
+                `Uploading reference video ${position + 1} of ${indexes.length}`,
               );
               while (!jobId) {
                 try {
-                  const { job } = await uploadDetection(
+                  const { job } = await uploadVideoReference(
                     videoFile,
                     (value) => {
                       if (mounted.current && !signal.aborted) {
@@ -708,11 +696,9 @@ export function PatientFolderScreen({
                     },
                     activeCaseId!,
                     signal,
-                    0,
                     sourceGroupId
                       ? { sourceName: videoFile.name, groupId: sourceGroupId }
                       : undefined,
-                    true,
                   );
                   jobId = job.job_id;
                   videoIds = { ...videoIds, [index]: jobId };
@@ -733,7 +719,7 @@ export function PatientFolderScreen({
                   }
                   const activeJob = acceptedJobs.shift()!;
                   setStep(
-                    `Waiting for video ${activeJob.index + 1} to finish before submitting the next clip`,
+                    `Waiting for reference video ${activeJob.index + 1} to finish before submitting the next clip`,
                   );
                   if (!(await trackAcceptedJob(activeJob))) {
                     videoIssuesRef.current[index] = {
@@ -829,7 +815,7 @@ export function PatientFolderScreen({
           if (!groupIndexes.every((index) => Boolean(videoIds[index])))
             continue;
           try {
-            setStep("Checking EEG and video timestamps");
+            setStep("Checking EEG and reference-video timestamps");
             await finalizeVideoSyncGroup(
               activeCaseId!,
               groupId,
@@ -843,7 +829,7 @@ export function PatientFolderScreen({
         }
         if (stopSubmittingVideos) {
           setStep(
-            "Video submission stopped because an accepted job needs status review.",
+            "Reference-video submission stopped because an accepted item needs status review.",
           );
         }
         if (acceptedJobs.length > 0) {
@@ -882,10 +868,10 @@ export function PatientFolderScreen({
       if (!videoOutcomesConfirmed) {
         setStep(
           hasUnconfirmedOutcome
-            ? "A video status is unconfirmed. Check the patient review before retrying."
+            ? "A reference-video status is unconfirmed. Check the patient review before retrying."
             : hasRetryableOutcome
               ? "Some video clips were not submitted. Retry eligible uploads to continue."
-              : "Video processing remains pending. Recheck processing status to continue.",
+              : "Reference-video preparation remains pending. Recheck processing status to continue.",
         );
       }
     } catch (submitError) {
@@ -971,7 +957,7 @@ export function PatientFolderScreen({
             <p className="mt-4 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
               {eegOnly
                 ? "Analyze EEG recordings on their own. A report is optional; video files in the selected folder are ignored."
-                : "Keep one patient&apos;s report, multiple EEG recordings, and video clips together in one review."}
+                : "Keep one patient&apos;s EEG recordings and related video clips together in one review. A report is optional."}
             </p>
             {eegOnly && (
               <ModalityWorkspaceTabs modality="eeg" active="upload" />
@@ -1023,7 +1009,7 @@ export function PatientFolderScreen({
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-muted">
                     {eegOnly
                       ? "Choose one .e or .edf recording, or a folder for multiple recordings or a .data/.head pair. A report is optional."
-                      : "One folder creates one case. Include the report, as many EEG recordings as needed, and the related video clips."}
+                      : "One folder creates one case. Include the EEG recordings and related video clips; a report is optional."}
                   </p>
                 </div>
                 {eegOnly ? (

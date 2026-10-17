@@ -441,17 +441,23 @@ export function CombinedReviewReport({
         >
           <div>
             <h3 id="video-evidence-heading" className="text-base font-bold">
-              Video model output
+              {videoJob?.reference_only
+                ? "Reference video"
+                : "Video model output"}
             </h3>
             <p className="mt-1 text-sm leading-6 text-ink-muted">
-              Uncalibrated model scores and movement sensitivity.
+              {videoJob?.reference_only
+                ? "Protected playback is available without running a video model."
+                : "Uncalibrated model scores and movement sensitivity."}
             </p>
             {videoJob?.job_id && (
               <Link
                 className="mt-4 inline-flex text-sm font-semibold text-teal-dark underline underline-offset-4"
                 href={`/video-detection/${encodeURIComponent(videoJob.job_id)}`}
               >
-                Open video timeline and protected player
+                {videoJob?.reference_only
+                  ? "Open synchronized video review"
+                  : "Open video timeline and protected player"}
               </Link>
             )}
           </div>

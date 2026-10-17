@@ -69,7 +69,7 @@ test("intake copy describes the combined workflow without a warning wall", async
 }) => {
   await page.goto("/upload");
   await expect(
-    page.getByText(/report, multiple EEG recordings, and video clips/i),
+    page.getByText(/EEG recordings and related video clips together/i),
   ).toBeVisible();
   await expect(
     page.getByText(/not a diagnosis|research-only warning/i),
@@ -192,6 +192,9 @@ test("completed analysis presents the score timeline and EEG review", async ({
   await expect(
     page.getByRole("heading", { name: "Recording 01" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Clinical observations" }),
+  ).toHaveCount(0);
   const signalPreviewEnabled =
     process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW === "true";
   const waveform = page.getByRole("region", {
@@ -200,22 +203,52 @@ test("completed analysis presents the score timeline and EEG review", async ({
   const waveformControl = page.getByRole("slider", {
     name: /18-channel EEG waveform/,
   });
-  await expect(waveform).toHaveCount(signalPreviewEnabled ? 1 : 0);
+  await expect(waveform).toHaveCount(1);
   await expect(waveformControl).toHaveCount(signalPreviewEnabled ? 1 : 0);
   if (signalPreviewEnabled) {
     await expect(waveform.getByText("18 channels")).toBeVisible();
-    const timeWindow = waveform.getByRole("combobox", {
-      name: "EEG time window",
+    const scrollport = page.getByTestId("eeg-waveform-scrollport");
+    const viewerControls = page.getByTestId("eeg-viewer-controls");
+    const canvas = page.getByTestId("eeg-waveform-canvas");
+    await expect(waveform.getByRole("combobox")).toHaveCount(0);
+    await expect(waveform.getByText(/100 µV\/cm · 30 mm\/s/)).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-channel-count", "18");
+    await expect(canvas).toHaveAttribute("data-sampling-rate", "256");
+    await expect(canvas).toHaveAttribute(
+      "data-paper-speed-mm-per-second",
+      "30",
+    );
+    await expect(canvas).toHaveAttribute("data-sensitivity", "10");
+    await expect(canvas).toHaveAttribute("data-trace-width-mm", "360");
+    const horizontalOverflow = await scrollport.evaluate(
+      (element) => element.scrollWidth - element.clientWidth,
+    );
+    expect(
+      await viewerControls.evaluate(
+        (element) => element.scrollWidth - element.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(1);
+    if (test.info().project.name === "mobile") {
+      expect(horizontalOverflow).toBeGreaterThan(0);
+      await expect(
+        waveform.getByRole("list", { name: "EEG channels" }),
+      ).toBeVisible();
+    } else {
+      expect(horizontalOverflow).toBeLessThanOrEqual(1);
+    }
+    await expect(waveform.getByText(/100 µV\/cm · 30 mm\/s/)).toBeVisible();
+    await waveform.screenshot({
+      path: `test-results/eeg-waveform-${test.info().project.name}.png`,
     });
-    await expect(timeWindow).toHaveValue("10");
-    await timeWindow.selectOption("5");
-    await expect(timeWindow).toHaveValue("5");
-    await timeWindow.selectOption("20");
-    await expect(timeWindow).toHaveValue("20");
-    await timeWindow.selectOption("110");
+    const firstPageStart = Number(await canvas.getAttribute("data-view-start"));
+    await waveform.getByRole("button", { name: "Next EEG page" }).click();
+    await expect
+      .poll(async () => Number(await canvas.getAttribute("data-view-start")))
+      .toBe(firstPageStart + 12);
+    await expect(canvas).toHaveAttribute("data-sensitivity", "10");
   } else {
     await expect(
-      page.getByText("EEG waveform preview is disabled.", { exact: true }),
+      waveform.getByText("EEG waveform preview is disabled.", { exact: true }),
     ).toBeVisible();
   }
   const predictionTimeline = page.getByRole("group", {
@@ -381,7 +414,7 @@ test("EEG source markers seek the matching synchronized video clip", async ({
                 note: "Synthetic overlay evidence.",
                 pose_samples: [
                   {
-                    timestamp: 2,
+                    timestamp: 1,
                     points: Array.from({ length: 15 }, (_, patch_index) => ({
                       patch_index,
                       x: 0.32 + (patch_index % 5) * 0.08,
@@ -462,26 +495,85 @@ test("EEG source markers seek the matching synchronized video clip", async ({
 
   const review = page.getByRole("region", { name: "Shared timeline" });
   await expect(review).toBeVisible();
-  await page
-    .getByRole("button", { name: /Select manual event at EEG 0:42/ })
-    .click();
-  await page.getByRole("button", { name: "Open synchronized video" }).click();
-  const synchronizedReview = page.getByRole("region", {
-    name: "Synchronized camera video",
+  const showVideo = page.getByRole("checkbox", {
+    name: "Show synchronized video popup",
   });
+  const synchronizedReview = page.getByRole("region", {
+    name: "Synchronized video review",
+  });
+  await expect(showVideo).not.toBeChecked();
+  await expect(synchronizedReview).toHaveCount(0);
+  await page
+    .getByRole("button", {
+      name: /Select Video 01 coverage from EEG 0:40 to 0:42/,
+    })
+    .click();
+  await expect(showVideo).not.toBeChecked();
+  await expect(synchronizedReview).toHaveCount(0);
+  await showVideo.check();
   await expect(synchronizedReview).toBeVisible();
-  await expect(
-    synchronizedReview.getByLabel("Select synchronized video"),
-  ).toHaveValue("VID-SYNCED-STUB");
+  await expect(synchronizedReview.getByRole("combobox").first()).toHaveValue(
+    "VID-SYNCED-STUB",
+  );
   const player = page.getByTestId("synchronized-video-player");
   await expect
     .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
-    .toBeCloseTo(2, 0);
+    .toBeCloseTo(1, 0);
   await expect(page.getByTestId("video-vsvig-gradcam")).toBeVisible();
-  await expect(
-    page.getByText("EEG 0:42 · Video 01 · 0:02", { exact: true }),
-  ).toBeVisible();
+  const synchronizedTime = synchronizedReview
+    .getByRole("status")
+    .filter({ hasText: "· Video 01 ·" })
+    .first();
+  await expect
+    .poll(async () => {
+      const status = await synchronizedTime.textContent();
+      const match = status?.match(
+        /^EEG 0:(\d+(?:\.\d+)?) · Video 01 · 0:(\d+(?:\.\d+)?)$/,
+      );
+      return match
+        ? Math.abs(Number(match[1]) - 40 - Number(match[2]))
+        : Number.POSITIVE_INFINITY;
+    })
+    .toBeLessThanOrEqual(0.1);
+  await synchronizedReview
+    .getByRole("button", { name: "Play EEG and video" })
+    .click();
+  await expect
+    .poll(() => player.evaluate((video: HTMLVideoElement) => !video.paused))
+    .toBe(true);
+  await synchronizedReview
+    .getByRole("button", { name: "Pause EEG and video playback" })
+    .click();
+  await expect
+    .poll(() => player.evaluate((video: HTMLVideoElement) => video.paused))
+    .toBe(true);
+  await page.getByLabel("Video playback speed").selectOption("0.5");
+  await expect
+    .poll(() =>
+      player.evaluate((video: HTMLVideoElement) => video.playbackRate),
+    )
+    .toBe(0.5);
 
+  await player.evaluate((video: HTMLVideoElement) => {
+    video.currentTime = 0.5;
+    video.dispatchEvent(new Event("timeupdate", { bubbles: true }));
+  });
+  await expect(
+    page.getByText("EEG 0:40.5 · Video 01 · 0:00.5", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("video-vsvig-gradcam")).toHaveCount(0);
+  await page.getByRole("button", { name: "Next frame" }).click();
+  await expect
+    .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
+    .toBeCloseTo(0.54, 1);
+
+  await player.evaluate((video: HTMLVideoElement) => {
+    video.currentTime = 2.5;
+    video.dispatchEvent(new Event("timeupdate", { bubbles: true }));
+  });
+  await expect(
+    page.getByText("EEG 0:50.5 · Video 01 · 0:02.5", { exact: true }),
+  ).toBeVisible();
   await player.evaluate((video: HTMLVideoElement) => {
     video.currentTime = 1;
     video.dispatchEvent(new Event("timeupdate", { bubbles: true }));
@@ -489,26 +581,45 @@ test("EEG source markers seek the matching synchronized video clip", async ({
   await expect(
     page.getByText("EEG 0:41 · Video 01 · 0:01", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByTestId("video-vsvig-gradcam")).toHaveCount(0);
-
-  await page.getByRole("button", { name: "Close" }).click();
-  await page.getByRole("button", { name: /Window 21, 0:40–0:44/ }).click();
-  await page.getByRole("button", { name: "Open synchronized video" }).click();
+  await page
+    .getByRole("button", { name: "Seek EEG forward 10 seconds" })
+    .click();
+  await expect(showVideo).toBeChecked();
+  await expect(synchronizedReview).toBeVisible();
   await expect
     .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
-    .toBeCloseTo(2, 0);
-  await page.getByRole("button", { name: "Close" }).click();
+    .toBeCloseTo(3, 0);
+
   const sharedTimeline = page.getByRole("group", {
     name: "Shared EEG timeline. Click or drag any lane to seek; use arrow keys to move one second.",
   });
+  await sharedTimeline.focus();
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await expect(
+    page.getByRole("status", { name: "EEG 0:45 · No video" }),
+  ).toBeVisible();
+  await expect(
+    synchronizedReview.getByText("No synchronized video covers EEG 0:45.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Close" }).click();
+  await expect(showVideo).not.toBeChecked();
   await sharedTimeline.focus();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
-  await expect(
-    page.getByRole("status", { name: "EEG 0:46 · No video" }),
-  ).toBeVisible();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await expect(showVideo).not.toBeChecked();
+  await expect(synchronizedReview).toHaveCount(0);
 
   const markerLane = sharedTimeline.locator("[data-timeline-track]").nth(1);
   const markerLaneBounds = await markerLane.boundingBox();

@@ -13,7 +13,11 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Re
 
 from sqlmodel import Session, select
 
-from backend.app.core.config import STORAGE_KEY_ENV, VIDEO_DETECTION_MAX_QUEUED_JOBS
+from backend.app.core.config import (
+    CLINICAL_VIDEO_REVIEW_ENABLED,
+    STORAGE_KEY_ENV,
+    VIDEO_DETECTION_MAX_QUEUED_JOBS,
+)
 from backend.app.core.security import owner_id, require_api_auth
 from backend.app.core.stream_upload import RequestBodyTooLarge, UnsupportedRawUpload, request_video_upload
 from backend.app.eeg.legacy_nicolet import video_sync_name_token
@@ -25,6 +29,7 @@ from backend.app.database import video_detection_repository as repository
 from backend.app.services.case_service import CaseReferenceError, lock_owner_case_mutations
 from backend.app.services import video_detection_service as service
 from backend.app.services.video_storage_service import VideoStorage
+from backend.app.services.clinical_access_audit import record_clinical_access
 from backend.app.privacy.crypto import read_base64_key
 from backend.app.services.storage_service import StorageError
 from backend.app.video_detection.contract import DetectionError
@@ -414,6 +419,11 @@ async def create(
 ):
     case_id = request.headers.get("x-case-id") or None
     reference_only = request.headers.get("x-video-purpose") == "reference"
+    if reference_only and not CLINICAL_VIDEO_REVIEW_ENABLED:
+        raise HTTPException(
+            403,
+            "Reference video review is disabled by the current runtime setting.",
+        )
     try:
         blur_strength_percent = int(
             request.headers.get("x-model-blur-percent", "0")
@@ -577,8 +587,15 @@ def finalize_video_sync_group(
     db.commit()
     refreshed = [db.get(VideoDetectionJob, job.id) for job in group_jobs]
     statuses = {job.eeg_sync_status for job in refreshed if job is not None}
-    status = next(iter(statuses)) if len(statuses) == 1 else "ambiguous"
-    return {"group_id": ensure_group_id, "status": status, "linked_jobs": linked_jobs}
+    status = next(iter(statuses)) if len(statuses) == 1 else "mixed"
+    return {
+        "group_id": ensure_group_id,
+        "status": status,
+        "linked_jobs": linked_jobs,
+        "diagnostic_counts": dict(Counter(
+            job.eeg_sync_status for job in refreshed if job is not None
+        )),
+    }
 
 
 @router.post("/preflight", openapi_extra=video_binary_upload_openapi())
@@ -626,7 +643,15 @@ def listing(current_user: User = Depends(account), db: Session = Depends(get_ses
 @router.get("/jobs/{job_id}")
 def detail(job_id: str, current_user: User = Depends(account), db: Session = Depends(get_session)):
     storage = VideoStorage()
-    return {"job": service.public_job(db, owned(job_id, scoped_owner(current_user), db, storage), storage)}
+    job = owned(job_id, scoped_owner(current_user), db, storage)
+    if job.id is not None:
+        record_clinical_access(
+            db,
+            actor_user_id=current_user.id,
+            video_job_db_id=job.id,
+            action="video_result_view",
+        )
+    return {"job": service.public_job(db, job, storage)}
 
 
 @router.get("/jobs/{job_id}/predictions")
@@ -635,6 +660,13 @@ def predictions(job_id: str, current_user: User = Depends(account), db: Session 
     job = owned(job_id, scoped_owner(current_user), db, storage)
     if job.status != "ready" or not job.predictions_path:
         raise HTTPException(409, "Detection results are not available.")
+    if job.id is not None:
+        record_clinical_access(
+            db,
+            actor_user_id=current_user.id,
+            video_job_db_id=job.id,
+            action="video_result_view",
+        )
     path = None
     try:
         path = storage.materialize_artifact(job_id, Path(job.predictions_path), f"scores-{secrets.token_hex(16)}.json")
@@ -650,8 +682,20 @@ def predictions(job_id: str, current_user: User = Depends(account), db: Session 
 def visualization(job_id: str, current_user: User = Depends(account), db: Session = Depends(get_session)):
     storage = VideoStorage()
     job = owned(job_id, scoped_owner(current_user), db, storage)
+    if not service.clinical_review_video_allowed(job):
+        raise HTTPException(
+            403,
+            "Reference video review is disabled by the current runtime setting.",
+        )
     if job.status not in {"ready", "failed"} or not job.visualization_path:
         raise HTTPException(409, "The privacy-safe review video is not available.")
+    if job.id is not None:
+        record_clinical_access(
+            db,
+            actor_user_id=current_user.id,
+            video_job_db_id=job.id,
+            action="video_stream",
+        )
     try:
         return storage.visualization_response(job_id, Path(job.visualization_path))
     except Exception as exc:
@@ -663,11 +707,23 @@ def original(job_id: str, current_user: User = Depends(account), db: Session = D
     from backend.app.services.source_download_service import original_response
     storage = VideoStorage()
     job = owned(job_id, current_user.id, db, storage)
+    if not CLINICAL_VIDEO_REVIEW_ENABLED:
+        raise HTTPException(
+            403,
+            "Original video download is disabled by the current runtime setting.",
+        )
     if not job.original_path:
         raise HTTPException(404, "Original video is unavailable.")
     path = Path(job.original_path)
     if path != storage.root / job.job_id / "original" / "video.input.enc":
         raise HTTPException(404, "Original video is unavailable.")
+    if job.id is not None:
+        record_clinical_access(
+            db,
+            actor_user_id=current_user.id,
+            video_job_db_id=job.id,
+            action="video_download",
+        )
     try:
         return original_response(storage._storage, job.job_id, path, f"{job.job_id}.video")
     except (StorageError, FileNotFoundError):

@@ -378,7 +378,9 @@ function CaseDetailScreenContent({
                       <p className="font-semibold text-ink">
                         {analysis.modality === "eeg"
                           ? "EEG analysis"
-                          : "VSViG video analysis"}
+                          : analysis.referenceOnly
+                            ? "Reference video"
+                            : "VSViG video analysis"}
                       </p>
                       <p className="mt-1 text-xs text-ink-muted">
                         {formatDate(analysis.createdAt)}
@@ -400,22 +402,32 @@ function CaseDetailScreenContent({
                         Open EEG review
                       </Link>
                     )}
-                    {analysis.modality === "video" && (
-                      <>
+                    {analysis.modality === "video" &&
+                      analysis.referenceOnly && (
                         <Link
                           href={`/analysis?videoJobId=${encodeURIComponent(analysis.id)}`}
                           className="text-xs font-bold text-teal-dark underline underline-offset-4"
                         >
-                          Open EEG/video sync review
+                          Open EEG/video review
                         </Link>
-                        <Link
-                          href={`/video-detection/${encodeURIComponent(analysis.id)}`}
-                          className="text-xs font-bold text-teal-dark underline underline-offset-4"
-                        >
-                          Open VSViG player
-                        </Link>
-                      </>
-                    )}
+                      )}
+                    {analysis.modality === "video" &&
+                      !analysis.referenceOnly && (
+                        <>
+                          <Link
+                            href={`/analysis?videoJobId=${encodeURIComponent(analysis.id)}`}
+                            className="text-xs font-bold text-teal-dark underline underline-offset-4"
+                          >
+                            Open EEG/video sync review
+                          </Link>
+                          <Link
+                            href={`/video-detection/${encodeURIComponent(analysis.id)}`}
+                            className="text-xs font-bold text-teal-dark underline underline-offset-4"
+                          >
+                            Open VSViG player
+                          </Link>
+                        </>
+                      )}
                   </div>
                 </div>
               ))}
@@ -423,8 +435,8 @@ function CaseDetailScreenContent({
                 (analysis) => analysis.modality === "video",
               ) && (
                 <p className="px-5 py-8 text-sm leading-6 text-ink-muted sm:px-7">
-                  Upload a video analysis to add its protected player and model
-                  scores here.
+                  Add a video recording to make its protected playback available
+                  here.
                 </p>
               )}
             </div>

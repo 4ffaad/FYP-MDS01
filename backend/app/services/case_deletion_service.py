@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, delete, or_
 from sqlmodel import Session, select
 
+from backend.app.database.models.clinical_access_event import ClinicalAccessEvent
 from backend.app.database.models.eeg import AnalysisStatus, EEGSession
 from backend.app.database.models.video import VideoPrivacyJob, VideoPrivacyStatus
 from backend.app.database.models.video_detection import VideoDetectionJob
@@ -148,6 +149,13 @@ def delete_case(
 
     try:
         delete_sessions_data(db, sessions, commit=False)
+        detection_ids = [job.id for job in detection_jobs if job.id is not None]
+        if detection_ids:
+            db.exec(
+                delete(ClinicalAccessEvent).where(
+                    ClinicalAccessEvent.video_job_db_id.in_(detection_ids)
+                )
+            )
         for job in (*detection_jobs, *privacy_jobs):
             db.delete(job)
         db.commit()

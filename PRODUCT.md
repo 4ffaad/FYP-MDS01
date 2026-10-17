@@ -34,20 +34,30 @@ model assets remain outside Git.
 
 ## Capabilities and Constraints
 
-- EEG follows `privacy → model` with metadata scrubbing and optional signal
-  obfuscation before research-only model review.
+- EEG source files and complete readable signals are retained encrypted for
+  owner-only review until case deletion. A separate de-identified model input
+  follows the reviewed preprocessing contract; new analyses do not obfuscate
+  the signal.
 - Video detection follows `unblurred transient source → Lightweight OpenPose
-  keypoints → 15 extracted RGB patches → per-patch blur → VSViG inference`,
-  while a separate path creates `face blur with full-frame fallback → skeleton
-  overlay` for the retained review video. It publishes owner-scoped encrypted prediction results
-  and an encrypted privacy-safe review artifact, never source playback. The
-  separate video privacy utility may retain audio only in its encrypted
-  owner-only output.
+  keypoints → 15 extracted RGB patches → VSViG inference`. Combined uploads
+  can create an unblurred, audio-free owner reference copy independently of
+  pose readiness and model inference only when the clinical-video review gate
+  is enabled. Local setup enables owner-only review; an unconfigured backend
+  keeps the gate off. Original and review files stay encrypted until case
+  deletion. The separate video-privacy utility retains its own documented
+  transformation policy.
 - A unified upload may contain one or both modalities. Missing modalities are
   skipped and reported; the workflows remain independent internally.
 - Results are research-only and never a diagnosis or treatment recommendation.
 - Accounts, owner filtering, encrypted storage, acknowledgement states, and
   existing privacy warnings remain mandatory.
+- A conservative, unique VEEG metadata match can synchronize reference video
+  with the EEG source clock when reference review is enabled.
+  Unmatched clips remain separate with their status; EEG and VSViG scores
+  remain independent.
+- Time-stamped human observations are stored separately from model flags and
+  do not infer seizure onset or diagnosis. Current access is uploader-only;
+  shared clinician roles are not implemented.
 
 ## Brand Commitments
 

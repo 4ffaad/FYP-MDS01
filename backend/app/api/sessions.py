@@ -9,7 +9,11 @@ from sqlmodel import Session
 
 from backend.app.core.security import require_owner_auth
 from backend.app.core.stream_upload import UnsupportedRawUpload, request_stream_upload
-from backend.app.privacy.methods import canonical_privacy_profile, normalize_privacy_methods
+from backend.app.privacy.methods import (
+    SIGNAL_OBFUSCATION,
+    canonical_privacy_profile,
+    normalize_privacy_methods,
+)
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
 from backend.app.api.upload_contracts import binary_upload_openapi
@@ -24,6 +28,7 @@ from backend.app.services.processing_capacity import processing_capacity
 from backend.app.services.storage_service import SessionStorage, StorageError
 from backend.app.services.case_service import CaseReferenceError
 from backend.app.services.case_source_report_service import CaseSourceReportError
+from backend.app.services.clinical_access_audit import record_clinical_access
 
 
 router = APIRouter(prefix="/api", tags=["sessions"])
@@ -77,6 +82,11 @@ async def upload_session(
         privacy_profile = canonical_privacy_profile(selected_methods)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if SIGNAL_OBFUSCATION in selected_methods:
+        raise HTTPException(
+            status_code=400,
+            detail="Signal obfuscation is unavailable for new patient analyses.",
+        )
 
     try:
         archive = request_stream_upload(
@@ -283,6 +293,13 @@ def download_archive(session_id: str, db: Session = Depends(get_session),
     path = Path(session.original_path)
     if path != storage.root / session.session_id / "original" / "upload.zip.enc":
         raise HTTPException(404, "Original archive is unavailable.")
+    if session.id is not None:
+        record_clinical_access(
+            db,
+            actor_user_id=current_user.id,
+            session_db_id=session.id,
+            action="session_archive_download",
+        )
     try:
         return original_response(storage, session.session_id, path, f"{session.session_id}.zip")
     except (StorageError, FileNotFoundError):
@@ -296,6 +313,13 @@ def download_original_report(session_id: str, db: Session = Depends(get_session)
     session = get_session_or_none(db, session_id, current_user.id)
     if not session or not session.original_path:
         raise HTTPException(404, "Original report is unavailable.")
+    if session.id is not None:
+        record_clinical_access(
+            db,
+            actor_user_id=current_user.id,
+            session_db_id=session.id,
+            action="session_report_download",
+        )
     try:
         return source_report_response(SessionStorage(), session)
     except (StorageError, FileNotFoundError):

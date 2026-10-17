@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from sqlmodel import Session
 
 from backend.app.core.config import ENABLE_FULL_SIGNAL_PREVIEW, ENABLE_SIGNAL_PREVIEW, FULL_SIGNAL_PREVIEW_MAX_SECONDS
@@ -24,6 +26,7 @@ from backend.app.database.repository import (
 from backend.app.services.session_service import public_record
 from backend.app.services.signal_service import SignalPreviewUnavailable, build_signal_preview
 from backend.app.services.storage_service import SessionStorage, StorageError
+from backend.app.services.clinical_access_audit import record_clinical_access
 from backend.app.privacy.retention import model_alert_intervals
 from backend.app.ml.interface import public_score_type
 
@@ -58,6 +61,21 @@ def _get_record(db: Session, record_id: str, owner_user_id: int | None = None) -
     return record
 
 
+def _audit_record_access(
+    db: Session,
+    current_user: User | None,
+    record: EEGRecording,
+    action: str,
+) -> None:
+    if record.id is not None:
+        record_clinical_access(
+            db,
+            actor_user_id=getattr(current_user, "id", None),
+            recording_db_id=record.id,
+            action=action,
+        )
+
+
 @router.get("/recordings/{record_id}")
 def get_recording(
     record_id: str,
@@ -81,6 +99,7 @@ def get_recording(
     """
 
     record = _get_record(db, record_id, owner_id(current_user))
+    _audit_record_access(db, current_user, record, "recording_view")
     session = get_session_by_database_id(db, record.session_db_id, owner_id(current_user))
     alert_count = list_flagged_window_counts(db, [record.id] if record.id is not None else []).get(record.id or 0, 0)
     metadata = list_model_metadata(db, [record.id] if record.id is not None else []).get(record.id or 0)
@@ -110,6 +129,7 @@ def get_prediction(
     """
 
     record = _get_record(db, record_id, owner_id(current_user))
+    _audit_record_access(db, current_user, record, "prediction_view")
     session = get_session_by_database_id(db, record.session_db_id, owner_id(current_user))
     predictions = list_predictions(db, record.id)
     first = predictions[0] if predictions else None
@@ -191,6 +211,7 @@ def get_annotations(
     """
 
     record = _get_record(db, record_id, owner_id(current_user))
+    _audit_record_access(db, current_user, record, "annotation_view")
     events: list[dict] = []
     if record.annotation_events_json:
         try:
@@ -255,6 +276,7 @@ def get_explanation(
     """
 
     record = _get_record(db, record_id, owner_id(current_user))
+    _audit_record_access(db, current_user, record, "explanation_view")
     predictions = list_predictions(db, record.id)
     prediction_ids = [prediction.id for prediction in predictions if prediction.id is not None]
     explanations = list_explanations(db, prediction_ids)
@@ -288,16 +310,17 @@ def public_explanation_payload(payload: object) -> object:
     return result
 
 
-@router.get("/recordings/{record_id}/signal")
+@router.get("/recordings/{record_id}/signal", response_class=JSONResponse)
 def get_signal(
     record_id: str,
+    request: Request,
     start_seconds: float = Query(0, ge=0),
     duration_seconds: float = Query(10, gt=0, le=7200),
     max_points: int = Query(2000, gt=0, le=10000),
     db: Session = Depends(get_session),
     current_user: User | None = Depends(require_owner_auth),
-) -> dict:
-    """Reject waveform access because EEG remains biometrically sensitive.
+) -> Response:
+    """Return one owner-scoped, private waveform page.
 
     Parameters
     ----------
@@ -314,9 +337,9 @@ def get_signal(
 
     Returns
     -------
-    dict
-        Bounded retained de-identified or obfuscated waveform data with model
-        alert intervals.
+    Response
+        Bounded retained waveform JSON, gzip-compressed when accepted by the
+        requesting client, with model alert intervals.
 
     Raises
     ------
@@ -333,11 +356,12 @@ def get_signal(
     if duration_seconds > max_duration:
         raise HTTPException(status_code=422, detail="The requested signal range is too large.")
     record = _get_record(db, record_id, owner_id(current_user))
+    _audit_record_access(db, current_user, record, "waveform_view")
     session = get_session_by_database_id(db, record.session_db_id, owner_id(current_user))
     if session is None:
         raise HTTPException(status_code=404, detail="Recording session was not found.")
     try:
-        return build_signal_preview(
+        preview = build_signal_preview(
             db,
             session,
             record,
@@ -345,6 +369,37 @@ def get_signal(
             start_seconds,
             duration_seconds,
             max_points,
+        )
+        accepts_gzip = False
+        for item in request.headers.get("accept-encoding", "").split(","):
+            name, *parameters = item.strip().lower().split(";")
+            if name != "gzip":
+                continue
+            quality = 1.0
+            for parameter in parameters:
+                key, separator, value = parameter.strip().partition("=")
+                if key == "q" and separator:
+                    try:
+                        quality = float(value)
+                    except ValueError:
+                        quality = 0.0
+            accepts_gzip = quality > 0
+            break
+        response_headers = {
+            "Cache-Control": "no-store, private",
+            "Pragma": "no-cache",
+            "Vary": "Accept-Encoding",
+        }
+        if not accepts_gzip:
+            return JSONResponse(content=preview, headers=response_headers)
+        body = JSONResponse(content=preview).body
+        return Response(
+            content=gzip.compress(body, compresslevel=1, mtime=0),
+            media_type="application/json",
+            headers={
+                **response_headers,
+                "Content-Encoding": "gzip",
+            },
         )
     except (SignalPreviewUnavailable, StorageError, FileNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -364,6 +419,7 @@ def download_original(record_id: str, db: Session = Depends(get_session),
     suffix = artifact.name.removesuffix(".enc").split(".")[-1]
     if suffix not in {"e", "edf", "data"} or artifact != storage.root / session.session_id / "retained" / f"{record.record_id}.source.{suffix}.enc":
         raise HTTPException(404, "Original recording is unavailable.")
+    _audit_record_access(db, current_user, record, "recording_download")
     try:
         return original_response(storage, session.session_id, artifact, f"{record.record_id}.{suffix}")
     except (StorageError, FileNotFoundError):

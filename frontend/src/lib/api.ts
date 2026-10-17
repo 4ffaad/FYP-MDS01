@@ -1082,6 +1082,7 @@ export async function getCase(
       status: CaseAnalysis["status"];
       created_at: string;
       review_ready: boolean;
+      reference_only?: boolean;
     }>;
   }>(`/api/cases/${encodeURIComponent(caseId)}`, signal);
   return {
@@ -1095,6 +1096,7 @@ export async function getCase(
       status: analysis.status,
       createdAt: analysis.created_at,
       reviewReady: analysis.review_ready,
+      referenceOnly: analysis.reference_only === true,
     })),
   };
 }
@@ -1739,11 +1741,10 @@ export async function getSignalPreview(
         "No model-positive signal is available for this recording.",
         404,
       );
-    const points = Math.min(maxPoints, Math.ceil(durationSeconds * 128));
+    const points = Math.min(maxPoints, Math.ceil(durationSeconds * 256));
     const timeSeconds = Array.from(
       { length: points },
-      (_, index) =>
-        startSeconds + (durationSeconds * index) / Math.max(1, points - 1),
+      (_, index) => startSeconds + index / 256,
     );
     const channels = PRIVACY_SIGNAL_CHANNELS.map((label, channelIndex) => ({
       label,
@@ -1767,7 +1768,7 @@ export async function getSignalPreview(
           ? Math.exp(-(((pulsePosition - 0.18) / 0.055) ** 2)) * 0.2 -
             Math.exp(-(((pulsePosition - 0.28) / 0.08) ** 2)) * 0.11
           : 0;
-        return baseline + transient;
+        return (baseline + transient) * 1e-4;
       }),
     }));
     return {
@@ -1812,7 +1813,9 @@ export async function getSignalPreview(
     representation:
       | "metadata-scrubbed"
       | "signal-obfuscated"
-      | "original-source";
+      | "original-source"
+      | "normalized-units"
+      | "relative-units";
     display_filter?: string | null;
     sampling_rate: number;
     channels: Array<{
@@ -1893,6 +1896,13 @@ async function requestWithoutBody(
     credentials: REQUEST_CREDENTIALS,
   });
   if (!response.ok) throw await readError(response, notifyExpiry);
+}
+
+export async function deleteJson(
+  path: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await requestWithoutBody(path, "DELETE", signal, false);
 }
 
 async function postFormJson<T>(

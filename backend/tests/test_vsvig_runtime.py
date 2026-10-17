@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from copy import deepcopy
+import inspect
 import json
 import os
 from pathlib import Path
@@ -27,7 +28,7 @@ from backend.app.video_detection.contract import (
     digest,
     load_contract,
 )
-from backend.app.video_detection.runtime import _track_single_pose, module_from_file
+from backend.app.video_detection.runtime import _track_single_pose, module_from_file, run
 from backend.scripts.install_vsvig_assets import (
     _checked_env_path,
     _download_verified,
@@ -113,6 +114,12 @@ class VSViGRuntimeTests(unittest.TestCase):
         self.assertEqual(preprocessing["sample_fps"], 6.0)
         self.assertEqual(preprocessing["patch_labels"][0], "nose")
         self.assertEqual(len(preprocessing["patch_labels"]), 15)
+
+    def test_new_runtime_calls_default_to_unblurred_model_patches(self):
+        self.assertEqual(
+            inspect.signature(run).parameters["blur_strength_percent"].default,
+            0,
+        )
 
     def test_installer_rejects_symlinked_environment_file(self):
         with tempfile.TemporaryDirectory() as directory:

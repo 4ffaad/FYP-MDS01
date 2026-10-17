@@ -81,11 +81,9 @@ export function PatientFolderMediaStep({
               included automatically
             </p>
             <p className="mt-2 text-sm leading-6 text-ink-muted">
-              Video is retained for unblurred, owner-only reference playback.
-              Viewing does not require pose detection or video model inference.
-            </p>
-            <p className="mt-3 border-t border-rule pt-3 text-xs leading-5 text-ink-muted">
-              Video model output is research-only and is not a diagnosis.
+              Combined review prepares an owner-only reference video and never
+              runs pose detection or video model inference. Unblurred clinical
+              review must be enabled by the institution.
             </p>
           </section>
         )}

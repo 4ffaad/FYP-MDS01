@@ -62,6 +62,39 @@ test("classifies one explicitly selected folder without filename-based cross-mod
   expect(result.ignoredCount).toBe(1);
 });
 
+test("combined EEG and video intake does not require a report", () => {
+  const result = classifyPatientFolder(
+    [
+      folderFile("one-case/eeg/session.e"),
+      folderFile("one-case/video/camera-01.avi"),
+    ],
+    { requireReport: false },
+  );
+
+  expect(result.errors).toEqual([]);
+  expect(result.eegCandidates).toHaveLength(1);
+  expect(result.report).toBeNull();
+  expect(result.videos).toHaveLength(1);
+});
+
+test("combined intake can retain one PDF report with the EEG archive", async () => {
+  const result = classifyPatientFolder([
+    folderFile("one-case/eeg/session.e"),
+    folderFile("one-case/reports/report.pdf", "synthetic-pdf"),
+  ]);
+
+  expect(result.errors).toEqual([]);
+  expect(result.report?.name).toBe("report.pdf");
+  const archive = await buildEegArchive(
+    result.eegCandidates,
+    undefined,
+    result.report,
+  );
+  expect(
+    Object.keys(unzipSync(new Uint8Array(await archive.arrayBuffer()))),
+  ).toEqual(["recording.e", "source-report.pdf"]);
+});
+
 test("EEG-only classification permits a missing report and ignores videos", () => {
   const result = classifyPatientFolder(
     [
@@ -188,7 +221,7 @@ test("rejects ambiguous sources and does not pair sidecars across folders", () =
   expect(result.report).toBeNull();
   expect(result.eegCandidates).toHaveLength(2);
   expect(result.errors).toContain(
-    "Select exactly one supported report (.doc or .docx) in the patient folder.",
+    "Select exactly one supported report (.doc, .docx, or .pdf) in the patient folder.",
   );
   expect(result.errors).toContain(
     "Each Nicolet .data file needs exactly one same-directory, same-base-name .head sidecar.",
@@ -1054,6 +1087,124 @@ test("one patient folder includes every report detail and proceeds directly to p
     expect(videoDetectionRequests).toEqual([]);
   } finally {
     releaseUploadResponse();
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("combined EEG-video intake submits reference media without VSViG and explains the approval gate", async ({
+  page,
+}) => {
+  test.skip(
+    process.env.NEXT_PUBLIC_USE_API_STUB !== "false",
+    "Run with NEXT_PUBLIC_USE_API_STUB=false to verify intercepted uploads.",
+  );
+  let referencePurpose: string | undefined;
+  let videoRequests = 0;
+  let posePreflightRequests = 0;
+  const createdAt = "2026-10-01T00:00:00Z";
+
+  await page.route("**/api/**", (route) =>
+    route.fulfill({ status: 500, json: { detail: "Unexpected API request" } }),
+  );
+  await page.route("**/api/uploads/drafts", (route) =>
+    route.fulfill({
+      status: 201,
+      json: {
+        draft_id: "UPL-COMBINED-REFERENCE",
+        status: "staged",
+        created_at: createdAt,
+        expires_at: "2026-10-01T00:30:00Z",
+      },
+    }),
+  );
+  await page.route(
+    "**/api/uploads/drafts/UPL-COMBINED-REFERENCE/finalize",
+    (route) =>
+      route.fulfill({
+        status: 202,
+        json: {
+          session_id: "MDS-COMBINED-REFERENCE",
+          case_id: "CASE-COMBINED-REFERENCE",
+          status: "queued",
+        },
+      }),
+  );
+  await page.route("**/api/sessions/MDS-COMBINED-REFERENCE", (route) =>
+    route.fulfill({
+      json: {
+        session_id: "MDS-COMBINED-REFERENCE",
+        case_id: "CASE-COMBINED-REFERENCE",
+        privacy_method: "metadata-scrub",
+        privacy_methods: ["metadata-scrub"],
+        status: "completed",
+        current_stage: "complete",
+        created_at: createdAt,
+        completed_at: createdAt,
+        error_message: null,
+        progress: {
+          total_recordings: 1,
+          finished_recordings: 1,
+          completed_recordings: 1,
+          failed_recordings: 0,
+          percent: 100,
+        },
+        summary: { model_alert_recordings: 0 },
+        recordings: [],
+      },
+    }),
+  );
+  await page.route("**/api/video-detection/preflight", (route) => {
+    posePreflightRequests += 1;
+    return route.fulfill({
+      status: 500,
+      json: { detail: "Unexpected preflight" },
+    });
+  });
+  await page.route("**/api/video-detection/jobs", (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    videoRequests += 1;
+    referencePurpose = route.request().headers()["x-video-purpose"];
+    return route.fulfill({
+      status: 403,
+      json: {
+        detail:
+          "Reference video review is disabled by the current runtime setting.",
+      },
+    });
+  });
+
+  await page.goto("/upload");
+  const scratch = process.env.TMPDIR;
+  if (!scratch)
+    throw new Error("TMPDIR is required for isolated browser fixtures.");
+  const folder = mkdtempSync(join(scratch, "mds01-combined-reference-test-"));
+  try {
+    writeFileSync(join(folder, "recording.e"), "synthetic-eeg");
+    writeFileSync(join(folder, "camera-01.avi"), "synthetic-video");
+    await page
+      .locator('input[type="file"][webkitdirectory]')
+      .setInputFiles(folder);
+
+    await expect(
+      page.getByRole("button", { name: "Start processing" }),
+    ).toBeEnabled();
+    await page.getByRole("button", { name: "Start processing" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Processing finished with issues" }),
+    ).toBeVisible();
+    await expect(
+      page
+        .getByRole("alert")
+        .filter({ hasText: "Reference video review is disabled" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Retry eligible video uploads" }),
+    ).toBeVisible();
+
+    expect(referencePurpose).toBe("reference");
+    expect(videoRequests).toBe(1);
+    expect(posePreflightRequests).toBe(0);
+  } finally {
     rmSync(folder, { recursive: true, force: true });
   }
 });

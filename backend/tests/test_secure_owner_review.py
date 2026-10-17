@@ -16,14 +16,16 @@ import pyedflib
 from fastapi import FastAPI, UploadFile
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel, Session, create_engine
+from sqlmodel import SQLModel, Session, create_engine, select
 from starlette.datastructures import Headers
 
 from backend.app.api import recordings, sessions, video_detection
 from backend.app.core.security import require_api_auth
 from backend.app.database.db import get_session
 from backend.app.database.models.auth import User
+from backend.app.database.models.clinical_access_event import ClinicalAccessEvent
 from backend.app.database.models.eeg import EEGSession, EEGRecording, AnalysisStatus, RecordingStatus
+from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.eeg.contracts import MODEL_CHANNELS
 from backend.app.services import processing_service, video_detection_service
 from backend.app.services.case_deletion_service import delete_case
@@ -113,9 +115,35 @@ class SecureOwnerReviewTests(unittest.TestCase):
         self.assertIn("no-store", response.headers["cache-control"])
         self.assertEqual(self.client.get(f"/api/sessions/{self.session_id}/original").content, archive)
         self.assertEqual(self.client.get(f"/api/sessions/{self.session_id}/original-report").content, b"synthetic original report")
-        preview = self.client.get("/api/recordings/REC-SOURCE/signal?duration_seconds=2").json()
+        signal_response = self.client.get(
+            "/api/recordings/REC-SOURCE/signal?duration_seconds=2",
+            headers={"Accept-Encoding": "gzip"},
+        )
+        self.assertEqual(signal_response.headers.get("content-encoding"), "gzip")
+        self.assertIn("accept-encoding", signal_response.headers.get("vary", "").lower())
+        self.assertIn("no-store", signal_response.headers.get("cache-control", ""))
+        preview = signal_response.json()
         self.assertEqual(preview["representation"], "original-source")
         self.assertEqual(len(preview["channels"]), 20)
+        self.assertEqual(preview["sampling_rate"], 256)
+        self.assertLess(
+            max(abs(sample) for channel in preview["channels"] for sample in channel["samples"]),
+            100e-6,
+        )
+        with Session(self.engine) as db:
+            events = db.exec(
+                select(ClinicalAccessEvent).order_by(ClinicalAccessEvent.id)
+            ).all()
+            self.assertEqual(
+                [event.action for event in events],
+                [
+                    "recording_download",
+                    "session_archive_download",
+                    "session_report_download",
+                    "waveform_view",
+                ],
+            )
+            self.assertTrue(all(event.actor_user_id == 1 for event in events))
         encrypted = list((self.storage.root / self.session_id / "retained").glob("*.enc"))[0]
         self.assertNotIn(b"Synthetic source annotation", encrypted.read_bytes())
         self.assertEqual(list((self.storage.root / self.session_id / "work").glob("*")), [])
@@ -162,6 +190,12 @@ class SecureOwnerReviewTests(unittest.TestCase):
 
     @unittest.skipUnless(__import__("cv2").__dict__.get("VideoCapture"), "OpenCV video runtime unavailable")
     def test_reference_video_without_pose_assets_can_play_download_and_reopen(self):
+        enabled_service = patch.object(video_detection_service, "CLINICAL_VIDEO_REVIEW_ENABLED", True)
+        enabled_api = patch.object(video_detection, "CLINICAL_VIDEO_REVIEW_ENABLED", True)
+        enabled_service.start()
+        enabled_api.start()
+        self.addCleanup(enabled_service.stop)
+        self.addCleanup(enabled_api.stop)
         video_bytes = Path("backend/tests/fixtures/synthetic-review.mp4").read_bytes()
         with Session(self.engine) as db, patch.object(video_detection_service, "load_contract", side_effect=AssertionError("must not load models")), patch.object(video_detection_service, "_preflight_uploaded_video", side_effect=AssertionError("must not run pose")):
             job = asyncio.run(video_detection_service.create_job(db, self.video,
@@ -176,6 +210,9 @@ class SecureOwnerReviewTests(unittest.TestCase):
         self.assertEqual(job["status"], "ready", job)
         self.assertEqual(job["review_privacy_method"], "unblurred-owner-source")
         self.assertIsNone(job["retention_expires_at"])
+        self.assertEqual(job["retention_policy"], "until-deletion")
+        self.assertEqual(job["video_access_status"], "available")
+        self.assertTrue(job["source_download_available"])
         self.assertEqual(self.client.get(f"/api/video-detection/jobs/{job_id}/original").content, video_bytes)
         ranged = self.client.get(f"/api/video-detection/jobs/{job_id}/visualization", headers={"Range": "bytes=0-63"})
         self.assertEqual(ranged.status_code, 206)
@@ -186,6 +223,57 @@ class SecureOwnerReviewTests(unittest.TestCase):
         with Session(self.engine) as db:
             delete_case(db, case_id=case_id, owner_user_id=1, eeg_storage=self.storage, video_storage=self.video)
         self.assertFalse((self.storage.root / job_id).exists())
+
+    def test_unblurred_video_is_hidden_and_blocked_without_institutional_approval(self):
+        job_id = "VID-UNAPPROVED-REVIEW"
+        original = self.video.root / job_id / "original" / "video.input.enc"
+        review = self.video.visualization_path(job_id)
+        original.parent.mkdir(parents=True)
+        review.parent.mkdir(parents=True)
+        original.write_bytes(b"encrypted-source")
+        review.write_bytes(b"encrypted-review")
+        with Session(self.engine) as db:
+            db.add(
+                VideoDetectionJob(
+                    owner_user_id=1,
+                    job_id=job_id,
+                    case_id="CASE-UNAPPROVED-REVIEW",
+                    status="ready",
+                    current_stage="reference-review-ready",
+                    review_privacy_method="unblurred-owner-source",
+                    reference_only=True,
+                    original_path=str(original),
+                    visualization_path=str(review),
+                )
+            )
+            db.commit()
+
+        detail = self.client.get(f"/api/video-detection/jobs/{job_id}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertFalse(detail.json()["job"]["video_available"])
+        self.assertEqual(detail.json()["job"]["video_access_status"], "review_disabled")
+        self.assertTrue(detail.json()["job"]["source_available"])
+        self.assertFalse(detail.json()["job"]["source_download_available"])
+        for suffix in ("/original", "/visualization"):
+            response = self.client.get(f"/api/video-detection/jobs/{job_id}{suffix}")
+            self.assertEqual(response.status_code, 403)
+
+        from backend.app.video_detection.contract import DetectionError
+        with Session(self.engine) as db:
+            with self.assertRaisesRegex(DetectionError, "clinical_video_review_disabled"):
+                asyncio.run(
+                    video_detection_service.create_job(
+                        db,
+                        self.video,
+                        UploadFile(
+                            filename="source.mp4",
+                            file=io.BytesIO(b"unread video"),
+                            headers=Headers({"content-type": "video/mp4"}),
+                        ),
+                        1,
+                        reference_only=True,
+                    )
+                )
 
 
 class SourceNicoletRangeTests(unittest.TestCase):

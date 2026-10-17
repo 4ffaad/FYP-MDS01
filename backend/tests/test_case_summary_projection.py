@@ -18,6 +18,7 @@ from backend.app.database.models.video import (
     VideoPrivacyProfile,
     VideoPrivacyStatus,
 )
+from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.services.case_profile_service import CRYPTO_VERSION, encrypt_profile
 from backend.app.services.case_service import get_case, list_cases
 
@@ -211,6 +212,32 @@ class CaseSummaryProjectionTests(unittest.TestCase):
         self.assertEqual(listing[0]["modalities"], ["video"])
         assert detail is not None
         self.assertEqual(detail["analyses"], [])
+
+    def test_case_history_distinguishes_reference_video_from_vsvig(self) -> None:
+        with Session(self.engine) as db:
+            db.add_all(
+                [
+                    VideoDetectionJob(
+                        owner_user_id=7,
+                        case_id="CASE-ABCD5678",
+                        job_id="VID-REFERENCE",
+                        status="ready",
+                        reference_only=True,
+                    ),
+                    VideoDetectionJob(
+                        owner_user_id=7,
+                        case_id="CASE-ABCD5678",
+                        job_id="VID-MODEL",
+                        status="ready",
+                    ),
+                ]
+            )
+            db.commit()
+            detail = get_case(db, "CASE-ABCD5678", owner_user_id=7)
+
+        assert detail is not None
+        reference_flags = {item["id"]: item["reference_only"] for item in detail["analyses"]}
+        self.assertEqual(reference_flags, {"VID-REFERENCE": True, "VID-MODEL": False})
 
     def test_case_list_uses_bounded_recording_summary_queries(self) -> None:
         with Session(self.engine) as db:

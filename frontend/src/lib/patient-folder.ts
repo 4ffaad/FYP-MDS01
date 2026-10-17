@@ -16,7 +16,7 @@ export interface PatientFolderSelection {
 
 type FileParts = { directory: string; stem: string; extension: string };
 
-const REPORT_EXTENSIONS = new Set(["doc", "docx"]);
+const REPORT_EXTENSIONS = new Set(["doc", "docx", "pdf"]);
 const REPORT_DIRECTORY_NAMES = new Set(["report", "reports"]);
 const VIDEO_EXTENSIONS = new Set(["avi", "mp4", "mov", "webm"]);
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024 - 1024 * 1024;
@@ -78,8 +78,8 @@ export function classifyPatientFolder(
   ) {
     errors.push(
       requireReport
-        ? "Select exactly one supported report (.doc or .docx) in the patient folder."
-        : "Select no more than one supported report (.doc or .docx) in the EEG folder.",
+        ? "Select exactly one supported report (.doc, .docx, or .pdf) in the patient folder."
+        : "Select no more than one supported report (.doc, .docx, or .pdf) in the patient folder.",
     );
   }
 

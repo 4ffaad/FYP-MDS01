@@ -1,4 +1,4 @@
-"""CHB-MIT discovery, seizure labels, and leakage-evaluation helpers."""
+"""CHB-MIT discovery and seizure labels."""
 
 from __future__ import annotations
 
@@ -120,12 +120,3 @@ def seizure_window_labels(starts: list[float], intervals: list[tuple[float, floa
             int(any(max(0.0, min(end, seizure_end) - max(start, seizure_start)) >= 2.0 for seizure_start, seizure_end in intervals))
         )
     return labels
-
-
-def recording_test_names(recordings: list[Path]) -> set[str]:
-    """Select a deterministic held-out recording per subject, never random windows."""
-
-    ordered = sorted(recordings)
-    if len(ordered) < 2:
-        return set()
-    return {path.name for path in ordered[::5] or ordered[-1:]}

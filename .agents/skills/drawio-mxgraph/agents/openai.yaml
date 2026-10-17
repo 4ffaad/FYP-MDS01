@@ -1,0 +1,4 @@
+interface:
+  display_name: "Draw.io 架构绘图师"
+  short_description: "自动选择最优图标并生成可编辑 Draw.io 架构图"
+  default_prompt: "Use $drawio-mxgraph to create an editable architecture diagram and automatically choose the most appropriate Draw.io or Iconify icons."

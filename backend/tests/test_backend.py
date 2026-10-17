@@ -55,7 +55,7 @@ from backend.app.eeg.model_input import MODEL_CHANNELS, prepare_model_windows, p
 from backend.app.ml.stub_inference import StubInferenceService
 from backend.app.ml.interface import WindowPrediction, score_crossed_threshold
 from backend.app.privacy.deidentify import deidentify_edf, generate_record_id, inspect_metadata, scrub_signal_header
-from backend.app.privacy.signal_projection import obfuscate_signal, psd_features
+from backend.app.privacy.signal_projection import obfuscate_signal
 from backend.app.privacy.methods import canonical_privacy_profile, methods_from_profile, normalize_privacy_methods
 from backend.app.privacy.retention import detected_intervals, model_alert_intervals, select_window_indices, write_obfuscated_npz, write_scrubbed_edf_clip
 from backend.app.research.metrics import calibration_metrics, classification_metrics, patient_bootstrap_f1, precision_recall_points, roc_points, threshold_sweep
@@ -878,8 +878,6 @@ class BackendTests(unittest.TestCase):
         first = obfuscate_signal(windows, b"a" * 32)
         second = obfuscate_signal(windows, b"a" * 32)
         rotated = obfuscate_signal(windows, b"b" * 32)
-        features = psd_features(first)
-        self.assertEqual(features.shape, (2, 90))
         self.assertEqual(first.shape, (2, 1024, 18))
         self.assertEqual(first.dtype, np.float32)
         self.assertTrue(np.array_equal(first, second))
@@ -1162,7 +1160,7 @@ Seizure End Time: 3036 seconds
         from backend.app.api.recordings import get_signal
 
         with patch("backend.app.api.recordings.ENABLE_SIGNAL_PREVIEW", False), self.assertRaises(HTTPException) as raised:
-            get_signal("REC-NOT-LOOKED-UP", db=None)
+            get_signal("REC-NOT-LOOKED-UP", request=None, db=None)
         self.assertEqual(raised.exception.status_code, 404)
 
     def test_prototype_has_no_redis_rq_or_worker_configuration(self) -> None:
@@ -1761,6 +1759,7 @@ Seizure End Time: 3036 seconds
 
             self.assertEqual(len(payload["channels"]), 18)
             self.assertGreaterEqual(payload["time_seconds"][-1], 7.0)
+            self.assertEqual(payload["representation"], "relative-units")
 
     def test_repository_lists_explanations(self) -> None:
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False})

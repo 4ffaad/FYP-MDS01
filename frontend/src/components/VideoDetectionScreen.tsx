@@ -28,13 +28,6 @@ function formatTime(seconds: number) {
   return `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(1).padStart(4, "0")}`;
 }
 
-function formatRetentionExpiry(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
-}
-
 function resultForTrack(
   result: DetectionResult,
   track: DetectionTrackResult | undefined,
@@ -110,8 +103,9 @@ export function VideoDetectionUploadScreen() {
         <p className="eyebrow">Video workspace</p>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">Video</h1>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-muted">
-          Upload a clip once. MDS01 scores movement and creates an owner-only
-          review copy automatically.
+          Upload a clip for a separate experimental VSViG analysis. Multiple
+          people can be tracked separately; track labels do not identify the
+          patient.
         </p>
         <ModalityWorkspaceTabs modality="video" active="upload" />
 
@@ -143,8 +137,8 @@ export function VideoDetectionUploadScreen() {
               id="video-help"
               className="mt-2 text-sm leading-6 text-ink-muted"
             >
-              MP4, MOV, AVI, or WebM · one person visible · 5 seconds or longer
-              · 1920×1080 preferred.
+              MP4, MOV, AVI, or WebM · at least 5 seconds · native 1920×1080
+              required unless experimental adaptation is enabled.
             </p>
             <input
               id="detection-video"
@@ -165,9 +159,11 @@ export function VideoDetectionUploadScreen() {
               Privacy and model details
             </summary>
             <p className="mt-3 leading-6 text-ink-muted">
-              VSViG receives pose coordinates and 15 unblurred RGB patches.
-              Originals and the unblurred review copy are encrypted until case
-              deletion.
+              VSViG receives pose coordinates and 15 unblurred RGB patches. The
+              review overlay can show the OpenPose body skeleton and model
+              evidence; facial action units are not configured. Original video
+              and retained results are encrypted until case deletion. Unblurred
+              playback follows the owner-only runtime review setting.
             </p>
           </details>
           {error && (
@@ -291,14 +287,10 @@ export function VideoDetectionJobScreen({
       <div className="mx-auto max-w-5xl">
         <ModalityWorkspaceTabs modality="video" active="reviews" />
         <h1 className="mt-5 text-3xl font-semibold tracking-tight">
-          {job?.label ?? "Video review"}
+          {job?.reference_only
+            ? "Reference video"
+            : (job?.label ?? "Video review")}
         </h1>
-        {job?.retention_expires_at && (
-          <p className="mt-2 text-xs leading-5 text-ink-muted">
-            Encrypted result expires{" "}
-            {formatRetentionExpiry(job.retention_expires_at)}.
-          </p>
-        )}
         {error && (
           <div
             role="alert"
@@ -326,7 +318,7 @@ export function VideoDetectionJobScreen({
         ) : (
           <>
             <VideoProcessingStatus job={job} />
-            {job.source_available && (
+            {job.source_download_available && (
               <a
                 className="mt-3 inline-block text-sm underline"
                 href={apiMediaUrl(
@@ -335,6 +327,20 @@ export function VideoDetectionJobScreen({
               >
                 Download original video
               </a>
+            )}
+            {job.source_available &&
+              job.source_download_available === false &&
+              job.video_access_status !== "review_disabled" && (
+                <p className="mt-3 text-sm text-ink-muted" role="status">
+                  The original remains encrypted. Downloads are disabled by the
+                  current runtime video-review setting.
+                </p>
+              )}
+            {job.video_access_status === "review_disabled" && (
+              <p className="mt-3 text-sm text-ink-muted" role="status">
+                The review copy is retained encrypted, but playback is disabled
+                by the current runtime video-review setting.
+              </p>
             )}
             {job.retention_policy === "until-deletion" && (
               <p className="mt-2 text-xs text-ink-muted">
@@ -382,8 +388,8 @@ export function VideoDetectionJobScreen({
             )}
             {job.status === "expired" && (
               <p className="mt-5 text-sm">
-                The retention period ended. Encrypted predictions and review
-                video have been removed.
+                This older job expired before the no-expiry retention policy.
+                Its encrypted media was already removed and cannot be recovered.
               </p>
             )}
 
@@ -392,14 +398,12 @@ export function VideoDetectionJobScreen({
               !job.reference_only && (
                 <section className="panel mt-6 overflow-hidden p-5 sm:p-6">
                   <div>
-                    <h2 className="text-lg font-semibold">
-                      Privacy-safe video review
-                    </h2>
+                    <h2 className="text-lg font-semibold">Video review</h2>
                     <p className="mt-2 text-sm leading-6 text-ink-muted">
                       VSViG did not produce a score for this clip. You can still
-                      review its timing alongside the EEG. The retained video
-                      blurs the face; the viewer can also show the 15 model
-                      patches and their Grad-CAM evidence.
+                      review the retained video. The visualization includes an
+                      OpenPose body skeleton when available; facial Action Units
+                      are not generated by this model pipeline.
                     </p>
                   </div>
                   <video
@@ -409,7 +413,7 @@ export function VideoDetectionJobScreen({
                     playsInline
                     preload="metadata"
                     crossOrigin="use-credentials"
-                    aria-label="Privacy-safe video review without a VSViG score"
+                    aria-label="Owner-only video review without a VSViG score"
                     onLoadedMetadata={(event) => {
                       if (
                         typeof initialVideoTimeSeconds === "number" &&
@@ -534,6 +538,7 @@ export function VideoDetectionJobScreen({
                   result={trackResult ?? result}
                   duration={duration}
                   videoAvailable={job.video_available}
+                  videoAccessStatus={job.video_access_status}
                   videoUrl={detectionVisualizationUrl(jobId)}
                   initialTimeSeconds={initialVideoTimeSeconds}
                 />
@@ -554,7 +559,7 @@ export function VideoDetectionJobScreen({
           </>
         )}
 
-        <ResearchOnlyNotice />
+        {!job?.reference_only && <ResearchOnlyNotice />}
       </div>
     </div>
   );

@@ -1,77 +1,168 @@
-# EEG and video inference, explained
+# EEG and VEEG review, explained
 
-This page explains what happens after an EEG or video is uploaded. The paths
-use different models and do not combine their scores or automatically align
-their timelines. All outputs are research-only.
+MDS01 presents source recordings, model flags, and human observations as
+separate evidence. EEG and video use independent models; their scores are not
+combined. A video can be synchronized to an EEG only when the uploaded
+recording metadata has one unique mapping and the clinical-video review gate is
+enabled. The prototype does not diagnose seizures or infer a brain-onset side
+from movement.
 
-## EEG: recording to window scores
+## EEG: source recording to review flags
 
-1. The backend encrypts the upload and checks its contents.
-2. It removes identifying file metadata, prepares the configured 18 EEG
-   channels, and resamples to 256 samples per second.
-3. It cuts the signal into four-second windows. A new window starts every two
-   seconds, so adjacent windows overlap by two seconds. Each window has
-   1,024 samples × 18 channels; the model input is float32 with shape
-   (N, 1024, 18).
-4. The selected runtime returns a score for each window. A configured threshold
-   flags windows for review.
-5. Scores and status are saved in the database. Temporary source and work files
-   are cleaned up under the storage policy.
+1. The backend encrypts the upload and validates the archive and each supported
+   recording.
+2. It retains readable source data for owner-only review, then creates a
+   separate de-identified model input. Model preprocessing does not alter the
+   retained review waveform.
+3. The reviewed input contract is 256 Hz, the exact configured 18 bipolar
+   channels in contract order, four-second windows with a two-second stride,
+   and float32 shape `(N, 1024, 18)`.
+4. The H5 runtime checks the local artifact hash and reviewed contract before
+   inference. A research threshold flags windows for review; a flagged window
+   is not a confirmed seizure and the uncalibrated score is not a probability.
+5. Window scores, timestamps, source markers, and safe processing status are
+   available to the owner. Original sources, reports, and review results stay
+   encrypted until the owner deletes the case. Temporary plaintext and
+   processing intermediates are cleaned up after use.
 
-The progress panel records **Validate archive**, **Scrub EEG metadata**,
-**Prepare model input**, **Run H5 model**, and **Generate explanation** by
-recording. Each row shows its service state and elapsed time; archive validation
-is session-wide. These labels are processing stages, not individual Python
-function calls.
+## EEG waveform display
 
-The **development stub** returns synthetic demo scores; it does not detect
-seizures. The **H5 runtime** loads a local Keras model and checks its artifact
-hash, reviewed contract, input shape, and output before inference. The current
-candidate's scores are uncalibrated research scores, not probabilities.
-When configured, SHAP shows relative input sensitivity by channel and time for
-flagged windows. These values are not model weights or clinical causes.
+The viewer opens on a fixed 12-second page aligned to the recording timeline.
+Previous/next/first-page buttons and the shared review playhead navigate the
+full recording; the owner-protected API returns only the visible time range.
+There are no montage, sensitivity, paper-speed, or page-length selectors.
+Each source trace uses its own timestamps where available, and acquisition gaps
+break the line instead of being connected. Model flags and the synchronized
+cursor overlay the trace without changing the retained samples.
 
-## Video: pose plus blurred image patches
+The fixed profile is **100 µV/cm (10 µV/mm), 30 mm/s, 0.5–70 Hz, and a 50 Hz
+notch** for source channels whose native sampling rate supports the filter.
+Filtering occurs on the display copy only, separately on contiguous source
+segments; it does not alter the model input or retained original. Low-rate
+trend channels are left untouched. The responsive browser graticule scales to
+fit a 12-second view, so it preserves the configured logical time/voltage
+relationship but does not claim to calibrate the physical dimensions of a
+particular monitor.
 
-Video detection is independent of EEG:
+The default longitudinal order is the HUKM layout: right temporal
+`FP2-F8 → F8-T4 → T4-T6 → T6-O2`, left temporal
+`FP1-F7 → F7-T3 → T3-T5 → T5-O1`, right central
+`FP2-F4 → F4-C4 → C4-P4 → P4-O2`, left central
+`FP1-F3 → F3-C3 → C3-P3 → P3-O1`, then `FZ-CZ` and `CZ-PZ`. Right chains are
+red, left chains blue, midline channels dark, and auxiliaries retain distinct
+colors. Each bipolar signal is first electrode minus second electrode. Source
+electrodes must be uniquely identified and align within half a sample; historic
+T3/T4/T5/T6 aliases map to T7/T8/P7/P8. The UI does not substitute or invent
+missing electrodes and labels a partial montage. EOG, ECG/EKG, chin, and
+photic channels are retained when available.
 
-1. The backend encrypts the uploaded clip and creates temporary normalized
-   frames. Smaller clips can use experimental resizing in the local H5 profile;
-   this does not add detail or make their scores equivalent to native
-   1920×1080 video.
-2. Lightweight OpenPose reads temporary source frames and looks for one
-   complete body pose. If it cannot find all required keypoints, processing
-   stops before VSViG.
-3. OpenPose identifies the 15 patch locations from each transient source
-   frame. The backend extracts the RGB patches, blurs each patch independently,
-   and passes the patches with pose coordinates to VSViG. It does not pass the
-   full source frame to VSViG.
-4. The model samples 30 frames at 6 fps per window; the next window starts
-   three sampled frames later. Its score is uncalibrated and thresholded for
-   review.
-5. The system retains encrypted predictions and an audio-free review video
-   until the job expires. Face detections are checked against the tracked
-   person's OpenPose head landmarks. A missing or mismatched face falls back
-   to blurring the whole frame; the skeleton is drawn over that protected
-   output. Source and temporary videos are removed after processing.
+The original signal pipeline caused the solid blocks: the legacy Nicolet reader
+already applied `dResolution` in µV/count, while the shared API labeled those
+values as SI volts. The browser then multiplied them by one million again to
+display µV, making normal trace amplitudes millions of times too large. The
+`.e` source-preview boundary now converts the parsed µV samples to SI volts
+exactly once. EDF dimensions (V, mV, µV, nV) are also normalized to volts;
+`.data` values from MNE are already SI volts. The browser then converts these
+calibrated values to µV for the fixed profile. Historical normalized/relative
+artifacts remain explicitly uncalibrated; unknown EDF physical dimensions fail
+closed rather than being guessed.
 
-EEG upload creates the shared patient case first. Video submission starts as
-soon as that case is accepted; EEG inference and video inference then run
-independently. The video worker processes one clip at a time. If its queue is
-full, the browser waits for an already accepted clip in the current intake and
-retries only the clip the API explicitly rejected. If the queue is full because
-of other work and no accepted clip can free capacity, that clip remains
-unsubmitted and can be retried from the same intake.
+The source API is bounded to 10,000 points per requested channel range. Screen
+diagnostics report sample count, plot-coordinate range, and the percentage
+outside the visible canvas. For the supplied 02:00–02:12 `.e` window, the
+browser rendered 500 Hz × 12 s = 6,000 samples per 500 Hz channel, all 18
+bipolar derivations plus five auxiliary traces, and zero plotted samples
+outside the canvas after conversion. The actual browser screenshot is recorded
+in the task checkpoint; source timestamps and parser gaps remain the alignment
+basis. The supplied Nicolet reference screenshot shows a different interval,
+so this check compares channel behavior and layout, not sample-by-sample
+waveform equality.
 
-An error such as incomplete_pose means no supported video result was produced.
-It does not mean the video shows no seizure. Docker runs the backend and models;
-see [local setup](setup.md), [architecture](architecture.md),
-[backend details](backend.md), and the [video runbook](video-detection.md).
+The clinical review emphasizes the event time, recorded EEG, model score and
+threshold, source annotations, data-quality state, and corresponding video
+when verified coverage exists. It does not treat a score as feature
+attribution or clinical cause. Existing explanation artifacts are not a
+substitute for interpreting the signal.
 
-The video UI displays graph Grad-CAM for the strongest-scoring VSViG window.
-The CAM is indexed by sampled time and the model's 15 keypoint patches, then
-projected onto their 128×128 source regions. It is not pixel-level localization
-or clinical causation. When EEG and video are displayed together, their
-separate threshold intervals can be placed on one timeline using a manual
-clock offset. That offset is unverified and the model scores are never added
-together.
+## Combined EEG and video review
+
+```mermaid
+flowchart LR
+    Original[Encrypted EEG and video sources] --> EEG[EEG source-clock timeline]
+    Original --> Gate{MDS01_CLINICAL_VIDEO_REVIEW_ENABLED?}
+    Gate -->|enabled| Copy[Unblurred audio-free browser review copy]
+    Gate -->|disabled| Block[Reference-only intake and unblurred access unavailable]
+    EEG --> Map[Unique metadata mapping, if available]
+    Copy --> Map
+    Map --> Player[Shared owner-controlled play, pause, seek, and rate]
+    EEG --> Events[Source annotations and model-flagged intervals]
+    Player --> Observe[Time-stamped human observation]
+```
+
+Generated local setup enables `MDS01_CLINICAL_VIDEO_REVIEW_ENABLED` for
+owner-only reference review; a backend with no explicit setting defaults to
+`false`. When false, reference-only intake, playback/download, and streaming
+are unavailable. When enabled, the reference copy is generated independently from
+OpenPose and VSViG. A pose failure or unavailable model therefore does not
+prevent playback. For a unique mapping, the EEG source clock drives the shared
+playback position, and video seeking updates the same position. The player
+changes clips at verified half-open segment boundaries. During video gaps,
+the video pauses while the EEG timeline can continue. Outside verified
+coverage, the interface reports that synchronized video is unavailable.
+
+Matching uses the selected upload folder's metadata, including its opaque
+group, filename token HMAC, frame count, frame rate, and VEEG clock anchors.
+The group must be finalized with the expected selected files. Only one unique
+match is linked. Incomplete folders, missing references, clock/frame
+mismatches, ambiguous candidates, and unmatched clips remain unpaired with a
+safe reason. A match is evidence that submitted metadata agrees; it is not
+proof that the uploaded bytes are the original acquisition. Unmatched clips
+remain owner-viewable but are not presented as synchronized.
+
+## Human observation and medical limits
+
+The authenticated case owner can record an observation interval, select one or
+more observed categories (left/right arm, left/right leg, bilateral movement,
+head/eye deviation, other behavior, or uncertain/unobservable), and add a
+description. The observation is timestamped and encrypted separately from
+model results. It is displayed as a human observation, not as an automatic
+diagnosis. In the current prototype, the authenticated owner is the only
+authorized viewer and annotator; multi-user clinician roles are not
+implemented.
+
+The [ILAE 2025 seizure classification](https://www.ilae.org/files/dmfile/updated-classification-of-epileptic-seizures-2025.pdf)
+uses descriptive semiology terms, including side plus body part, eye deviation,
+and head orientation. MDS01 records those observations without converting the
+movement side into a seizure-onset side. The ILAE Commission on Diagnostic
+Methods/EEG Task Force [glossary of seizure semiology terms and their
+significance](https://onlinelibrary.wiley.com/doi/full/10.1684/epd.2022.1430)
+summarizes sign-specific lateralizing value and the importance of temporal
+sequence. Clinical interpretation requires the clinician to consider the
+sequence and the EEG/video evidence together; there is no simple body-side to
+brain-side rule in this application.
+
+## Separate VSViG video experiment
+
+Standalone video detection runs the pinned Lightweight OpenPose and VSViG
+pipeline. It samples 30 frames per model window, using 15 selected pose points
+and 15 RGB patches per frame. The adapter's reviewed model tensors have shape
+`[B, 30, 15, 3, 32, 32]` for patches and `[B, 30, 15, 3]` for coordinates and
+confidence. All 15 selected landmarks must be available for a track in a
+scored window; missing points are not synthesized. Multiple tracks are
+processed separately, but their labels do not establish which person is the
+patient. See the [video runbook](video-detection.md) for the pinned contract
+and observed failure cases.
+
+An incomplete-pose or missing-pose result means that no supported model score
+was produced for that window. It is not evidence that no seizure occurred.
+Successful model loading, a synthetic test, or a high uncalibrated score does
+not establish clinical accuracy.
+
+## Run locally
+
+Run `node scripts/demo.mjs` from the repository root to start the H5 research
+profile. It requires the local H5 artifact and reviewed contract. Use
+`node scripts/demo.mjs --development-stub` only for a synthetic workflow demo;
+stub scores are not model analysis. Follow [local setup](setup.md), [system
+architecture](architecture.md), and the [backend guide](backend.md) for full
+configuration and privacy boundaries.

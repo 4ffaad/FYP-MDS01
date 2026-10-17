@@ -251,12 +251,12 @@ export function PatientProcessingProgress({
           >
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="eyebrow">Video</p>
+                <p className="eyebrow">Reference video</p>
                 <h3
                   id="video-progress-heading"
                   className="mt-1 text-base font-bold"
                 >
-                  Video processing
+                  Video review preparation
                 </h3>
               </div>
               <span className="rounded-full bg-surface-soft px-3 py-1 text-xs font-semibold text-ink-muted">
@@ -265,9 +265,9 @@ export function PatientProcessingProgress({
               </span>
             </div>
             <p className="mt-3 text-xs leading-5 text-ink-muted">
-              Video jobs are submitted as soon as the patient case is created
-              and run independently from EEG. The service processes one clip at
-              a time; this page submits more as capacity opens.
+              Reference videos are submitted with the patient case and prepared
+              independently from EEG. Combined review never runs OpenPose or
+              VSViG. The service prepares one clip at a time.
             </p>
             {activeVideo && (
               <div

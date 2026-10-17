@@ -46,12 +46,29 @@ event timing may be retained in sanitized form for human review; raw annotation
 text is not returned by the public API. Scrubbing metadata does not anonymize
 the EEG waveform.
 
-The configured review policy retains the complete waveform as an encrypted
-artifact after successful inference, even when no model window is flagged.
-For legacy `.e` files, the viewer uses the reviewed 18-channel bipolar montage
-and, when present at the common source rate, the five EOG/ECG/chin-difference/
-photic traces. The uploaded `.e` and transient plaintext are removed during
-session cleanup. Signal reads remain bounded by time range and owner-scoped.
+For new `until-deletion` cases, the encrypted original recording is retained
+before validation or inference, and the waveform API reads the source directly
+even when no model window is flagged. Reads are owner-scoped and bounded by
+time range; the browser does not fetch a full multi-hour file at once. For
+legacy `.e` files, the viewer can show the reviewed bipolar montage and
+available EOG/ECG/chin-difference/photic traces. The uploaded `.e` plaintext
+and processing intermediates are removed during cleanup. `ENABLE_FULL_SIGNAL_PREVIEW`
+controls the fallback for older retained model-window artifacts that have no
+original-source artifact; it does not change new until-deletion source review.
+An `.e` range wholly inside a source-clock gap returns an empty preview with no
+channels or signal segments; it does not become a server error or synthesize
+samples. The shared timestamp vector is sent once, with per-channel timestamps
+only for channels whose sampling timeline differs. Signal responses negotiate
+gzip and remain `private, no-store`.
+
+For original EDF source review, the backend converts declared V/mV/µV/nV
+physical units to volts and fails closed on unknown dimensions. Nicolet `.e`
+samples are decoded in volts. Historical scrubbed EDFs with all unit fields
+erased are marked `relative-units`; mixed or partially unknown physical units
+fail closed. Historical retained NPZ files contain normalized/clipped
+model-input values, not physical voltage; their API representation is marked
+`normalized-units` or `signal-obfuscated` so the browser presents relative
+scales rather than µV. The viewer does not change the model input for display.
 
 ## Model runtimes and result meaning
 
@@ -62,8 +79,10 @@ session cleanup. Signal reads remain bounded by time range and owner-scoped.
   closed if either is missing or mismatched.
 - **Current output:** research score per EEG window. The supplied local
   contract is uncalibrated; do not describe its score as a probability,
-  confidence, accuracy, or recording-level risk. SHAP is optional and appears
-  only when enabled with its approved background data.
+  confidence, accuracy, or recording-level risk. Optional SHAP attribution is
+  supplementary and requires an enabled compatible H5 model and reviewed
+  background data; a failure leaves valid model scores available. The clinical
+  viewer labels it model contribution, not seizure-origin localization.
 
 The H5 model, contract, and SHAP backgrounds are local-only assets. Do not put
 them in Git or the Docker image. See [setup](setup.md) for the runtime choice.
@@ -73,9 +92,23 @@ them in Git or the Docker image. See [setup](setup.md) for the runtime choice.
 PostgreSQL stores accounts, job/session state, safe metadata, and predictions.
 Encrypted EEG/video bytes remain in private filesystem-backed storage. Do not
 store patient binaries in PostgreSQL or expose private paths in API responses.
-Patient profiles, source reports, EEG archives, and source recordings are encrypted and owner-scoped. The patient-folder intake extracts report text locally for review while retaining the uploaded report inside the encrypted original archive until case deletion.
+Patient profiles, source reports, EEG archives, original recordings, and video
+review copies are encrypted and owner-scoped until case deletion. Combined
+video intake can create an unblurred, audio-free browser review copy
+independently of pose/VSViG admission when
+`MDS01_CLINICAL_VIDEO_REVIEW_ENABLED=true`. The backend fallback is false
+when no value is set; generated local setup enables it. When disabled it
+blocks reference-only intake, unblurred playback, and original-video download;
+the setting controls access and never starts video inference. The patient-folder intake extracts report text locally
+for review while retaining the uploaded report inside the encrypted original
+archive until case deletion.
 
-Every case, EEG, video, signal, report, media-range, result, and download route requires an authenticated owner. Responses do not expose submitted filenames, patient references, filesystem paths, cryptographic keys, or source bytes outside protected no-store download endpoints. Original source files and outputs remain encrypted until case deletion; response-scoped plaintext and processing intermediates are removed after use.
+Every case, EEG, video, signal, report, media-range, result, observation, and
+download route requires an authenticated owner. Responses do not expose
+submitted filenames, patient references, filesystem paths, cryptographic
+keys, or source bytes outside protected no-store stream/download endpoints.
+Original sources and results remain encrypted until case deletion;
+response-scoped plaintext and processing intermediates are removed after use.
 
 New EEG and video file envelopes bind AES-GCM authentication to their
 storage-relative session, job, and artifact path. Draft promotion re-encrypts
@@ -85,10 +118,31 @@ legacy file has been read or explicitly migrated, keep write access to the
 private storage volume trusted. Patient profile and source-report encryption
 also bind ciphertext to the owner and case.
 
-Signal preview is enabled by default for complete source-channel review and requires owner authentication. New patient analyses do not apply signal obfuscation. Never log patient-identifying values or raw upload contents.
+The storage layer authenticates ciphertext when decrypting it. EEG ingestion
+also stores a source SHA-256 value, but the current read path does not compare
+every materialized file against that value; this is not an independent
+end-to-end integrity monitor. Review access-log configuration before any
+shared deployment: default server logs may include client IPs and opaque
+resource paths even though application logs avoid patient identifiers.
+
+Signal review uses the protected full-source artifact and requires owner
+authentication. New patient analyses do not apply signal obfuscation. Never log
+patient-identifying values or raw upload contents.
 For metadata-scrubbed legacy `.e` recordings, the encrypted positive-signal
 artifact may also include EOG right/left, ECG, chin 1–chin 2, and photic review
 traces over the same bounded source-time ranges. These traces are read from the encrypted full-source recording and share the case deletion lifecycle. They are visual review channels and are not model inputs.
+
+Clinical observations are AES-GCM encrypted in PostgreSQL with associated data
+bound to the owner, recording, and annotation ID. The observation routes record
+the authenticated owner as annotator; only that owner can read the recording's
+observations, and deletion is restricted to their own annotation. Current
+accounts do not have institution or shared-clinician roles.
+
+The `clinical_access_events` table records an allowlisted action, UTC time,
+actor account, and one internal recording/session/video-job row ID. It does not
+store patient labels, source names, file paths, request bodies, IP addresses,
+or video frames. Case deletion removes linked event rows. These records support
+basic access review; they are not a tamper-proof institutional audit service.
 
 ## Routes and code locations
 
@@ -96,7 +150,8 @@ Use Swagger for the current complete route schemas. Main route groups:
 
 - /api/auth/ — registration, login, session, logout;
 - /api/uploads/ and /api/sessions/ — drafts, EEG sessions, status, deletion;
-- /api/recordings/ — predictions, sanitized annotations, explanations, signal;
+- /api/recordings/ — predictions, sanitized source annotations, optional
+  research attribution, protected signal, encrypted clinical observations;
 - /api/cases/ — owner-scoped cases and reviewed profiles;
 - /api/video-detection/ — separate VSViG jobs and review playback;
 - /api/video-privacy/ — separate protected-video transform.

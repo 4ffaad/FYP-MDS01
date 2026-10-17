@@ -17,6 +17,8 @@ from backend.app.database.models.eeg import (
     RecordingStatus,
     UploadDraft,
 )
+from backend.app.database.models.clinical_annotation import ClinicalAnnotation
+from backend.app.database.models.clinical_access_event import ClinicalAccessEvent
 from backend.app.database.models.video import VideoPrivacyJob, VideoPrivacyStatus
 
 
@@ -407,8 +409,21 @@ def delete_sessions_data(
         recording_ids = select(EEGRecording.id).where(
             EEGRecording.session_db_id.in_(session_ids)
         )
+        db.exec(
+            delete(ClinicalAccessEvent).where(
+                or_(
+                    ClinicalAccessEvent.session_db_id.in_(session_ids),
+                    ClinicalAccessEvent.recording_db_id.in_(recording_ids),
+                )
+            )
+        )
         prediction_ids = select(Prediction.id).where(
             Prediction.recording_db_id.in_(recording_ids)
+        )
+        db.exec(
+            delete(ClinicalAnnotation).where(
+                ClinicalAnnotation.recording_db_id.in_(recording_ids)
+            )
         )
         db.exec(
             delete(Explanation).where(Explanation.prediction_db_id.in_(prediction_ids))
@@ -433,3 +448,43 @@ def delete_session_data(db: Session, session: EEGSession) -> None:
     """Delete one session and its dependent rows in one transaction."""
 
     delete_sessions_data(db, [session])
+
+
+def save_clinical_annotation(
+    db: Session, annotation: ClinicalAnnotation
+) -> ClinicalAnnotation:
+    db.add(annotation)
+    db.commit()
+    db.refresh(annotation)
+    return annotation
+
+
+def list_clinical_annotations(
+    db: Session, recording_db_id: int, owner_user_id: int
+) -> list[ClinicalAnnotation]:
+    return list(
+        db.exec(
+            select(ClinicalAnnotation)
+            .where(
+                ClinicalAnnotation.recording_db_id == recording_db_id,
+                ClinicalAnnotation.owner_user_id == owner_user_id,
+            )
+            .order_by(ClinicalAnnotation.created_at, ClinicalAnnotation.id)
+        ).all()
+    )
+
+
+def get_clinical_annotation(
+    db: Session, annotation_id: str, owner_user_id: int
+) -> ClinicalAnnotation | None:
+    return db.exec(
+        select(ClinicalAnnotation).where(
+            ClinicalAnnotation.annotation_id == annotation_id,
+            ClinicalAnnotation.owner_user_id == owner_user_id,
+        )
+    ).first()
+
+
+def delete_clinical_annotation(db: Session, annotation: ClinicalAnnotation) -> None:
+    db.delete(annotation)
+    db.commit()

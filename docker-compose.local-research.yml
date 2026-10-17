@@ -13,7 +13,7 @@ services:
       H5_MODEL_PATH: /opt/eeg-model/best_seizure_model.h5
       H5_CONTRACT_PATH: /opt/eeg-model/model-contract.json
       H5_CONTRACT_SHA256: 0ef14f28af0232fc5521015534813b750e733bd3749a19323e2f8b85ed7d4b34
-      VSVIG_ALLOW_LETTERBOX_ADAPTATION: ${VSVIG_ALLOW_LETTERBOX_ADAPTATION:-true}
+      VSVIG_ALLOW_LETTERBOX_ADAPTATION: ${VSVIG_ALLOW_LETTERBOX_ADAPTATION:-false}
     volumes:
       - type: volume
         source: local_h5_mountpoints

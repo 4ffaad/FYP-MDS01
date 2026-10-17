@@ -591,6 +591,47 @@ test("ready EEG and video reviews keep separate links until a sync match is avai
   ).toHaveAttribute("href", "/analysis?videoJobId=VID-SYNTHETIC");
 });
 
+test("case history labels reference video separately from VSViG analysis", async ({
+  page,
+}) => {
+  requireBackendProjection();
+  await page.route(`**/api/cases/${CASE_ID}`, (route) =>
+    route.fulfill({
+      json: {
+        case_id: CASE_ID,
+        analyses: [
+          {
+            id: "VID-REFERENCE",
+            modality: "video",
+            status: "complete",
+            created_at: REVIEWED_AT,
+            review_ready: true,
+            reference_only: true,
+          },
+        ],
+      },
+    }),
+  );
+  await page.route(`**/api/cases/${CASE_ID}/patient-profile`, (route) =>
+    route.fulfill({ json: { profile: null } }),
+  );
+  await page.route(`**/api/video-privacy/jobs?case_id=${CASE_ID}`, (route) =>
+    route.fulfill({ json: { jobs: [] } }),
+  );
+
+  await page.goto(`/cases/${CASE_ID}`);
+
+  await expect(
+    page.getByText("Reference video", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open EEG/video review" }),
+  ).toHaveAttribute("href", "/analysis?videoJobId=VID-REFERENCE");
+  await expect(
+    page.getByRole("link", { name: "Open VSViG player" }),
+  ).toHaveCount(0);
+});
+
 test("navigation exposes workspace, EEG, and video tools", async ({ page }) => {
   async function openPrimaryNavigation() {
     if (test.info().project.name === "mobile") {

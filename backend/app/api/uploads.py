@@ -27,7 +27,11 @@ from backend.app.services.session_service import (
 )
 from backend.app.services.storage_service import SessionStorage, StorageError
 from backend.app.services.processing_capacity import processing_capacity
-from backend.app.privacy.methods import canonical_privacy_profile, normalize_privacy_methods
+from backend.app.privacy.methods import (
+    SIGNAL_OBFUSCATION,
+    canonical_privacy_profile,
+    normalize_privacy_methods,
+)
 from backend.app.services.case_service import CaseReferenceError
 
 
@@ -158,6 +162,11 @@ def finalize_staged_upload(
         privacy_profile = canonical_privacy_profile(selected_methods)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if SIGNAL_OBFUSCATION in selected_methods:
+        raise HTTPException(
+            status_code=400,
+            detail="Signal obfuscation is unavailable for new patient analyses.",
+        )
     owner_user_id = current_user.id
     existing_session = get_session_by_upload_draft_id(
         db,

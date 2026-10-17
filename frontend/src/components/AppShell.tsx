@@ -311,7 +311,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 {isUpload
                   ? "Each modality keeps its own privacy treatment and evidence trail."
                   : isVideoDetection
-                    ? "The redacted review video and predictions are encrypted, owner-only, and retained until expiry."
+                    ? "The encrypted source video and results are owner-only and retained until case deletion; review playback follows the runtime setting."
                     : "Original uploads are never displayed."}
               </p>
             </div>

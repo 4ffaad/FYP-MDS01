@@ -33,9 +33,16 @@ export interface SignalPreviewChannel {
   timeSeconds?: number[];
 }
 
+export type SignalPreviewRepresentation =
+  | "metadata-scrubbed"
+  | "signal-obfuscated"
+  | "original-source"
+  | "normalized-units"
+  | "relative-units";
+
 export interface SignalPreview {
   recordId: string;
-  representation: "metadata-scrubbed" | "signal-obfuscated" | "original-source";
+  representation: SignalPreviewRepresentation;
   displayFilter?: string | null;
   samplingRate: number;
   channels: SignalPreviewChannel[];
@@ -106,6 +113,7 @@ export interface CaseAnalysis {
   status: "processing" | "complete" | "needs_review";
   createdAt: string;
   reviewReady: boolean;
+  referenceOnly?: boolean;
 }
 
 export interface CaseDetail {

@@ -14,6 +14,7 @@ from sqlmodel import Session
 from backend.app.api.health import router as health_router
 from backend.app.api.auth import router as auth_router
 from backend.app.api.recordings import router as recordings_router
+from backend.app.api.clinical_annotations import router as clinical_annotations_router
 from backend.app.api.sessions import router as sessions_router
 from backend.app.api.uploads import router as uploads_router
 from backend.app.api.video_privacy import router as video_privacy_router
@@ -165,6 +166,7 @@ app.add_middleware(
         "X-Model-Blur-Percent",
         "X-VEEG-Source-Name",
         "X-VEEG-Source-Group",
+        "X-Video-Purpose",
         "Idempotency-Key",
     ],
 )
@@ -182,7 +184,17 @@ async def add_security_headers(request: Request, call_next) -> Response:
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store, private"
         response.headers["Pragma"] = "no-cache"
-        response.headers["Vary"] = "Cookie, Origin"
+        vary_values = [
+            value.strip()
+            for value in response.headers.get("Vary", "").split(",")
+            if value.strip()
+        ]
+        vary_lower = {value.lower() for value in vary_values}
+        for value in ("Cookie", "Origin"):
+            if value.lower() not in vary_lower:
+                vary_values.append(value)
+                vary_lower.add(value.lower())
+        response.headers["Vary"] = ", ".join(vary_values)
     if auth_configuration()[0] == "cloudflare":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
@@ -193,6 +205,7 @@ app.include_router(auth_router)
 api_dependencies = [Depends(require_api_auth)]
 app.include_router(sessions_router, dependencies=api_dependencies)
 app.include_router(recordings_router, dependencies=api_dependencies)
+app.include_router(clinical_annotations_router, dependencies=api_dependencies)
 app.include_router(uploads_router, dependencies=api_dependencies)
 app.include_router(video_privacy_router, dependencies=api_dependencies)
 app.include_router(video_detection_router, dependencies=api_dependencies)

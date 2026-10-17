@@ -85,12 +85,18 @@ export function VideoReviewPanel({
   result,
   duration,
   videoAvailable,
+  videoAccessStatus,
   videoUrl,
   initialTimeSeconds,
 }: {
   result: DetectionResult;
   duration: number;
   videoAvailable: boolean;
+  videoAccessStatus?:
+    | "pending"
+    | "available"
+    | "review_disabled"
+    | "unavailable";
   videoUrl: string;
   initialTimeSeconds?: number;
 }) {
@@ -124,7 +130,7 @@ export function VideoReviewPanel({
     result.visualization?.privacy_method.startsWith("unblurred-owner-source") ??
     false;
   const selectiveBlurLabel = unblurred
-    ? "Owner reference · unblurred"
+    ? "Unblurred · owner-only"
     : usesPatientBlur
       ? "Legacy patient blur"
       : "Face blur";
@@ -172,7 +178,7 @@ export function VideoReviewPanel({
     result.model.sample_fps,
   );
   const selectedBlurModeLabel = unblurred
-    ? "Owner reference · unblurred"
+    ? "Unblurred · owner-only"
     : blurMode === "all"
       ? "Full-frame blur"
       : blurMode === "face"
@@ -244,7 +250,7 @@ export function VideoReviewPanel({
               id="video-review-heading"
               className="mt-1 text-xl font-semibold sm:text-2xl"
             >
-              VSViG score and protected video
+              VSViG score and owner-reviewed video
             </h2>
           </div>
           <Label
@@ -351,7 +357,7 @@ export function VideoReviewPanel({
                     playsInline
                     preload="metadata"
                     crossOrigin="use-credentials"
-                    aria-label={`${blurMode === "all" ? "Full-frame blurred" : `${selectiveBlurLabel}-protected`} patient video with model evidence, synchronized to the VSViG score timeline`}
+                    aria-label={`${unblurred ? "Unblurred owner-only" : blurMode === "all" ? "Full-frame blurred" : `${selectiveBlurLabel}-protected`} patient video with model evidence, synchronized to the VSViG score timeline`}
                     onLoadedMetadata={() => {
                       if (videoRef.current) {
                         const requestedTime =
@@ -408,8 +414,12 @@ export function VideoReviewPanel({
               </h3>
               <p className="mt-2 max-w-md text-xs leading-5 text-ink-muted">
                 {videoAvailable
-                  ? "The protected video could not be loaded. Reload this result to retry."
-                  : "This job has no retained review video."}{" "}
+                  ? "The review video could not be loaded. Reload this result to retry."
+                  : videoAccessStatus === "review_disabled"
+                    ? "The encrypted review copy is retained, but playback is disabled by this runtime's video-review setting."
+                    : videoAccessStatus === "pending"
+                      ? "The review copy is still being prepared."
+                      : "This job has no available review video."}{" "}
                 Use the score timeline and event times below to review the
                 result.
               </p>
@@ -417,7 +427,8 @@ export function VideoReviewPanel({
           )}
           {result.visualization && (
             <p className="mt-3 text-xs text-ink-muted">
-              {selectiveBlurLabel}
+              {selectiveBlurLabel} · OpenPose skeleton when available; facial
+              action units are not configured
               {blurCoverageLabel ? ` · ${blurCoverageLabel}` : ""}
               {result.visualization.full_frame_fallback_frames > 0
                 ? ` · full-frame fallback ${result.visualization.full_frame_fallback_frames} frames`
@@ -820,6 +831,9 @@ function PrivacyIndicator({ result }: { result: DetectionResult }) {
     result.privacy?.method.includes("patient-blur") ?? false;
   const usesTrackedFaceBlur =
     result.privacy?.method.includes("tracked-face-blur") ?? false;
+  const isUnblurred =
+    result.visualization?.privacy_method.startsWith("unblurred-owner-source") ??
+    false;
   const hasPrivacyMetadata = Boolean(result.privacy?.method);
   return (
     <section
@@ -835,15 +849,18 @@ function PrivacyIndicator({ result }: { result: DetectionResult }) {
             Privacy
           </h3>
           <p className="mt-1 text-xs text-ink-muted">
-            {hasPrivacyMetadata
-              ? `${usesPatientBlur ? "Patient region" : usesTrackedFaceBlur ? "Tracked face" : "Face"} blur + full-frame fallback`
-              : "Privacy provenance unavailable"}
+            {isUnblurred
+              ? "Unblurred owner-only review"
+              : hasPrivacyMetadata
+                ? `${usesPatientBlur ? "Patient-region" : usesTrackedFaceBlur ? "Tracked-face" : "Face"} blur`
+                : "Privacy provenance unavailable"}
             {result.visualization?.available
-              ? " · encrypted until expiry"
+              ? " · encrypted until case deletion"
               : " · no retained review video"}
           </p>
           <p className="mt-1 text-xs text-ink-muted">
-            Source video is removed after processing.
+            The original stays encrypted in private storage until case deletion;
+            temporary plaintext is removed after processing.
           </p>
         </div>
       </div>

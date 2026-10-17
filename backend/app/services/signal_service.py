@@ -27,23 +27,55 @@ class SignalPreviewUnavailable(ValueError):
     """Raised when a safe retained signal cannot be shown."""
 
 
-_REVIEW_BANDPASS = butter(4, (0.5, 70), btype="bandpass", fs=MODEL_SAMPLING_RATE, output="sos")
-_REVIEW_NOTCH = iirnotch(50, 30, fs=MODEL_SAMPLING_RATE)
 _ALLOWED_REVIEW_CHANNELS = {
     "EOG Left-Ref", "EOG Right-Ref", "ECG", "Chin 1-Chin 2", "Photic"
 }
 
 
-def _filter_review_signal(samples: np.ndarray) -> np.ndarray:
+def _filter_review_signal(
+    samples: np.ndarray, sampling_rate: float = MODEL_SAMPLING_RATE
+) -> np.ndarray:
     """Apply the viewer's display filters without changing model input."""
 
-    if samples.shape[-1] < 32:
+    high_cut = min(70.0, sampling_rate * 0.45)
+    if samples.shape[-1] < 32 or sampling_rate <= 1 or high_cut <= 0.5:
         return samples
-    return sosfiltfilt(
-        _REVIEW_BANDPASS,
-        filtfilt(*_REVIEW_NOTCH, samples, axis=-1),
+    filtered = sosfiltfilt(
+        butter(4, (0.5, high_cut), btype="bandpass", fs=sampling_rate, output="sos"),
+        samples,
         axis=-1,
     )
+    if sampling_rate > 100:
+        filtered = filtfilt(*iirnotch(50, 30, fs=sampling_rate), filtered, axis=-1)
+    return filtered
+
+
+def _apply_source_display_filter(payload: dict) -> bool:
+    """Filter calibrated, native-rate source channels without bridging gaps."""
+
+    filtered_any = False
+    shared_times = np.asarray(payload.get("time_seconds", []), dtype=np.float64)
+    for channel in payload.get("channels", []):
+        rate = float(channel.get("sampling_rate", payload.get("sampling_rate", 0)))
+        samples = np.asarray(channel.get("samples", []), dtype=np.float64)
+        times = np.asarray(channel.get("time_seconds", shared_times), dtype=np.float64)
+        if rate <= 140 or len(samples) != len(times) or len(samples) < 32:
+            continue
+        sample_period = 1.0 / rate
+        breaks = np.flatnonzero(np.diff(times) > sample_period * 1.5) + 1
+        boundaries = np.concatenate(([0], breaks, [len(samples)]))
+        for begin, end in zip(boundaries[:-1], boundaries[1:], strict=True):
+            if end - begin < 32:
+                continue
+            segment_times = times[begin:end]
+            if len(segment_times) > 1 and not np.allclose(
+                np.diff(segment_times), sample_period, rtol=0.05, atol=1e-7
+            ):
+                continue
+            samples[begin:end] = _filter_review_signal(samples[begin:end], rate)
+            filtered_any = True
+        channel["samples"] = samples.astype(float).tolist()
+    return filtered_any
 
 
 def build_signal_preview(db, session, record, storage, start_seconds, duration_seconds, max_points):
@@ -110,7 +142,7 @@ def _build_signal_preview(
                 max_points,
                 full_preview=ENABLE_FULL_SIGNAL_PREVIEW,
             )
-            representation = "metadata-scrubbed"
+            representation = payload.pop("representation", "metadata-scrubbed")
         else:
             payload = _read_npz_preview(
                 temporary_path,
@@ -118,9 +150,8 @@ def _build_signal_preview(
                 start_seconds,
                 duration_seconds,
                 max_points,
-                filter_for_display=not obfuscated,
             )
-            representation = "signal-obfuscated" if obfuscated else "metadata-scrubbed"
+            representation = "signal-obfuscated" if obfuscated else "normalized-units"
         payload.update({
             "record_id": record.record_id,
             "representation": representation,
@@ -180,6 +211,21 @@ def _read_edf_preview(
             raise SignalPreviewUnavailable("Retained EEG channel rates do not match.")
         frequency = float(frequencies[0])
         source_samples: list[list[np.ndarray]] = [[] for _ in display_labels]
+        dimensions = [reader.getPhysicalDimension(channel) for channel in channel_indexes]
+        if all(not dimension.strip() for dimension in dimensions):
+            # Metadata-scrubbed legacy EDFs intentionally omit unit labels.
+            # Preserve their samples as relative values instead of inventing volts.
+            volts_per_unit = [1.0] * len(dimensions)
+            representation = "relative-units"
+        else:
+            if any(not dimension.strip() for dimension in dimensions):
+                raise SignalPreviewUnavailable(
+                    "Retained EEG channels do not share verified physical units."
+                )
+            volts_per_unit = [
+                _edf_volts_per_unit(dimension) for dimension in dimensions
+            ]
+            representation = "metadata-scrubbed"
         timestamps: list[np.ndarray] = []
         segments: list[dict] = []
         compact_offset = 0.0
@@ -190,10 +236,11 @@ def _read_edf_preview(
                 begin = int(round((compact_offset + overlap_start - source_start) * frequency))
                 end = int(round((compact_offset + overlap_end - source_start) * frequency))
                 for channel_index, channel in enumerate(channel_indexes):
+                    calibrated = reader.readSignal(
+                        channel, start=begin, n=end - begin
+                    ) * volts_per_unit[channel_index]
                     source_samples[channel_index].append(
-                        _filter_review_signal(
-                            reader.readSignal(channel, start=begin, n=end - begin)
-                        )
+                        _filter_review_signal(calibrated, frequency)
                     )
                 count = max(0, end - begin)
                 timestamps.append(overlap_start + np.arange(count, dtype=np.float64) / frequency)
@@ -207,11 +254,12 @@ def _read_edf_preview(
         return {
             "display_filter": "0.5–70 Hz · 50 Hz notch",
             "channels": [
-                {"label": label, "samples": [round(float(value), 6) for value in channels[index]]}
+                {"label": label, "samples": channels[index].astype(float).tolist()}
                 for index, label in enumerate(display_labels)
             ],
             "time_seconds": [float(value) for value in time_values],
             "segments": segments,
+            "representation": representation,
         }
     finally:
         reader.close()
@@ -223,10 +271,8 @@ def _read_npz_preview(
     start_seconds: float,
     duration_seconds: float,
     max_points: int,
-    *,
-    filter_for_display: bool = False,
 ) -> dict:
-    """Read retained model windows while preserving their source timestamps."""
+    """Read transformed model windows while preserving timestamps and values."""
 
     end_seconds = start_seconds + duration_seconds
     with np.load(path) as payload:
@@ -272,14 +318,9 @@ def _read_npz_preview(
         raise SignalPreviewUnavailable("No retained signal overlaps the requested interval.")
     samples = np.concatenate(selected_windows, axis=0).T
     time_values = np.concatenate(timestamps)
-    if filter_for_display:
-        for segment in segments:
-            begin = int(np.searchsorted(time_values, segment["source_start_seconds"], side="left"))
-            end = int(np.searchsorted(time_values, segment["source_end_seconds"], side="left"))
-            samples[:, begin:end] = _filter_review_signal(samples[:, begin:end])
     samples, time_values = _downsample(samples, time_values, max_points)
     channels = [
-        {"label": labels[index] if index < len(labels) else MODEL_CHANNELS[index], "samples": [round(float(value), 6) for value in samples[index]]}
+        {"label": labels[index] if index < len(labels) else MODEL_CHANNELS[index], "samples": samples[index].astype(float).tolist()}
         for index in range(min(samples.shape[0], len(MODEL_CHANNELS)))
     ]
     if (
@@ -299,8 +340,6 @@ def _read_npz_preview(
         for segment_start, length in zip(review_starts, review_lengths, strict=True):
             count = int(length)
             chunk = review_signals[:, offset : offset + count]
-            if filter_for_display:
-                chunk = _filter_review_signal(chunk)
             chunk_times = segment_start + np.arange(count, dtype=np.float64) / MODEL_SAMPLING_RATE
             select = (chunk_times >= start_seconds) & (chunk_times < end_seconds)
             if select.any():
@@ -314,13 +353,13 @@ def _read_npz_preview(
             channels.extend(
                 {
                     "label": label,
-                    "samples": [round(float(value), 6) for value in aux_samples[index]],
+                    "samples": aux_samples[index].astype(float).tolist(),
                     "time_seconds": [float(value) for value in aux_times],
                 }
                 for index, label in enumerate(review_labels)
             )
     return {
-        "display_filter": "0.5–70 Hz · 50 Hz notch" if filter_for_display else None,
+        "display_filter": None,
         "channels": channels,
         "time_seconds": [float(value) for value in time_values],
         "segments": segments,
@@ -336,6 +375,25 @@ def _downsample(samples: np.ndarray, times: np.ndarray, max_points: int) -> tupl
     return samples[:, indexes], times[indexes]
 
 
+def _edf_volts_per_unit(dimension: str) -> float:
+    """Return the SI scale for a supported EDF physical dimension."""
+
+    normalized = dimension.strip().casefold().replace(" ", "")
+    scale = {
+        "v": 1.0,
+        "mv": 1e-3,
+        "uv": 1e-6,
+        "µv": 1e-6,
+        "μv": 1e-6,
+        "nv": 1e-9,
+    }.get(normalized)
+    if scale is None:
+        raise SignalPreviewUnavailable(
+            "Waveform units are not recognized; source scaling cannot be verified."
+        )
+    return scale
+
+
 def _source_preview(session, record, storage, start, duration, max_points):
     """Owner source review is independent of model success and flagged windows."""
     from backend.app.eeg.legacy_nicolet import LegacyNicoletReader
@@ -348,6 +406,15 @@ def _source_preview(session, record, storage, start, duration, max_points):
     try:
         if suffix == "e":
             payload = LegacyNicoletReader(temporary).read_source_range(start, start + duration, max_points)
+            # Legacy Nicolet dResolution is in µV/count; the other source
+            # readers already return SI volts for the shared original-source contract.
+            for channel in payload["channels"]:
+                channel["samples"] = [float(sample) * 1e-6 for sample in channel["samples"]]
+            shared_times = payload.get("time_seconds")
+            if isinstance(shared_times, list):
+                for channel in payload["channels"]:
+                    if channel.get("time_seconds") == shared_times:
+                        channel.pop("time_seconds", None)
         elif suffix == "edf":
             reader = pyedflib.EdfReader(str(temporary))
             try:
@@ -359,10 +426,9 @@ def _source_preview(session, record, storage, start, duration, max_points):
                     if finish <= begin:
                         continue
                     samples = reader.readSignal(index, start=begin, n=finish - begin)
-                    unit = reader.getPhysicalDimension(index).strip().lower()
-                    factor = {"uv": 1e-6, "µv": 1e-6, "μv": 1e-6, "mv": 1e-3, "v": 1.0}.get(unit)
-                    if factor is not None:
-                        samples = samples * factor
+                    samples = samples * _edf_volts_per_unit(
+                        reader.getPhysicalDimension(index)
+                    )
                     times = np.arange(begin, finish, dtype=np.float64) / rate
                     samples, times = _downsample(samples[None, :], times, max_points)
                     channels.append({"label": label.strip(), "samples": samples[0].tolist(),
@@ -397,6 +463,11 @@ def _source_preview(session, record, storage, start, duration, max_points):
                 raw.close()
         else:
             raise SignalPreviewUnavailable("Source waveform review is unavailable for this format. Download the original archive.")
+        payload["display_filter"] = (
+            "0.5–70 Hz · 50 Hz notch"
+            if _apply_source_display_filter(payload)
+            else None
+        )
         payload.update({"record_id": record.record_id, "representation": "original-source", "flagged_intervals": []})
         return payload
     finally:

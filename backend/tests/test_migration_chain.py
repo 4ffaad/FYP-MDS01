@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_CONFIG = REPOSITORY_ROOT / "backend" / "alembic.ini"
-EXPECTED_HEAD = "033_owner_source_retention"
+EXPECTED_HEAD = "035_video_until_deletion"
 
 
 class MigrationChainTests(unittest.TestCase):
@@ -120,6 +120,43 @@ class MigrationChainTests(unittest.TestCase):
             self.assertEqual(0, profile_columns["reviewed_by_user_id"][3])
             self.assertEqual(0, profile_columns["reviewed_at"][3])
 
+            annotation_columns = {
+                column[1]
+                for column in connection.execute(
+                    "PRAGMA table_info(clinical_annotations)"
+                )
+            }
+            self.assertTrue(
+                {
+                    "annotation_id",
+                    "recording_db_id",
+                    "owner_user_id",
+                    "created_by_user_id",
+                    "payload_nonce",
+                    "payload_ciphertext",
+                    "crypto_version",
+                }
+                <= annotation_columns
+            )
+
+            access_columns = {
+                column[1]
+                for column in connection.execute(
+                    "PRAGMA table_info(clinical_access_events)"
+                )
+            }
+            self.assertTrue(
+                {
+                    "actor_user_id",
+                    "recording_db_id",
+                    "session_db_id",
+                    "video_job_db_id",
+                    "action",
+                    "created_at",
+                }
+                <= access_columns
+            )
+
     def test_upgrade_from_021_reaches_current_owner_scoped_schema(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mds01-alembic-021-") as directory:
             database_path = Path(directory) / "migration.sqlite3"
@@ -138,6 +175,38 @@ class MigrationChainTests(unittest.TestCase):
             self._run_alembic(database_url, "downgrade", "025_case_source_report")
             self._run_alembic(database_url, "upgrade", "head")
             self._assert_owner_scoped_schema(database_path)
+
+    def test_upgrade_retains_non_expired_video_jobs_without_deadlines(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mds01-video-retention-") as directory:
+            database_path = Path(directory) / "migration.sqlite3"
+            database_url = f"sqlite:///{database_path}"
+            self._run_alembic(database_url, "upgrade", "034_clinical_annotations")
+            with sqlite3.connect(database_path) as connection:
+                for job_id, status, expires_at in (
+                    ("VID-READY", "ready", "2030-01-01 00:00:00"),
+                    ("VID-FAILED", "failed", "2030-01-01 00:00:00"),
+                    ("VID-EXPIRED", "expired", "2020-01-01 00:00:00"),
+                ):
+                    connection.execute(
+                        """INSERT INTO video_detection_jobs
+                        (owner_user_id, job_id, status, current_stage,
+                         duration_seconds, fps, created_at, retention_expires_at)
+                        VALUES (?, ?, ?, 'complete', 10, 30,
+                                '2026-01-01 00:00:00', ?)""",
+                        (1, job_id, status, expires_at),
+                    )
+                connection.commit()
+
+            self._run_alembic(database_url, "upgrade", "head")
+            with sqlite3.connect(database_path) as connection:
+                retention = dict(
+                    connection.execute(
+                        "SELECT job_id, retention_expires_at FROM video_detection_jobs"
+                    ).fetchall()
+                )
+            self.assertIsNone(retention["VID-READY"])
+            self.assertIsNone(retention["VID-FAILED"])
+            self.assertIsNotNone(retention["VID-EXPIRED"])
 
 
 if __name__ == "__main__":

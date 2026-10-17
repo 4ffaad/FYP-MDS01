@@ -1,0 +1,169 @@
+{
+  "aliases": {
+    "agent": "mdi:robot-outline",
+    "api": "mdi:api",
+    "api-gateway": "mdi:transit-connection-variant",
+    "application": "mdi:application-braces-outline",
+    "aws": "logos:aws",
+    "azure": "logos:microsoft-azure",
+    "cache": "mdi:database-clock-outline",
+    "cloud": "mdi:cloud-outline",
+    "database": "mdi:database-outline",
+    "docker": "logos:docker-icon",
+    "event": "mdi:lightning-bolt-outline",
+    "gcp": "logos:google-cloud",
+    "github": "logos:github-icon",
+    "guardrail": "mdi:shield-check-outline",
+    "knowledge": "mdi:book-open-page-variant-outline",
+    "kubernetes": "logos:kubernetes",
+    "llm": "mdi:brain",
+    "memory": "mdi:memory",
+    "mcp": "mdi:connection",
+    "model": "mdi:creation-outline",
+    "monitoring": "mdi:chart-timeline-variant-shimmer",
+    "observability": "mdi:chart-timeline-variant-shimmer",
+    "queue": "mdi:tray-full",
+    "security": "mdi:shield-lock-outline",
+    "server": "mdi:server-outline",
+    "storage": "mdi:folder-multiple-outline",
+    "tool": "mdi:tools",
+    "user": "mdi:account-outline",
+    "vector-database": "mdi:database-search-outline",
+    "workflow": "mdi:source-branch"
+  },
+  "drawio_shapes": {
+    "aws-dynamodb": "mxgraph.aws4.dynamodb",
+    "aws-user": "mxgraph.aws4.user",
+    "cisco-firewall": "mxgraph.cisco.firewalls.firewall",
+    "cisco-router": "mxgraph.cisco19.router",
+    "gcp-cloud-run": "mxgraph.gcp2.cloud_run"
+  },
+  "auto_rules": [
+    {"keywords": ["cloud run", "cloud-run", "云运行"], "drawio_shape": "gcp-cloud-run"},
+    {"keywords": ["cisco router", "思科路由器"], "drawio_shape": "cisco-router"},
+    {"keywords": ["kubernetes", "k8s"], "icon": "kubernetes"},
+    {"keywords": ["google cloud", "gcp", "谷歌云"], "icon": "gcp"},
+    {"keywords": ["microsoft azure", "azure", "微软云"], "icon": "azure"},
+    {"keywords": ["amazon web services", "aws", "亚马逊云"], "icon": "aws"},
+    {"keywords": ["api gateway", "api-gateway", "接口网关", "api 网关"], "icon": "api-gateway"},
+    {"keywords": ["vector database", "vector-db", "向量数据库"], "icon": "vector-database"},
+    {"keywords": ["observability", "monitoring", "可观测", "监控"], "icon": "observability"},
+    {"keywords": ["knowledge", "知识库", "知识"], "icon": "knowledge"},
+    {"keywords": ["memory", "记忆", "内存"], "icon": "memory"},
+    {"keywords": ["guardrail", "安全护栏", "护栏"], "icon": "guardrail"},
+    {"keywords": ["security", "安全"], "icon": "security"},
+    {"keywords": ["workflow", "工作流", "流程编排"], "icon": "workflow"},
+    {"keywords": ["docker", "容器运行时"], "icon": "docker"},
+    {"keywords": ["github"], "icon": "github"},
+    {"keywords": ["planner", "agent", "智能体", "代理规划"], "icon": "agent"},
+    {"keywords": ["large language model", "llm", "大模型", "语言模型"], "icon": "llm"},
+    {"keywords": ["mcp"], "icon": "mcp"},
+    {"keywords": ["tool runtime", "tools", "工具运行时", "工具"], "icon": "tool"},
+    {"keywords": ["user", "用户"], "icon": "user"},
+    {"keywords": ["server", "服务器"], "icon": "server"},
+    {"keywords": ["storage", "对象存储", "存储"], "icon": "storage"},
+    {"keywords": ["cloud", "云服务", "云"], "icon": "cloud"},
+    {"keywords": ["application", "应用服务", "应用"], "icon": "application"},
+    {"keywords": ["api", "接口"], "icon": "api"}
+  ],
+  "libraries": [
+    {
+      "id": "general",
+      "name": "General",
+      "category": "Basic",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > General"
+    },
+    {
+      "id": "flowchart",
+      "name": "Flowchart",
+      "category": "Business",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > Flowchart"
+    },
+    {
+      "id": "uml",
+      "name": "UML / UML 2.5",
+      "category": "Software",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > Software > UML"
+    },
+    {
+      "id": "bpmn",
+      "name": "BPMN",
+      "category": "Business",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > Business > BPMN"
+    },
+    {
+      "id": "archimate",
+      "name": "ArchiMate",
+      "category": "Business",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > Business > ArchiMate"
+    },
+    {
+      "id": "entity-relation",
+      "name": "Entity Relation",
+      "category": "Software",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > Software > Entity Relation"
+    },
+    {
+      "id": "network",
+      "name": "Network",
+      "category": "Networking",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > Networking"
+    },
+    {
+      "id": "cisco",
+      "name": "Cisco",
+      "category": "Networking",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > Networking > Cisco"
+    },
+    {
+      "id": "aws",
+      "name": "Amazon Web Services",
+      "category": "Cloud",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > Networking > AWS"
+    },
+    {
+      "id": "azure",
+      "name": "Microsoft Azure",
+      "category": "Cloud",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > Networking > Azure"
+    },
+    {
+      "id": "gcp",
+      "name": "Google Cloud Platform",
+      "category": "Cloud",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > Networking > Google Cloud Platform"
+    },
+    {
+      "id": "kubernetes",
+      "name": "Kubernetes",
+      "category": "Cloud Native",
+      "source": "drawio-built-in",
+      "activation": "More Shapes > Networking > Kubernetes"
+    },
+    {
+      "id": "icons-diagrams-net",
+      "name": "Draw.io Extra Icon Sets",
+      "category": "External catalog",
+      "source": "https://icons.diagrams.net/",
+      "activation": "Install a set from icons.diagrams.net or open its library.xml"
+    },
+    {
+      "id": "iconify",
+      "name": "Iconify",
+      "category": "External API",
+      "source": "https://api.iconify.design/",
+      "activation": "Use icons search/fetch or set node.icon to prefix:name"
+    }
+  ]
+}

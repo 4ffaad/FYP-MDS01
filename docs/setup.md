@@ -9,6 +9,10 @@
   inference. Keep both files out of Git.
 
 The project is a research prototype. Use only data approved for this workflow.
+The current API grants access to the uploading account only; it does not
+implement multi-user clinician roles, case sharing, or consent management. The
+local HUKM demo enables owner-only unblurred video review; clean environments
+default the access switch off.
 
 ## Start the local app
 
@@ -46,8 +50,18 @@ node scripts/demo.mjs --development-stub
 The stub is useful for demonstrating upload and review screens. Its scores do
 not come from seizure detection or the H5 model.
 
-On first visit, create a local account or sign in. The app does not infer an
-EEG/video match from filenames or claim that their clocks are synchronized.
+Unblurred reference video review is controlled by
+`MDS01_CLINICAL_VIDEO_REVIEW_ENABLED`. Generated local setup enables owner-only
+playback for the demo. A backend started without this setting defaults to
+disabled. Combined VEEG reference jobs skip OpenPose and VSViG; the setting
+controls reference-media access and does not change model processing or add
+shared clinician roles.
+
+On first visit, create a local account or sign in. EEG/video synchronization
+is available only when a supported Nicolet `.e` recording and a complete
+selected video folder produce one unique metadata match. Arbitrary matching by
+filename or upload time is not used, and a unique metadata match does not prove
+original-file identity.
 
 ## Use a synthetic patient-folder demo
 
@@ -80,6 +94,14 @@ use it only when intentionally resetting the local project.
 The app binds to loopback for local use. Do not expose these ports to another
 device or the internet. Network deployment needs a separate security review,
 HTTPS, and production authentication.
+
+The configured storage key must remain outside Git and outside ordinary data
+backups. Backups must protect both ciphertext and key material independently,
+with a tested recovery and key-rotation procedure; this repository does not
+configure that production service. AES-GCM protects retained file contents and
+detects ciphertext tampering, but a lost or replaced key can make files
+unreadable. Do not rotate a key against a populated storage volume without a
+verified re-encryption and restore plan.
 
 ## Checks
 

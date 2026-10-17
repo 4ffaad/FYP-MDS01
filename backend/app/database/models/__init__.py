@@ -1,6 +1,8 @@
 """SQLModel table definitions."""
 
 from backend.app.database.models.auth import AuthSession, User
+from backend.app.database.models.clinical_access_event import ClinicalAccessEvent
+from backend.app.database.models.clinical_annotation import ClinicalAnnotation
 from backend.app.database.models.case_profile import CasePatientProfile
 from backend.app.database.models.case_source_report import CaseSourceReport
 from backend.app.database.models.video_detection import VideoDetectionJob
@@ -24,6 +26,8 @@ from backend.app.database.models.video import (
 
 __all__ = [
     "VideoDetectionJob",
+    "ClinicalAccessEvent",
+    "ClinicalAnnotation",
     "CasePatientProfile",
     "CaseSourceReport",
     "AuthSession",

@@ -22,10 +22,10 @@ from sqlmodel import Session
 
 from backend.app.core.config import (
     STORAGE_KEY_ENV,
+    CLINICAL_VIDEO_REVIEW_ENABLED,
     VIDEO_MAX_DURATION_SECONDS,
     VIDEO_PREFLIGHT_TIMEOUT_SECONDS,
     VIDEO_POSE_READINESS_TIMEOUT_SECONDS,
-    VIDEO_RETENTION_SECONDS,
     VSVIG_ALLOW_LETTERBOX_ADAPTATION,
 )
 from backend.app.database.db import engine
@@ -50,7 +50,9 @@ from backend.app.video_detection.contract import (
     DetectionError,
     load_contract,
 )
-from backend.app.video_detection.visualization import validate_visualization_artifact
+from backend.app.video_detection.visualization import (
+    validate_visualization_artifact,
+)
 from backend.app.video_privacy.processor import (
     MODEL_INPUT_BLUR_MAX_PERCENT,
     MODEL_INPUT_BLUR_MIN_PERCENT,
@@ -84,7 +86,17 @@ ERRORS = {
     "invalid_blur_strength": "New video analyses require unblurred model input (0 percent blur).",
     "sync_metadata_invalid": "Video synchronization metadata is invalid.",
 }
+REVIEW_WARNINGS = {
+    "source_frame_count_mismatch": "The source and review-copy reported frame counts differ. Playback uses the validated review-copy frame clock; EEG alignment uses the original clock anchors.",
+}
 LOGGER = logging.getLogger(__name__)
+_BLURRED_REVIEW_METHODS = frozenset(
+    {
+        "legacy-face-blur",
+        "pose-region-patient-blur-with-full-frame-fallback",
+        "tracked-face-blur-with-full-frame-fallback",
+    }
+)
 # ponytail: one CPU video job at a time per backend process; use a durable worker
 # queue before running multiple backend workers or processing hospital batches.
 PROCESS_LOCK = threading.Lock()
@@ -592,8 +604,36 @@ def expire_job(db, job, storage, *, force: bool = False):
 
 def public_job(db, job, storage):
     expire_job(db, job, storage)
+    expected_source = storage.root / job.job_id / "original" / "video.input.enc"
+    stored_source = Path(job.original_path) if job.original_path else None
+    source_available = bool(
+        stored_source == expected_source
+        and stored_source.is_file()
+        and not stored_source.is_symlink()
+    )
+    expected_review = storage.visualization_path(job.job_id)
+    stored_review = Path(job.visualization_path) if job.visualization_path else None
+    review_artifact_available = (
+        job.status in {"ready", "failed"}
+        and stored_review == expected_review
+        and stored_review.is_file()
+        and not stored_review.is_symlink()
+    )
+    review_allowed = clinical_review_video_allowed(job)
+    if job.status not in {"ready", "failed", "expired"}:
+        video_access_status = "pending"
+    elif job.status == "expired" or not review_artifact_available:
+        video_access_status = "unavailable"
+    elif review_allowed:
+        video_access_status = "available"
+    else:
+        video_access_status = "review_disabled"
     sync = {
-        "status": job.eeg_sync_status,
+        "status": (
+            "incomplete_folder"
+            if job.source_group_id and not job.sync_group_complete
+            else job.eeg_sync_status
+        ),
         "record_id": None,
         "session_id": None,
         "eeg_source_start_seconds": None,
@@ -649,15 +689,26 @@ def public_job(db, job, storage):
         "review_privacy_method": job.review_privacy_method,
         "reference_only": job.reference_only,
         "retention_policy": "until-deletion" if job.retention_expires_at is None else "legacy-expiry",
-        "source_available": bool(job.original_path and Path(job.original_path).is_file()),
+        "source_available": source_available,
+        "source_download_available": source_available and CLINICAL_VIDEO_REVIEW_ENABLED,
+        "video_access_status": video_access_status,
         "duration_seconds": job.duration_seconds, "fps": job.fps,
         "blur_strength_percent": job.blur_strength_percent,
         "created_at": job.created_at, "retention_expires_at": job.retention_expires_at,
-        "video_available": job.status in {"ready", "failed"}
-        and bool(job.visualization_path),
-        "error": ERRORS.get(job.error_code), "research_only": True,
+        "video_available": review_artifact_available and review_allowed,
+        "error": ERRORS.get(job.error_code) if job.status != "ready" else None,
+        "review_warning": REVIEW_WARNINGS.get(job.error_code) if job.reference_only else None,
+        "research_only": True,
         "sync": sync,
     }
+
+
+def clinical_review_video_allowed(job: VideoDetectionJob) -> bool:
+    """Only expose unblurred or unknown-privacy output after explicit approval."""
+
+    return CLINICAL_VIDEO_REVIEW_ENABLED or (
+        job.review_privacy_method in _BLURRED_REVIEW_METHODS
+    )
 
 
 def validate_blur_strength_percent(value: object) -> int:
@@ -682,6 +733,8 @@ async def create_job(
     source_group_id: str | None = None,
     reference_only: bool = False,
 ):
+    if reference_only and not CLINICAL_VIDEO_REVIEW_ENABLED:
+        raise DetectionError("clinical_video_review_disabled")
     validate_blur_strength_percent(blur_strength_percent)
     if Path(upload.filename or "").suffix.lower() not in {".avi", ".mp4", ".mov", ".webm"}:
         raise DetectionError("video_incompatible")
@@ -1142,20 +1195,30 @@ async def retention_loop():
 
 def _make_unblurred_review_copy(db, storage, job, source=None):
     """Reference playback needs readable media, never pose or inference admission."""
+    if not CLINICAL_VIDEO_REVIEW_ENABLED:
+        return False
     try:
         source = source or storage.materialize_original(job.job_id, Path(job.original_path))
         info = VideoPrivacyProcessor.preflight(source)
         output = storage.work_path(job.job_id, "owner-review.mp4")
         from backend.app.services.video_privacy_service import finalize_protected_video
         finalize_protected_video(source, source, output)
-        validate_visualization_artifact(output, expected_fps=float(info["fps"]),
-                                       expected_width=int(info["width"]), expected_height=int(info["height"]),
-                                       expected_frame_count=int(info["frame_count"]),
-                                       expected_duration=int(info["frame_count"]) / float(info["fps"]))
+        review_frame_count = validate_visualization_artifact(
+            output,
+            expected_fps=float(info["fps"]),
+            expected_width=int(info["width"]),
+            expected_height=int(info["height"]),
+            count_frames=False,
+        )
+        job.error_code = (
+            "source_frame_count_mismatch"
+            if review_frame_count != int(info["frame_count"])
+            else None
+        )
         job.visualization_path = str(storage.store_artifact(job.job_id, output, "video.visualization.mp4"))
         job.review_privacy_method = "unblurred-owner-source"
         job.fps = float(info["fps"])
-        job.duration_seconds = int(info["frame_count"]) / job.fps
+        job.duration_seconds = review_frame_count / job.fps
         storage.cleanup(job.job_id, keep_retained=True, keep_original=True)
         db.add(job)
         db.commit()

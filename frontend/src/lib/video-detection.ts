@@ -2,11 +2,21 @@ import { apiMediaUrl, getJson, postJson, uploadBinary } from "./api";
 import { prepareVideoUploadFile } from "./safe-upload";
 
 export interface VideoEegSync {
-  status: "pending" | "linked" | "unavailable" | "unmatched" | "ambiguous";
+  status:
+    | "pending"
+    | "incomplete_folder"
+    | "linked"
+    | "unavailable"
+    | "unmatched"
+    | "missing_reference"
+    | "clock_mismatch"
+    | "frame_mismatch"
+    | "ambiguous";
   record_id: string | null;
   session_id: string | null;
   eeg_source_start_seconds: number | null;
   video_duration_seconds: number | null;
+  /** Seconds of mapped video time that overlap acquired EEG signal segments. */
   eeg_coverage_seconds: number | null;
   mapped_segments: Array<{
     video_start_seconds: number;
@@ -29,7 +39,7 @@ export function videoTimeForEegTime(
       Number.isFinite(segmentDuration) &&
       segmentDuration > 0 &&
       eegSeconds >= segment.eeg_source_start_seconds &&
-      eegSeconds <= eegEnd
+      eegSeconds < eegEnd
     ) {
       return (
         segment.video_start_seconds +
@@ -50,7 +60,7 @@ export function eegTimeForVideoTime(
   for (const segment of segments) {
     if (
       videoSeconds >= segment.video_start_seconds &&
-      videoSeconds <= segment.video_end_seconds
+      videoSeconds < segment.video_end_seconds
     ) {
       return (
         segment.eeg_source_start_seconds +
@@ -80,9 +90,16 @@ export interface DetectionJob {
   retention_expires_at: string | null;
   reference_only?: boolean;
   source_available?: boolean;
+  source_download_available?: boolean;
   retention_policy?: "until-deletion" | "legacy-expiry";
+  video_access_status?:
+    | "pending"
+    | "available"
+    | "review_disabled"
+    | "unavailable";
   video_available: boolean;
   error: string | null;
+  review_warning?: string | null;
   sync?: VideoEegSync;
 }
 
@@ -312,14 +329,16 @@ export function preflightDetection(
   );
 }
 
-export async function uploadDetection(
+type VeegSyncUpload = { sourceName: string; groupId: string };
+
+function uploadVideo(
   file: File,
   progress: (value: number) => void,
+  purpose: "analysis" | "reference",
   caseId?: string,
   signal?: AbortSignal,
   blurStrengthPercent = 0,
-  veegSync?: { sourceName: string; groupId: string },
-  referenceOnly = false,
+  veegSync?: VeegSyncUpload,
 ) {
   const safeName = prepareVideoUploadFile(file);
   const extension = safeName.name.split(".").pop() ?? "";
@@ -330,7 +349,7 @@ export async function uploadDetection(
     signal,
     {
       "X-Video-Format": extension,
-      ...(referenceOnly ? { "X-Video-Purpose": "reference" } : {}),
+      ...(purpose === "reference" ? { "X-Video-Purpose": "reference" } : {}),
       "X-Model-Blur-Percent": String(blurStrengthPercent),
       ...(caseId ? { "X-Case-ID": caseId } : {}),
       ...(veegSync
@@ -343,6 +362,33 @@ export async function uploadDetection(
   );
 }
 
+export function uploadDetection(
+  file: File,
+  progress: (value: number) => void,
+  caseId?: string,
+  signal?: AbortSignal,
+  blurStrengthPercent = 0,
+) {
+  return uploadVideo(
+    file,
+    progress,
+    "analysis",
+    caseId,
+    signal,
+    blurStrengthPercent,
+  );
+}
+
+export function uploadVideoReference(
+  file: File,
+  progress: (value: number) => void,
+  caseId: string,
+  signal?: AbortSignal,
+  veegSync?: VeegSyncUpload,
+) {
+  return uploadVideo(file, progress, "reference", caseId, signal, 0, veegSync);
+}
+
 export function finalizeVideoSyncGroup(
   caseId: string,
   groupId: string,
@@ -351,8 +397,9 @@ export function finalizeVideoSyncGroup(
 ) {
   return postJson<{
     group_id: string;
-    status: VideoEegSync["status"];
+    status: VideoEegSync["status"] | "mixed";
     linked_jobs: number;
+    diagnostic_counts: Partial<Record<VideoEegSync["status"], number>>;
   }>(
     `/api/video-detection/cases/${encodeURIComponent(caseId)}/sync-groups/${encodeURIComponent(groupId)}/finalize`,
     { expected_source_names: expectedSourceNames },

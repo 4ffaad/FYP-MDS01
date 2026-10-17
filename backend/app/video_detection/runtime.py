@@ -287,9 +287,9 @@ def run(
     visualization_output: Path | None = None,
     *,
     pose_source: Path | None = None,
-    blur_strength_percent: int = 100,
+    blur_strength_percent: int = 0,
 ) -> dict:
-    """Run pose on source frames and VSViG on separately blurred RGB patches."""
+    """Run pose and VSViG using the configured patch privacy condition."""
 
     root, contract = load_contract()
     import cv2
@@ -1111,7 +1111,7 @@ if __name__ == "__main__":
                 Path(sys.argv[1]),
                 Path(sys.argv[3]),
                 pose_source=Path(sys.argv[4]),
-                blur_strength_percent=int(sys.argv[5]) if len(sys.argv) == 6 else 100,
+                blur_strength_percent=int(sys.argv[5]) if len(sys.argv) == 6 else 0,
             )
             Path(sys.argv[2]).write_text(json.dumps(result, allow_nan=False))
         elif len(sys.argv) == 4:

@@ -15,14 +15,21 @@ import {
   eegTimeForVideoTime,
   getDetectionResults,
   videoTimeForEegTime,
-  videoJobFailureMessage,
   type DetectionJob,
   type DetectionResult,
+  type VideoEegSync,
 } from "@/lib/video-detection";
 
 export type VideoSeekRequest = {
   jobId: string;
   videoSeconds: number;
+  requestId: number;
+};
+
+export type SharedVideoPlayback = {
+  timeSeconds: number;
+  isPlaying: boolean;
+  playbackRate: number;
   requestId: number;
 };
 
@@ -34,6 +41,10 @@ export function SyncedVideoReview({
   selectedEegTime,
   onEegTimeSelect,
   onPlaybackEegTime,
+  playback,
+  onPlaybackTimeChange,
+  onPlaybackStateChange,
+  onPlaybackRateChange,
   recordingDurationSeconds,
   seekRequest,
   compact = false,
@@ -43,18 +54,26 @@ export function SyncedVideoReview({
   onSelectedJobIdChange: (jobId: string) => void;
   selectedEegTime: number | null;
   onEegTimeSelect: (seconds: number) => void;
-  onPlaybackEegTime: (seconds: number | null) => void;
+  onPlaybackEegTime?: (seconds: number | null) => void;
+  /** Optional owner-controlled EEG clock; video updates are reported back. */
+  playback?: SharedVideoPlayback;
+  onPlaybackTimeChange?: (seconds: number) => void;
+  onPlaybackStateChange?: (isPlaying: boolean) => void;
+  onPlaybackRateChange?: (rate: number) => void;
   recordingDurationSeconds: number;
   seekRequest: VideoSeekRequest | null;
   compact?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoFrameRef = useRef<HTMLDivElement>(null);
-  const continuePlayback = useRef(false);
+  const appliedRequestRef = useRef<string | null>(null);
+  const pauseForUnmappedTime = useRef(false);
   const [bookmarks, setBookmarks] = useState<
     Array<{ jobId: string; seconds: number }>
   >([]);
   const [unavailableJobId, setUnavailableJobId] = useState<string | null>(null);
+  const [bufferingJobId, setBufferingJobId] = useState<string | null>(null);
+  const [localPlaybackRate, setLocalPlaybackRate] = useState(1);
   const [blurMode, setBlurMode] = useState<"face+patches" | "face" | "all">(
     "face+patches",
   );
@@ -69,11 +88,26 @@ export function SyncedVideoReview({
   } | null>(null);
   const selectedClip =
     clips.find((clip) => clip.job_id === selectedJobId) ?? clips[0];
+  const sharedPlayback =
+    selectedClip?.sync?.status === "linked" ? playback : undefined;
   const selectedJobIdForResult = selectedClip?.job_id;
   const selectedStatusForResult = selectedClip?.status;
+  const selectedJobIsReferenceOnly = selectedClip?.reference_only === true;
   const selectedVideoAvailable = selectedClip?.video_available;
+  const isBuffering = bufferingJobId === selectedClip?.job_id;
   const currentVideoTime =
     videoTimeState?.jobId === selectedClip?.job_id ? videoTimeState.time : 0;
+  const timeline = useMemo(
+    () =>
+      clips.flatMap((clip, clipIndex) =>
+        (clip.sync?.mapped_segments ?? []).map((segment) => ({
+          clip,
+          clipIndex,
+          ...segment,
+        })),
+      ),
+    [clips],
+  );
   const selectiveBlurLabel = selectedClip?.review_privacy_method?.includes(
     "patient-blur",
   )
@@ -97,38 +131,11 @@ export function SyncedVideoReview({
       document.removeEventListener("fullscreenchange", updateFullscreen);
   }, []);
 
-  function toggleFullscreen() {
-    const frame = videoFrameRef.current;
-    if (!frame) return;
-    if (document.fullscreenElement === frame) {
-      void document.exitFullscreen();
-    } else {
-      void frame.requestFullscreen();
-    }
-  }
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (
-      video &&
-      selectedClip?.video_available &&
-      seekRequest?.jobId === selectedClip.job_id &&
-      video.readyState >= HTMLMediaElement.HAVE_METADATA
-    ) {
-      video.currentTime = Math.max(
-        0,
-        Math.min(video.duration, seekRequest.videoSeconds),
-      );
-    }
-  }, [selectedClip, seekRequest]);
-
   useEffect(() => {
     if (
       !selectedJobIdForResult ||
       selectedStatusForResult !== "ready" ||
-      !selectedVideoAvailable ||
-      clips.find((clip) => clip.job_id === selectedJobIdForResult)
-        ?.reference_only
+      selectedJobIsReferenceOnly
     )
       return;
     const controller = new AbortController();
@@ -143,35 +150,109 @@ export function SyncedVideoReview({
     return () => controller.abort();
   }, [
     selectedJobIdForResult,
+    selectedJobIsReferenceOnly,
     selectedStatusForResult,
-    selectedVideoAvailable,
-    clips,
+  ]);
+
+  function toggleFullscreen() {
+    const frame = videoFrameRef.current;
+    if (!frame) return;
+    if (document.fullscreenElement === frame) {
+      void document.exitFullscreen();
+    } else {
+      void frame.requestFullscreen();
+    }
+  }
+
+  const authoritativeEegTime = sharedPlayback?.timeSeconds ?? selectedEegTime;
+  const noSynchronizedVideoAtSelectedTime =
+    sharedPlayback !== undefined &&
+    authoritativeEegTime !== null &&
+    videoTimeForEegTime(
+      selectedClip?.sync?.mapped_segments,
+      authoritativeEegTime,
+    ) === null;
+
+  useEffect(() => {
+    if (sharedPlayback) {
+      const covering = timeline.find(
+        (segment) =>
+          authoritativeEegTime !== null &&
+          videoTimeForEegTime([segment], authoritativeEegTime) !== null,
+      );
+      if (covering && covering.clip.job_id !== selectedClip?.job_id) {
+        onSelectedJobIdChange(covering.clip.job_id);
+        return;
+      }
+    }
+
+    const video = videoRef.current;
+    if (!video || !selectedClip?.video_available) {
+      pauseForUnmappedTime.current = true;
+      video?.pause();
+      return;
+    }
+
+    const seek =
+      sharedPlayback && authoritativeEegTime !== null
+        ? videoTimeForEegTime(
+            selectedClip.sync?.mapped_segments,
+            authoritativeEegTime,
+          )
+        : seekRequest?.jobId === selectedClip.job_id
+          ? seekRequest.videoSeconds
+          : null;
+
+    if (seek === null) {
+      if (sharedPlayback) {
+        pauseForUnmappedTime.current = true;
+        video.pause();
+      }
+      return;
+    }
+    pauseForUnmappedTime.current = false;
+    if (video.readyState < HTMLMediaElement.HAVE_METADATA) return;
+
+    const requestId = sharedPlayback
+      ? `${selectedClip.job_id}:${sharedPlayback.requestId}`
+      : `${seekRequest?.jobId ?? ""}:${seekRequest?.requestId ?? ""}`;
+    const isNewRequest = requestId !== appliedRequestRef.current;
+    appliedRequestRef.current = requestId;
+    if (isNewRequest || Math.abs(video.currentTime - seek) > 0.2) {
+      video.currentTime = Math.max(0, Math.min(video.duration, seek));
+    }
+
+    if (sharedPlayback) {
+      if (video.playbackRate !== sharedPlayback.playbackRate)
+        video.playbackRate = sharedPlayback.playbackRate;
+      if (sharedPlayback.isPlaying && video.paused)
+        void video.play().catch(() => onPlaybackStateChange?.(false));
+      if (!sharedPlayback.isPlaying && !video.paused) video.pause();
+    }
+  }, [
+    authoritativeEegTime,
+    onSelectedJobIdChange,
+    onPlaybackStateChange,
+    sharedPlayback,
+    seekRequest,
+    selectedClip,
+    timeline,
   ]);
 
   useEffect(() => {
     if (
       selectedClip?.sync?.status === "linked" &&
-      selectedEegTime !== null &&
+      authoritativeEegTime !== null &&
       videoTimeForEegTime(
         selectedClip?.sync?.mapped_segments,
-        selectedEegTime,
+        authoritativeEegTime,
       ) === null
     ) {
+      pauseForUnmappedTime.current = true;
       videoRef.current?.pause();
     }
-  }, [selectedClip, selectedEegTime]);
+  }, [selectedClip, authoritativeEegTime]);
 
-  const timeline = useMemo(
-    () =>
-      clips.flatMap((clip, clipIndex) =>
-        (clip.sync?.mapped_segments ?? []).map((segment) => ({
-          clip,
-          clipIndex,
-          ...segment,
-        })),
-      ),
-    [clips],
-  );
   const timelineEnd = Math.max(
     recordingDurationSeconds,
     ...timeline.map(
@@ -239,6 +320,14 @@ export function SyncedVideoReview({
       )}
 
       <div className={compact ? "space-y-2" : "space-y-5 p-5 sm:p-7"}>
+        {selectedClip.review_warning && (
+          <p
+            className="rounded-lg border border-amber/40 bg-amber-soft px-4 py-3 text-sm leading-6 text-ink-muted"
+            role="status"
+          >
+            {selectedClip.review_warning}
+          </p>
+        )}
         <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
           <label className="block text-sm font-semibold text-ink">
             <span className={compact ? "sr-only" : ""}>
@@ -249,6 +338,12 @@ export function SyncedVideoReview({
               value={selectedClip.job_id}
               onChange={(event) => {
                 onSelectedJobIdChange(event.currentTarget.value);
+                const nextClip = clips.find(
+                  (clip) => clip.job_id === event.currentTarget.value,
+                );
+                const firstSegment = nextClip?.sync?.mapped_segments[0];
+                if (firstSegment)
+                  onEegTimeSelect(firstSegment.eeg_source_start_seconds);
                 setUnavailableJobId(null);
               }}
             >
@@ -309,9 +404,11 @@ export function SyncedVideoReview({
             </div>
             {eegCoverageSeconds + 0.5 < totalVideoSeconds && (
               <p className="mt-2 text-xs leading-5 text-ink-muted">
-                EEG covers {formatRelativeTime(eegCoverageSeconds)} of{" "}
-                {formatRelativeTime(totalVideoSeconds)} video. Footage outside
-                EEG signal segments is not linked on this timeline.
+                Recorded EEG samples overlap{" "}
+                {formatRelativeTime(eegCoverageSeconds)}
+                of {formatRelativeTime(totalVideoSeconds)} video. Verified video
+                remains on its source clock through internal EEG gaps; footage
+                outside the recording span is not linked.
               </p>
             )}
           </div>
@@ -365,7 +462,15 @@ export function SyncedVideoReview({
         )}
 
         {selectedClip.video_available ? (
-          unavailableJobId === selectedClip.job_id ? (
+          noSynchronizedVideoAtSelectedTime ? (
+            <div
+              className="grid aspect-video place-items-center rounded-xl bg-black p-6 text-center text-sm font-semibold text-white"
+              role="status"
+            >
+              No synchronized video covers EEG{" "}
+              {formatRelativeTime(authoritativeEegTime ?? 0)}.
+            </div>
+          ) : unavailableJobId === selectedClip.job_id ? (
             <p
               className="rounded-lg border border-amber/40 bg-amber-soft p-4 text-sm text-ink-muted"
               role="status"
@@ -408,21 +513,34 @@ export function SyncedVideoReview({
                     data-testid="synchronized-video-player"
                     aria-label={`${clipLabel(selectedClip, clips.indexOf(selectedClip))}, ${unblurred ? "unblurred owner-only" : blurMode === "all" ? "full-frame blurred" : selectiveBlurLabel.toLocaleLowerCase()} review video`}
                     onLoadedMetadata={(event) => {
+                      setBufferingJobId(null);
                       const video = event.currentTarget;
-                      if (continuePlayback.current) {
-                        continuePlayback.current = false;
-                        void video.play();
-                      }
-                      if (seekRequest?.jobId === selectedClip.job_id) {
+                      const seek =
+                        sharedPlayback && authoritativeEegTime !== null
+                          ? videoTimeForEegTime(
+                              selectedClip.sync?.mapped_segments,
+                              authoritativeEegTime,
+                            )
+                          : seekRequest?.jobId === selectedClip.job_id
+                            ? seekRequest.videoSeconds
+                            : null;
+                      if (seek !== null) {
                         video.currentTime = Math.max(
                           0,
-                          Math.min(video.duration, seekRequest.videoSeconds),
+                          Math.min(video.duration, seek),
                         );
-                        setVideoTimeState({
-                          jobId: selectedClip.job_id,
-                          time: video.currentTime,
-                        });
                       }
+                      if (sharedPlayback) {
+                        video.playbackRate = sharedPlayback.playbackRate;
+                        if (sharedPlayback.isPlaying)
+                          void video
+                            .play()
+                            .catch(() => onPlaybackStateChange?.(false));
+                      }
+                      setVideoTimeState({
+                        jobId: selectedClip.job_id,
+                        time: video.currentTime,
+                      });
                     }}
                     onTimeUpdate={(event) => {
                       const videoSeconds = event.currentTarget.currentTime;
@@ -430,19 +548,79 @@ export function SyncedVideoReview({
                         jobId: selectedClip.job_id,
                         time: videoSeconds,
                       });
-                      onPlaybackEegTime(
-                        eegTimeForVideoTime(
-                          selectedClip.sync?.mapped_segments,
-                          videoSeconds,
-                        ),
+                      const eegTime = eegTimeForVideoTime(
+                        selectedClip.sync?.mapped_segments,
+                        videoSeconds,
                       );
+                      if (eegTime !== null) {
+                        if (onPlaybackTimeChange) onPlaybackTimeChange(eegTime);
+                        else onPlaybackEegTime?.(eegTime);
+                      } else if (sharedPlayback) {
+                        if (sharedPlayback.isPlaying) {
+                          const lastSegment =
+                            selectedClip.sync?.mapped_segments.at(-1);
+                          const atVideoEnd =
+                            videoSeconds >= selectedClip.duration_seconds - 0.1;
+                          const atMappedEnd =
+                            lastSegment !== undefined &&
+                            videoSeconds >= lastSegment.video_end_seconds - 0.1;
+                          const endEegTime = lastSegment
+                            ? lastSegment.eeg_source_start_seconds +
+                              lastSegment.video_end_seconds -
+                              lastSegment.video_start_seconds
+                            : null;
+                          const next = timeline.find(
+                            (segment) =>
+                              segment.clip.job_id !== selectedClip.job_id &&
+                              endEegTime !== null &&
+                              Math.abs(
+                                segment.eeg_source_start_seconds - endEegTime,
+                              ) < 0.2,
+                          );
+                          if (next && atVideoEnd && atMappedEnd) {
+                            onEegTimeSelect(next.eeg_source_start_seconds);
+                            onPlaybackTimeChange?.(
+                              next.eeg_source_start_seconds,
+                            );
+                          } else if (!atVideoEnd) {
+                            pauseForUnmappedTime.current = true;
+                            event.currentTarget.pause();
+                          }
+                        }
+                      } else {
+                        onPlaybackEegTime?.(null);
+                      }
+                    }}
+                    onWaiting={() => setBufferingJobId(selectedClip.job_id)}
+                    onCanPlay={() => setBufferingJobId(null)}
+                    onPlaying={() => setBufferingJobId(null)}
+                    onSeeking={() => setBufferingJobId(selectedClip.job_id)}
+                    onSeeked={() => setBufferingJobId(null)}
+                    onPlay={() => {
+                      if (sharedPlayback) onPlaybackStateChange?.(true);
+                    }}
+                    onPause={() => {
+                      if (sharedPlayback && !pauseForUnmappedTime.current)
+                        onPlaybackStateChange?.(false);
+                    }}
+                    onRateChange={(event) => {
+                      const rate = event.currentTarget.playbackRate;
+                      setLocalPlaybackRate(rate);
+                      if (sharedPlayback) onPlaybackRateChange?.(rate);
                     }}
                     onEnded={() => {
-                      const end = eegTimeForVideoTime(
-                        selectedClip.sync?.mapped_segments,
-                        selectedClip.duration_seconds,
-                      );
-                      if (end === null) return;
+                      const lastSegment =
+                        selectedClip.sync?.mapped_segments.at(-1);
+                      if (
+                        !lastSegment ||
+                        lastSegment.video_end_seconds <
+                          selectedClip.duration_seconds - 0.2
+                      )
+                        return;
+                      const end =
+                        lastSegment.eeg_source_start_seconds +
+                        lastSegment.video_end_seconds -
+                        lastSegment.video_start_seconds;
                       const next = timeline.find(
                         (segment) =>
                           segment.clip.job_id !== selectedClip.job_id &&
@@ -450,11 +628,17 @@ export function SyncedVideoReview({
                             0.2,
                       );
                       if (next) {
-                        continuePlayback.current = true;
                         onEegTimeSelect(next.eeg_source_start_seconds);
+                        if (sharedPlayback?.isPlaying)
+                          onPlaybackStateChange?.(true);
+                      } else if (sharedPlayback) {
+                        onPlaybackStateChange?.(false);
                       }
                     }}
-                    onError={() => setUnavailableJobId(selectedClip.job_id)}
+                    onError={() => {
+                      setUnavailableJobId(selectedClip.job_id);
+                      if (sharedPlayback) onPlaybackStateChange?.(false);
+                    }}
                   >
                     Your browser cannot play this protected review video.
                   </video>
@@ -468,6 +652,14 @@ export function SyncedVideoReview({
                     poseSample={currentPoseSample}
                     gradCamSample={currentGradCamSample}
                   />
+                  {isBuffering && (
+                    <span
+                      className="absolute bottom-3 left-3 z-20 rounded bg-black/75 px-2 py-1 text-xs text-white"
+                      role="status"
+                    >
+                      Loading video frame…
+                    </span>
+                  )}
                 </div>
                 <span className="pointer-events-none absolute left-3 top-3 z-20 rounded-md bg-black/75 px-2.5 py-1.5 text-xs font-semibold text-white">
                   {selectedBlurModeLabel}
@@ -487,25 +679,43 @@ export function SyncedVideoReview({
           <div className="rounded-lg border border-rule bg-surface-soft p-4">
             <p className="text-sm font-semibold text-ink">
               {selectedClip.status === "failed"
-                ? "No privacy-safe video copy is available"
+                ? "No playable review video is available"
                 : "Video processing is still in progress"}
             </p>
             <p className="mt-1 text-sm leading-6 text-ink-muted">
               {selectedClip.status === "failed"
-                ? videoJobFailureMessage("failed", selectedClip.error)
+                ? "The clip cannot be played in this review. EEG and synchronization status remain available."
                 : `Current stage: ${selectedClip.current_stage.replaceAll("-", " ")}.`}
             </p>
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2 text-xs">
+          {sharedPlayback && selectedClip.video_available && (
+            <button
+              className="min-h-9 rounded border border-rule px-3 font-semibold"
+              type="button"
+              aria-label={
+                sharedPlayback.isPlaying
+                  ? "Pause EEG and video playback"
+                  : "Play EEG and video"
+              }
+              onClick={() => onPlaybackStateChange?.(!sharedPlayback.isPlaying)}
+            >
+              {sharedPlayback.isPlaying
+                ? "Pause EEG + video"
+                : "Play EEG + video"}
+            </button>
+          )}
           <label>
             Speed{" "}
             <select
               aria-label="Video playback speed"
-              defaultValue="1"
+              value={String(sharedPlayback?.playbackRate ?? localPlaybackRate)}
               onChange={(event) => {
-                if (videoRef.current)
-                  videoRef.current.playbackRate = Number(event.target.value);
+                const rate = Number(event.target.value);
+                setLocalPlaybackRate(rate);
+                if (videoRef.current) videoRef.current.playbackRate = rate;
+                if (sharedPlayback) onPlaybackRateChange?.(rate);
               }}
             >
               <option value="0.25">0.25×</option>
@@ -590,10 +800,11 @@ export function SyncedVideoReview({
             {formatRelativeTime(currentVideoTime)}
           </p>
         )}
-        <p className="text-xs text-ink-muted">
-          {selectedClip.sync?.status === "linked"
-            ? "Unique metadata match · partial coverage may apply."
-            : `Alignment ${selectedClip.sync?.status ?? "unavailable"}. This clip remains viewable independently.`}
+        <p className="text-xs text-ink-muted" role="status">
+          {syncStatusMessage(
+            selectedClip.sync?.status,
+            selectedClip.video_available,
+          )}
         </p>
         {!compact && !unblurred && (
           <p className="text-xs text-ink-muted">
@@ -634,10 +845,61 @@ export function SyncedVideoReview({
 function clipLabel(clip: DetectionJob, index: number): string {
   const segments = clip.sync?.mapped_segments ?? [];
   if (!segments.length)
-    return `Video clip ${String(index + 1).padStart(2, "0")}`;
+    return `Video clip ${String(index + 1).padStart(2, "0")} · ${syncStatusLabel(clip.sync?.status)}`;
   const start = Math.min(
     ...segments.map((segment) => segment.eeg_source_start_seconds),
   );
   const coverage = clip.sync?.eeg_coverage_seconds ?? 0;
-  return `Video clip ${String(index + 1).padStart(2, "0")} · EEG ${formatRelativeTime(start)} · ${formatRelativeTime(coverage)} linked`;
+  return `Video clip ${String(index + 1).padStart(2, "0")} · EEG ${formatRelativeTime(start)} · ${formatRelativeTime(coverage)} signal`;
+}
+
+function syncStatusLabel(status: VideoEegSync["status"] | undefined): string {
+  switch (status) {
+    case "linked":
+      return "matched";
+    case "incomplete_folder":
+      return "folder incomplete";
+    case "pending":
+      return "awaiting EEG";
+    case "missing_reference":
+      return "missing anchors";
+    case "clock_mismatch":
+      return "clock mismatch";
+    case "frame_mismatch":
+      return "frame mismatch";
+    case "ambiguous":
+      return "ambiguous";
+    case "unmatched":
+      return "unmatched";
+    default:
+      return "unavailable";
+  }
+}
+
+function syncStatusMessage(
+  status: VideoEegSync["status"] | undefined,
+  videoAvailable: boolean,
+): string {
+  switch (status) {
+    case "linked":
+      return "Unique metadata match · partial EEG coverage may apply. This confirms a match among uploads, not original byte identity.";
+    case "incomplete_folder":
+      return "The camera folder upload is incomplete, so synchronization has not been resolved.";
+    case "pending":
+      return "Waiting for the EEG recording metadata needed to resolve synchronization.";
+    case "missing_reference":
+      return "The EEG metadata has no complete clock-anchor reference for this clip.";
+    case "clock_mismatch":
+      return "The EEG clock anchors do not agree with this clip's frame timing.";
+    case "frame_mismatch":
+      return "The anchored frame count does not agree with this clip's duration and frame rate.";
+    case "ambiguous":
+      return "The upload metadata matches more than one possible recording; no synchronized link was made.";
+    case "unmatched":
+      return "No unique EEG match was found. The clip can still be reviewed independently when playable.";
+    default:
+      return videoAvailable
+        ? "No usable EEG synchronization metadata is available. The clip can still be reviewed independently."
+        : "No playable video is available for this clip.";
+  }
 }

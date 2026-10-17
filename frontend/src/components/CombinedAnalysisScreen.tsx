@@ -125,9 +125,8 @@ export function CombinedAnalysisScreen({
             Analysis report
           </h1>
           <p className="mt-4 text-[0.98rem] leading-7 text-ink-muted">
-            VEEG and video are processed independently, then brought together
-            here so a reviewer can see the privacy and model state for each
-            modality.
+            EEG analysis and video playback use separate paths and meet here for
+            synchronized review. Video inference is a separate workflow.
           </p>
         </header>
 
@@ -162,19 +161,36 @@ export function CombinedAnalysisScreen({
           {videoJobId && (
             <AnalysisCard
               icon="activity"
-              title="Video seizure review"
+              title={
+                videoJob?.reference_only
+                  ? "Reference video"
+                  : "Video seizure review"
+              }
               status={videoJob ? videoStatus(videoJob.status) : "Loading"}
               detail={
                 videoJob
-                  ? videoJob.current_stage.replaceAll("-", " ")
+                  ? videoJob.reference_only
+                    ? videoJob.sync?.status === "linked"
+                      ? "Clock linked for synchronized playback"
+                      : "Owner-only playback; no video model inference"
+                    : videoJob.current_stage.replaceAll("-", " ")
                   : "Loading the owner-scoped video job…"
               }
-              steps={[
-                "Normalize frames",
-                "OpenPose + 15 patches",
-                "Blur patches + VSViG",
-                "Evidence timeline",
-              ]}
+              steps={
+                videoJob?.reference_only
+                  ? [
+                      "Encrypted original",
+                      "Owner-only review copy",
+                      "Clock metadata",
+                      "Owner-only playback",
+                    ]
+                  : [
+                      "Normalize frames",
+                      "OpenPose + 15 patches",
+                      "VSViG inference",
+                      "Evidence timeline",
+                    ]
+              }
               href={
                 videoJob
                   ? `/video-detection/${encodeURIComponent(videoJob.job_id)}`
@@ -204,8 +220,8 @@ export function CombinedAnalysisScreen({
               </h2>
               <p className="mt-2 text-sm leading-6 text-ink-muted">
                 {videoJob?.sync?.status === "linked"
-                  ? "The camera clock is linked from Nicolet frame markers. EEG and video model outputs remain separate and are not a diagnosis."
-                  : "No unique Nicolet clock match is available. EEG and video outputs remain separate, and this view does not assume they are synchronized."}
+                  ? "The camera clock is linked from Nicolet frame markers. EEG findings and clinical video observations remain separate."
+                  : "No unique Nicolet clock match is available. EEG findings and video observations remain separate, and this view does not assume they are synchronized."}
               </p>
             </div>
           </div>

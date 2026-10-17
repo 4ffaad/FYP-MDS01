@@ -229,6 +229,51 @@ class VideoVisualizationTests(unittest.TestCase):
                     ), self.assertRaisesRegex(DetectionError, "visualization_failed"):
                         validate_visualization_artifact(artifact)
 
+    def test_reference_validator_uses_mp4_index_without_a_second_full_decode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "review.mp4"
+            artifact.write_bytes(b"fixture")
+            probe = subprocess.CompletedProcess(
+                ["ffprobe"],
+                0,
+                stdout=json.dumps(
+                    {
+                        "streams": [
+                            {
+                                "codec_type": "video",
+                                "codec_name": "h264",
+                                "pix_fmt": "yuv420p",
+                                "width": 320,
+                                "height": 240,
+                                "avg_frame_rate": "25/1",
+                                "nb_frames": "25",
+                            }
+                        ],
+                        "format": {"duration": "1.000"},
+                    }
+                ),
+                stderr="",
+            )
+            with patch(
+                "backend.app.video_detection.visualization.shutil.which",
+                return_value="/usr/bin/ffprobe",
+            ), patch(
+                "backend.app.video_detection.visualization.subprocess.run",
+                return_value=probe,
+            ) as run:
+                frame_count = validate_visualization_artifact(
+                    artifact,
+                    expected_fps=25,
+                    expected_width=320,
+                    expected_height=240,
+                    expected_frame_count=25,
+                    expected_duration=1,
+                    count_frames=False,
+                )
+
+        self.assertEqual(frame_count, 25)
+        self.assertNotIn("-count_frames", run.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

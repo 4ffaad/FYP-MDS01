@@ -88,6 +88,27 @@ class ProcessingCapacityTests(unittest.TestCase):
         self.assertNotIn("/private/sessions", str(raised.exception.detail))
         release.assert_called_once_with()
 
+    def test_new_patient_analysis_rejects_signal_obfuscation_before_capacity_or_storage(self) -> None:
+        from backend.app.api.uploads import finalize_staged_upload
+
+        with (
+            patch("backend.app.api.uploads.processing_capacity.reserve") as reserve,
+            patch("backend.app.api.uploads.SessionStorage") as storage,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                finalize_staged_upload(
+                    "DRAFT-ONE",
+                    BackgroundTasks(),
+                    privacy_methods='["signal-obfuscation"]',
+                    db=MagicMock(),
+                    current_user=SimpleNamespace(id=1),
+                )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("unavailable for new patient analyses", raised.exception.detail)
+        reserve.assert_not_called()
+        storage.assert_not_called()
+
     def test_draft_finalize_maps_storage_failure_to_503(self) -> None:
         from backend.app.api.uploads import finalize_staged_upload
         from backend.app.services.storage_service import StorageError

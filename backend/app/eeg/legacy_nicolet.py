@@ -951,6 +951,20 @@ class LegacyNicoletReader:
         """Read all readable source traces, at source rates and across source gaps."""
         header = self.read_header()
         segments = coalesce_contiguous_segments(header.segments, header.sampling_rate)
+        overlapping_segments = tuple(
+            segment
+            for segment in segments
+            if segment.start_seconds < end
+            and segment.start_seconds + segment.duration_seconds > start
+        )
+        if not overlapping_segments:
+            return {
+                "channels": [],
+                "time_seconds": [],
+                "segments": [],
+                "sampling_rate": header.sampling_rate,
+                "display_filter": None,
+            }
         channels = []
         with self._open_source() as stream:
             source_channels = self._read_ts_channels(stream, self._read_tags(stream))
@@ -961,7 +975,7 @@ class LegacyNicoletReader:
                     continue
                 total = sum(round(segment.duration_seconds * rate) for segment in header.segments)
                 try:
-                    for segment in segments:
+                    for segment in overlapping_segments:
                         left = max(start, segment.start_seconds)
                         right = min(end, segment.start_seconds + segment.duration_seconds)
                         if right <= left:
@@ -988,8 +1002,7 @@ class LegacyNicoletReader:
         return {"channels": channels, "time_seconds": channels[0]["time_seconds"],
                 "segments": [{"source_start_seconds": max(start, segment.start_seconds),
                               "source_end_seconds": min(end, segment.start_seconds + segment.duration_seconds)}
-                             for segment in segments
-                             if segment.start_seconds < end and segment.start_seconds + segment.duration_seconds > start],
+                             for segment in overlapping_segments],
                 "sampling_rate": header.sampling_rate, "display_filter": None}
 
     def read_review_segments(

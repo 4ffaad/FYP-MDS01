@@ -80,9 +80,7 @@ test("registration, refresh, readable errors, login and logout use the backend s
   await expect(page.getByTitle("teammate@example.test").first()).toBeVisible();
 
   await page.reload();
-  await expect(
-    page.getByRole("heading", { name: /Welcome back/ }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login/);
 

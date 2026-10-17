@@ -22,16 +22,21 @@ from sqlmodel import SQLModel, Session, create_engine, select
 from backend.app.database.db import get_session
 from backend.app.database.models.video import utc_now
 from backend.app.database.models.video_detection import VideoDetectionJob
+from backend.app.database.models.eeg import EEGRecording, EEGSession
 from backend.app.core.config import STORAGE_KEY_ENV
+from backend.app.api import video_detection as video_detection_api
 from backend.app.eeg.legacy_nicolet import video_sync_name_token
 from backend.app.main import app
 from backend.app.services import video_detection_service as service
 from backend.app.services.auth_service import ensure_demo_admin
 from backend.app.services.video_storage_service import VideoStorage
 from backend.app.services.video_sync_service import (
+    _match_sync_clip,
     decrypt_sync_payload,
     encrypt_job_mapping,
+    encrypt_recording_manifest,
     match_sync_video_group,
+    resolve_case_video_sync,
 )
 from backend.app.video_detection.contract import DetectionError, digest, load_contract, validate_predictions
 from backend.app.video_detection.runtime import (
@@ -136,6 +141,66 @@ class VideoRuntimeKeypointValidationTests(unittest.TestCase):
 
 
 class VideoEegSyncMatchingTests(unittest.TestCase):
+    def test_clip_diagnostics_allow_valid_clips_beside_bad_anchors(self):
+        manifest = {
+            "segments": [{"source_start_seconds": 0.0, "duration_seconds": 100.0}],
+            "markers": [
+                {"source_name_token": "a" * 64, "frame_index": 0, "eeg_clock_seconds": 1.0},
+                {"source_name_token": "a" * 64, "frame_index": 25, "eeg_clock_seconds": 2.0},
+                {"source_name_token": "b" * 64, "frame_index": 0, "eeg_clock_seconds": 5.0},
+                {"source_name_token": "b" * 64, "frame_index": 25, "eeg_clock_seconds": 7.0},
+            ],
+        }
+        valid = SimpleNamespace(
+            source_name_token="a" * 64,
+            fps=25.0,
+            duration_seconds=1.04,
+            job_id="VID-VALID",
+        )
+        wrong_clock = SimpleNamespace(
+            source_name_token="b" * 64,
+            fps=25.0,
+            duration_seconds=1.04,
+            job_id="VID-CLOCK",
+        )
+        jobs = [valid, wrong_clock]
+
+        valid_mapping, valid_status = _match_sync_clip(manifest, jobs, valid)
+        clock_mapping, clock_status = _match_sync_clip(manifest, jobs, wrong_clock)
+
+        self.assertIsNotNone(valid_mapping)
+        self.assertEqual(valid_status, "linked")
+        self.assertIsNone(clock_mapping)
+        self.assertEqual(clock_status, "clock_mismatch")
+
+    def test_clip_diagnostics_distinguish_missing_anchors_and_frame_count(self):
+        job = SimpleNamespace(
+            source_name_token="a" * 64,
+            fps=25.0,
+            duration_seconds=5.0,
+            job_id="VID-FRAME",
+        )
+        no_anchors = {"segments": [{"source_start_seconds": 0, "duration_seconds": 10}], "markers": []}
+        wrong_frames = {
+            "segments": [{"source_start_seconds": 0, "duration_seconds": 10}],
+            "markers": [
+                {"source_name_token": "a" * 64, "frame_index": 0, "eeg_clock_seconds": 0.0},
+                {"source_name_token": "a" * 64, "frame_index": 25, "eeg_clock_seconds": 1.0},
+            ],
+        }
+
+        self.assertEqual(_match_sync_clip(no_anchors, [job], job), (None, "missing_reference"))
+        self.assertEqual(_match_sync_clip(wrong_frames, [job], job), (None, "frame_mismatch"))
+
+    def test_duplicate_upload_tokens_are_reported_ambiguous(self):
+        job = SimpleNamespace(source_name_token="a" * 64, job_id="VID-A")
+        duplicate = SimpleNamespace(source_name_token="a" * 64, job_id="VID-B")
+
+        mapping, status = _match_sync_clip({}, [job, duplicate], job)
+
+        self.assertIsNone(mapping)
+        self.assertEqual(status, "ambiguous")
+
     def test_sync_group_maps_across_an_eeg_gap_using_video_frames(self):
         manifest = {
             "segments": [
@@ -170,7 +235,7 @@ class VideoEegSyncMatchingTests(unittest.TestCase):
         self.assertEqual(links["VID-B"]["video_duration_seconds"], 1.04)
         self.assertAlmostEqual(links["VID-B"]["eeg_coverage_seconds"], 1.04)
 
-    def test_sync_mapping_splits_video_spanning_an_eeg_acquisition_gap(self):
+    def test_sync_mapping_keeps_video_clock_continuous_across_eeg_acquisition_gap(self):
         manifest = {
             "segments": [
                 {"source_start_seconds": 0.0, "duration_seconds": 100.0},
@@ -192,23 +257,47 @@ class VideoEegSyncMatchingTests(unittest.TestCase):
 
         self.assertIsNotNone(links)
         assert links is not None
-        self.assertEqual(len(links["VID-GAP"]["mapped_segments"]), 2)
+        self.assertEqual(len(links["VID-GAP"]["mapped_segments"]), 1)
         self.assertEqual(
             links["VID-GAP"]["mapped_segments"],
             [
                 {
                     "video_start_seconds": 0.0,
-                    "video_end_seconds": 1.0,
-                    "eeg_source_start_seconds": 99.0,
-                },
-                {
-                    "video_start_seconds": 101.0,
                     "video_end_seconds": 102.0,
-                    "eeg_source_start_seconds": 200.0,
+                    "eeg_source_start_seconds": 99.0,
                 },
             ],
         )
         self.assertAlmostEqual(links["VID-GAP"]["eeg_coverage_seconds"], 2.0)
+
+    def test_sync_mapping_keeps_verified_video_available_inside_eeg_gap(self):
+        manifest = {
+            "segments": [
+                {"source_start_seconds": 0.0, "duration_seconds": 100.0},
+                {"source_start_seconds": 200.0, "duration_seconds": 100.0},
+            ],
+            "markers": [
+                {"source_name_token": "a" * 64, "frame_index": 0, "eeg_clock_seconds": 150.0},
+                {"source_name_token": "a" * 64, "frame_index": 25, "eeg_clock_seconds": 151.0},
+            ],
+        }
+        job = SimpleNamespace(
+            source_name_token="a" * 64,
+            fps=25.0,
+            duration_seconds=1.04,
+            job_id="VID-IN-GAP",
+        )
+
+        links = match_sync_video_group(manifest, [job])
+
+        self.assertIsNotNone(links)
+        assert links is not None
+        self.assertEqual(len(links["VID-IN-GAP"]["mapped_segments"]), 1)
+        mapping = links["VID-IN-GAP"]["mapped_segments"][0]
+        self.assertEqual(mapping["video_start_seconds"], 0.0)
+        self.assertAlmostEqual(mapping["video_end_seconds"], 1.04)
+        self.assertEqual(mapping["eeg_source_start_seconds"], 150.0)
+        self.assertEqual(links["VID-IN-GAP"]["eeg_coverage_seconds"], 0.0)
 
     def test_sync_mapping_keeps_video_time_when_clip_starts_before_eeg(self):
         manifest = {
@@ -380,7 +469,7 @@ class VideoDetectionTests(unittest.TestCase):
                 "Access-Control-Request-Method": "POST",
                 "Access-Control-Request-Headers": (
                     "content-type,x-case-id,x-model-blur-percent,x-video-format,"
-                    "x-veeg-source-name,x-veeg-source-group"
+                    "x-veeg-source-name,x-veeg-source-group,x-video-purpose"
                 ),
             },
         )
@@ -388,6 +477,7 @@ class VideoDetectionTests(unittest.TestCase):
         allowed_headers = preflight.headers.get("access-control-allow-headers", "").lower()
         self.assertIn("x-veeg-source-name", allowed_headers)
         self.assertIn("x-veeg-source-group", allowed_headers)
+        self.assertIn("x-video-purpose", allowed_headers)
 
         case_id = "CASE-SYNC-HEADER-TEST"
         job = VideoDetectionJob(
@@ -444,6 +534,17 @@ class VideoDetectionTests(unittest.TestCase):
             )
             db.commit()
 
+        listing = self.alice.get("/api/video-detection/jobs", headers=self.headers)
+        self.assertEqual(listing.status_code, 200, listing.text)
+        self.assertTrue(
+            all(
+                job["sync"]["status"] == "incomplete_folder"
+                for job in listing.json()["jobs"]
+                if job["job_id"].startswith("VID-SYNC-COMPLETE-")
+            )
+        )
+        self.assertNotIn("clip-01.avi", listing.text)
+
         with patch.dict(os.environ, {STORAGE_KEY_ENV: storage_key}):
             incomplete = self.alice.post(
                 f"/api/video-detection/cases/{case_id}/sync-groups/{group_id}/finalize",
@@ -470,6 +571,91 @@ class VideoDetectionTests(unittest.TestCase):
                 headers=self.headers,
             )
         self.assertEqual(complete.status_code, 200, complete.text)
+        self.assertEqual(complete.json()["status"], "pending")
+        self.assertEqual(complete.json()["diagnostic_counts"], {"pending": 2})
+
+    def test_sync_resolution_keeps_verified_groups_when_other_folder_has_bad_clip(self):
+        case_id = "CASE-SYNC-PARTIAL-TEST"
+        storage_key = base64.b64encode(b"z" * 32).decode("ascii")
+        valid_group = "123e4567-e89b-12d3-a456-426614174000"
+        partial_group = "123e4567-e89b-12d3-a456-426614174001"
+        tokens = {letter: letter * 64 for letter in "abcd"}
+        manifest = {
+            "segments": [{"source_start_seconds": 0.0, "duration_seconds": 100.0}],
+            "markers": [
+                marker
+                for letter, start in (("a", 1.0), ("b", 10.0), ("c", 20.0), ("d", 30.0))
+                for marker in (
+                    {"source_name_token": tokens[letter], "frame_index": 0, "eeg_clock_seconds": start},
+                    {"source_name_token": tokens[letter], "frame_index": 25, "eeg_clock_seconds": start + 1.0},
+                )
+            ]
+        }
+        # The fourth clip's anchors cover 1.04 seconds, but the upload reports 5 seconds.
+        jobs = [
+            VideoDetectionJob(
+                owner_user_id=self.owner,
+                case_id=case_id,
+                job_id=f"VID-SYNC-PARTIAL-{letter.upper()}",
+                source_name_token=tokens[letter],
+                source_group_id=valid_group if letter in {"a", "b"} else partial_group,
+                sync_group_complete=True,
+                fps=25.0,
+                duration_seconds=5.0 if letter == "d" else 1.04,
+            )
+            for letter in "abcd"
+        ]
+        with patch.dict(os.environ, {STORAGE_KEY_ENV: storage_key}):
+            with Session(self.engine) as db:
+                session = EEGSession(
+                    owner_user_id=self.owner,
+                    session_id="MDS-SYNC-PARTIAL-SESSION",
+                    case_id=case_id,
+                    original_filename="synthetic-archive.zip",
+                    original_path="/not-materialized",
+                )
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                recording = EEGRecording(
+                    record_id="MDS-SYNC-PARTIAL-RECORD",
+                    session_db_id=session.id,
+                    original_filename="synthetic-recording.e",
+                )
+                db.add(recording)
+                db.commit()
+                db.refresh(recording)
+                encrypt_recording_manifest(
+                    recording,
+                    owner_user_id=self.owner,
+                    case_id=case_id,
+                    manifest=manifest,
+                )
+                db.add_all(jobs)
+                db.commit()
+
+                linked = resolve_case_video_sync(
+                    db,
+                    self.owner,
+                    case_id,
+                    acquire_lock=False,
+                    commit=False,
+                )
+                db.commit()
+                statuses = {
+                    job.job_id: job.eeg_sync_status
+                    for job in db.exec(
+                        select(VideoDetectionJob).where(
+                            VideoDetectionJob.case_id == case_id
+                        )
+                    ).all()
+                }
+
+        self.assertEqual(linked, 3)
+        self.assertEqual(statuses["VID-SYNC-PARTIAL-A"], "linked")
+        self.assertEqual(statuses["VID-SYNC-PARTIAL-B"], "linked")
+        self.assertEqual(statuses["VID-SYNC-PARTIAL-C"], "linked")
+        self.assertEqual(statuses["VID-SYNC-PARTIAL-D"], "frame_mismatch")
 
     def test_video_preflight_exact_body_cap_rejects_early_with_cors(self):
         with patch("backend.app.core.middleware.MAX_VIDEO_UPLOAD_BYTES", 3), patch(
@@ -972,7 +1158,7 @@ class VideoDetectionTests(unittest.TestCase):
             owner_user_id=self.owner,
             job_id="VID-BLUR-STRENGTH",
             blur_strength_percent=0,
-            retention_expires_at=utc_now() + timedelta(hours=1),
+            retention_expires_at=None,
         )
         with patch.object(
             service,
@@ -992,6 +1178,8 @@ class VideoDetectionTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 202, response.text)
         self.assertEqual(response.json()["job"]["blur_strength_percent"], 0)
+        self.assertIsNone(response.json()["job"]["retention_expires_at"])
+        self.assertEqual(response.json()["job"]["retention_policy"], "until-deletion")
         self.assertEqual(
             create_job.call_args.kwargs["blur_strength_percent"],
             0,
@@ -1010,7 +1198,7 @@ class VideoDetectionTests(unittest.TestCase):
         queued = VideoDetectionJob(
             owner_user_id=self.owner,
             job_id="VID-QUEUED-AFTER-ACTIVE",
-            retention_expires_at=utc_now() + timedelta(hours=1),
+            retention_expires_at=None,
         )
         with patch.object(
             service,
@@ -1029,6 +1217,110 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 202, response.text)
         self.assertEqual(response.json()["job"]["job_id"], queued.job_id)
         create_job.assert_awaited_once()
+
+    def test_reference_upload_respects_runtime_review_setting_before_retaining_video(self):
+        with patch.object(
+            video_detection_api, "CLINICAL_VIDEO_REVIEW_ENABLED", False
+        ), patch.object(
+            service,
+            "create_job",
+            new=AsyncMock(side_effect=AssertionError("must not retain before approval")),
+        ) as create_job:
+            response = self.alice.post(
+                "/api/video-detection/jobs",
+                content=b"synthetic-reference-bytes",
+                headers={
+                    **self.headers,
+                    "Content-Type": "application/octet-stream",
+                    "X-Video-Format": "mp4",
+                    "X-Video-Purpose": "reference",
+                },
+            )
+
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertIn("disabled by the current runtime setting", response.json()["detail"])
+        create_job.assert_not_awaited()
+
+    def test_reference_video_retains_encrypted_media_without_model_or_pose_admission(self):
+        source_bytes = b"synthetic-reference-video"
+        metadata = {
+            "fps": 30.0,
+            "frame_count": 300,
+            "width": 640,
+            "height": 480,
+        }
+        with patch.object(service, "CLINICAL_VIDEO_REVIEW_ENABLED", True), patch.object(
+            service, "load_contract", side_effect=AssertionError("reference must not load VSViG")
+        ), patch.object(
+            service,
+            "_preflight_uploaded_video",
+            side_effect=AssertionError("reference must not run pose preflight"),
+        ), patch.object(
+            service.VideoPrivacyProcessor, "preflight", return_value=metadata
+        ), patch(
+            "backend.app.services.video_privacy_service.finalize_protected_video",
+            side_effect=lambda source, visual, output: output.write_bytes(
+                source.read_bytes() + b"-browser-copy"
+            ),
+        ), patch.object(
+            service, "validate_visualization_artifact", return_value=299
+        ) as validate_review, patch.object(
+            service, "VideoStorage", return_value=self.storage
+        ):
+            with Session(self.engine) as db:
+                upload = UploadFile(
+                    filename="camera.avi",
+                    file=io.BytesIO(source_bytes),
+                    headers=Headers({"content-type": "video/x-msvideo"}),
+                )
+                job = asyncio.run(
+                    service.create_job(
+                        db,
+                        self.storage,
+                        upload,
+                        self.owner,
+                        reference_only=True,
+                    )
+                )
+                self.assertTrue(job.reference_only)
+                self.assertIsNone(job.retention_expires_at)
+
+            service.process_job(job.job_id)
+
+        with Session(self.engine) as db:
+            saved = db.exec(
+                select(VideoDetectionJob).where(
+                    VideoDetectionJob.job_id == job.job_id
+                )
+            ).one()
+            self.assertEqual(saved.status, "ready")
+            self.assertEqual(saved.error_code, "source_frame_count_mismatch")
+            self.assertTrue(Path(saved.original_path or "").is_file())
+            self.assertTrue(Path(saved.visualization_path or "").is_file())
+            self.assertIsNone(saved.retention_expires_at)
+            self.assertIsNone(saved.predictions_path)
+            self.assertNotIn(source_bytes, Path(saved.original_path or "").read_bytes())
+        validate_review.assert_called_once()
+        self.assertEqual(validate_review.call_args.kwargs["expected_fps"], 30.0)
+        self.assertFalse(validate_review.call_args.kwargs["count_frames"])
+        self.assertEqual(saved.duration_seconds, 299 / 30.0)
+        with Session(self.engine) as db, patch.object(
+            service, "CLINICAL_VIDEO_REVIEW_ENABLED", True
+        ):
+            review = service.public_job(db, saved, self.storage)
+        self.assertEqual(
+            review["review_warning"],
+            "The source and review-copy reported frame counts differ. Playback uses the validated review-copy frame clock; EEG alignment uses the original clock anchors.",
+        )
+        review = self.storage.materialize_artifact(
+            job.job_id,
+            Path(saved.visualization_path or ""),
+            "reference-review.mp4",
+        )
+        try:
+            self.assertEqual(review.read_bytes(), source_bytes + b"-browser-copy")
+        finally:
+            self.storage.delete_work_file(review)
 
     def test_model_blur_operates_on_extracted_rgb_patches(self):
         import numpy as np

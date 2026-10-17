@@ -1,0 +1,22 @@
+{
+  "title": "Simple Agent Architecture",
+  "direction": "LR",
+  "nodes": [
+    {"id": "user", "label": "User", "type": "actor", "icon": "user"},
+    {"id": "gateway", "label": "API Gateway", "type": "service", "icon": "api"},
+    {"id": "planner", "label": "Agent Planner", "type": "service", "icon": "agent"},
+    {"id": "tools", "label": "Tool Runtime", "type": "process", "icon": "tool"},
+    {"id": "memory", "label": "Memory Store", "type": "database", "icon": "memory"},
+    {"id": "llm", "label": "LLM Provider", "type": "external", "icon": "llm"}
+  ],
+  "edges": [
+    {"id": "e-user-gateway", "source": "user", "target": "gateway", "label": "request"},
+    {"id": "e-gateway-planner", "source": "gateway", "target": "planner"},
+    {"id": "e-planner-tools", "source": "planner", "target": "tools", "label": "invoke"},
+    {"id": "e-planner-memory", "source": "planner", "target": "memory", "label": "read/write"},
+    {"id": "e-planner-llm", "source": "planner", "target": "llm", "label": "prompt"}
+  ],
+  "groups": [
+    {"id": "agent-platform", "label": "Agent Platform", "members": ["gateway", "planner", "tools", "memory"]}
+  ]
+}

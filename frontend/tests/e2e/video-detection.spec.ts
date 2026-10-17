@@ -16,7 +16,11 @@ const job = {
   blur_strength_percent: 100,
   review_privacy_method: "tracked-face-blur-with-full-frame-fallback" as const,
   created_at: new Date().toISOString(),
-  retention_expires_at: new Date(Date.now() + 3600000).toISOString(),
+  retention_expires_at: null,
+  retention_policy: "until-deletion" as const,
+  source_available: true,
+  source_download_available: true,
+  video_access_status: "available" as const,
   video_available: true,
   error: null,
 };
@@ -124,10 +128,12 @@ const result = {
 
 let mediaAssetRequests: string[] = [];
 let uploadBlurStrength = 100;
+let clinicalVideoAccessEnabled = true;
 
 test.beforeEach(async ({ page }) => {
   mediaAssetRequests = [];
   uploadBlurStrength = 100;
+  clinicalVideoAccessEnabled = true;
   await page.route("**/api/video-detection/**", async (route) => {
     const url = route.request().url();
     if (route.request().method() === "OPTIONS")
@@ -194,6 +200,11 @@ test.beforeEach(async ({ page }) => {
                     : job.review_privacy_method,
                 retention_policy: "until-deletion",
                 retention_expires_at: null,
+                video_available: clinicalVideoAccessEnabled,
+                video_access_status: clinicalVideoAccessEnabled
+                  ? "available"
+                  : "review_disabled",
+                source_download_available: clinicalVideoAccessEnabled,
               },
             },
       headers: {
@@ -210,7 +221,7 @@ test("uploads and reviews window supports without confidence percentages", async
   await page.goto("/video-detection");
   await expect(
     page.getByText(
-      "Upload a clip once. MDS01 scores movement and creates an owner-only review copy automatically.",
+      "Upload a clip for a separate experimental VSViG analysis. Multiple people can be tracked separately; track labels do not identify the patient.",
     ),
   ).toBeVisible();
   await expect(page.getByRole("slider", { name: /blur/i })).toHaveCount(0);
@@ -232,11 +243,13 @@ test("uploads and reviews window supports without confidence percentages", async
     .click();
   await expect(page).toHaveURL(/video-detection\/VID-synthetic/);
   await expect(
-    page
-      .getByTestId("video-review-frame")
-      .getByText("Owner reference · unblurred"),
+    page.getByTestId("video-review-frame").getByText("Unblurred · owner-only"),
   ).toBeVisible();
   await expect(page.locator("video")).toBeVisible();
+  await expect(
+    page.getByText(/facial action units are not configured/i),
+  ).toBeVisible();
+  await expect(page.getByText(/Encrypted result expires/i)).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "VSViG score over time" }),
   ).toBeVisible();
@@ -261,9 +274,7 @@ test("uploads and reviews window supports without confidence percentages", async
     await expect(videoFrame).toHaveClass(/fixed/);
   }
   await expect(
-    page
-      .getByTestId("video-review-frame")
-      .getByText("Owner reference · unblurred"),
+    page.getByTestId("video-review-frame").getByText("Unblurred · owner-only"),
   ).toBeVisible();
   await videoFrame.getByRole("button", { name: "Exit full screen" }).click();
   if (supportsFullscreen) {
@@ -282,7 +293,7 @@ test("uploads and reviews window supports without confidence percentages", async
     page.getByText(/configured research threshold 0.50/),
   ).toBeVisible();
   await expect(
-    page.getByText("VSViG score and protected video", { exact: true }),
+    page.getByText("VSViG score and owner-reviewed video", { exact: true }),
   ).toBeVisible();
   const peakScoreScale = page.getByRole("img", {
     name: "Peak score 0.800 on a fixed 0 to 1 display scale; threshold 0.500",
@@ -300,6 +311,14 @@ test("uploads and reviews window supports without confidence percentages", async
     page.getByText(
       "Encrypted originals and results are retained until case deletion.",
     ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Unblurred owner-only review · encrypted until case deletion",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/temporary plaintext is removed after processing/i),
   ).toBeVisible();
   await expect(
     page.getByText("Selected video time", { exact: true }),
@@ -334,6 +353,28 @@ test("uploads and reviews window supports without confidence percentages", async
     page.getByText("Source timestamp offset", { exact: true }),
   ).toHaveCount(0);
   await expect(page.getByText("+0.118 s", { exact: true })).toHaveCount(0);
+});
+
+test("explains when retained video playback is disabled by the runtime setting", async ({
+  page,
+}) => {
+  clinicalVideoAccessEnabled = false;
+  uploadBlurStrength = 0;
+  await page.goto("/video-detection/VID-synthetic");
+  await expect(
+    page.getByText(
+      "The review copy is retained encrypted, but playback is disabled by the current runtime video-review setting.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "The encrypted review copy is retained, but playback is disabled by this runtime's video-review setting.",
+      { exact: false },
+    ),
+  ).toBeVisible();
+  await expect(page.locator("video")).toHaveCount(0);
+  await expect(page.getByText(/Encrypted result expires/i)).toHaveCount(0);
 });
 
 test("separates scores for multiple people and lets the reviewer choose a track", async ({
@@ -431,9 +472,9 @@ test("zero face-blur coverage reports full-frame fallback in the retained review
   await page.goto("/video-detection/VID-synthetic");
 
   await expect(
-    page.getByText("Face blur · 0% of frames · full-frame fallback 20 frames", {
-      exact: true,
-    }),
+    page.getByText(
+      /Face blur · OpenPose skeleton when available; facial action units are not configured · 0% of frames · full-frame fallback 20 frames/,
+    ),
   ).toBeVisible();
 });
 
@@ -662,6 +703,53 @@ test("shows where a failed pose run stopped", async ({ page }) => {
   ).toContainText("remain unscored");
 });
 
+test("reference-only jobs show playback status without a VSViG pipeline", async ({
+  page,
+}) => {
+  await page.route("**/api/video-detection/jobs/VID-reference", (route) =>
+    route.fulfill({
+      json: {
+        job: {
+          ...job,
+          job_id: "VID-reference",
+          label: "Reference camera",
+          reference_only: true,
+          review_warning:
+            "The source container and decodable frame counts differ. Playback preserves all decodable frames; EEG alignment uses the original clock anchors.",
+          sync: {
+            status: "unavailable",
+            record_id: null,
+            session_id: null,
+            eeg_source_start_seconds: null,
+            video_duration_seconds: null,
+            eeg_coverage_seconds: null,
+            mapped_segments: [],
+          },
+        },
+      },
+    }),
+  );
+
+  await page.goto("/video-detection/VID-reference");
+
+  await expect(
+    page.getByRole("heading", { name: "Reference video", exact: true }),
+  ).toBeVisible();
+  const status = page.locator(".video-processing-card");
+  await expect(
+    status.getByRole("heading", { name: "Reference video ready" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/source container and decodable frame counts differ/i),
+  ).toBeVisible();
+  await expect(status.getByText("Pose + VSViG", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(status.getByText("Model handoff:", { exact: true })).toHaveCount(
+    0,
+  );
+});
+
 test("shows the upload handoff while the backend acknowledges the video", async ({
   page,
 }) => {
@@ -773,7 +861,7 @@ test("expired job removes playback and scores", async ({ page }) => {
   await page.goto("/video-detection/VID-synthetic");
   await expect(
     page.getByText(
-      "The retention period ended. Encrypted predictions and review video have been removed.",
+      "This older job expired before the no-expiry retention policy. Its encrypted media was already removed and cannot be recovered.",
     ),
   ).toBeVisible();
   await expect(page.locator("video")).toHaveCount(0);

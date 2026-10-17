@@ -217,3 +217,20 @@ any linked processing job is active.
 8. Treat all outputs as research-only; label stub predictions as development data.
 9. For frontend work, follow `frontend/AGENTS.md` (including its installed
    Next.js documentation requirement) and `DESIGN.md`.
+
+## Editable Draw.io diagrams
+
+- For architecture and workflow diagrams, use the repository-local
+  `drawio-mxgraph` skill at `.agents/skills/drawio-mxgraph/SKILL.md`.
+- Keep a JSON graph specification and editable `.drawio` source together under
+  `docs/diagrams/`. Preserve stable cell IDs for future incremental edits.
+- Rebuild with the bundled standard-library Python tool and pass `--offline`
+  unless an external icon is explicitly needed. Validate every generated file.
+- Include a readable static preview in the relevant documentation and inspect
+  the rendered result before calling a layout complete. The preview does not
+  replace the editable source.
+- Diagrams must reflect the current code and documented privacy boundaries;
+  use no patient data, identifiers, source paths, or secrets.
+- A Draw.io MCP connector is not configured in this workspace. Use the local
+  generator and diagrams.net editor when available; do not describe this as a
+  live MCP workflow.

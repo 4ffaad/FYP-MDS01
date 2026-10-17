@@ -1,8 +1,18 @@
 # MDS01
 
-MDS01 is a local research prototype for reviewing EEG and video. EEG inference
-and VSViG video inference are separate workflows; their scores are not
-automatically combined or synchronized. Outputs are not a diagnosis.
+MDS01 is a local research prototype for reviewing EEG and video. A verified
+EEG/video metadata match can synchronize owner-only reference playback. The
+generated local setup enables it, while an unset backend setting defaults to
+off. EEG and VSViG scores remain separate. Human
+observations and model flags are review evidence, not a diagnosis or
+seizure-onset localization.
+
+The EEG review opens on the fixed 12-second HUKM-style profile (100 µV/cm,
+30 mm/s, 0.5–70 Hz plus 50 Hz notch where supported) with the longitudinal
+bipolar montage. Combined EEG/video intake creates reference video artifacts
+without running VSViG; the separate Video workflow runs VSViG. Standalone video
+analysis artifacts are retained encrypted until case deletion. Facial Action
+Unit estimates are not produced by the pinned pose/VSViG assets.
 
 ## Run locally
 
@@ -26,10 +36,13 @@ loopback app to a network.
 
 ## Understand the project
 
+- [Project design: platforms, algorithms, models, APIs, and runtime](docs/project-design.md)
+- [Project goal and success criteria](docs/project-goal.md)
 - [Plain-language EEG/video inference guide](docs/inference-walkthrough.md)
 - [Run and test locally](docs/setup.md)
 - [System architecture](docs/architecture.md)
 - [Backend guide](docs/backend.md)
+- [Frontend guide](docs/frontend.md)
 - [Video model and failure runbook](docs/video-detection.md)
 - [Documentation index](docs/README.md)
 

@@ -58,8 +58,14 @@ def validate_visualization_artifact(
     expected_height: int | None = None,
     expected_frame_count: int | None = None,
     expected_duration: float | None = None,
-) -> None:
-    """Fail closed unless the rendered artifact is an audio-free video."""
+    count_frames: bool = True,
+) -> int:
+    """Fail closed unless the rendered artifact is an audio-free video.
+
+    ``count_frames=False`` uses the container's indexed frame count for
+    reference copies that have already completed a full FFmpeg conversion.
+    Model visualizations keep the default full decode-and-count validation.
+    """
 
     if not path.is_file() or path.is_symlink():
         raise DetectionError("visualization_failed")
@@ -70,18 +76,18 @@ def validate_visualization_artifact(
         raise DetectionError("visualization_failed")
     try:
         # The executable and path are server-generated; no shell is used.
+        command = [
+            ffprobe,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration:stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,nb_read_frames,nb_frames",
+        ]
+        if count_frames:
+            command.append("-count_frames")
+        command.extend(("-of", "json", str(path)))
         inspected = subprocess.run(  # nosec B603
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration:stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,nb_read_frames,nb_frames",
-                "-count_frames",
-                "-of",
-                "json",
-                str(path),
-            ],
+            command,
             check=False,
             capture_output=True,
             text=True,
@@ -139,13 +145,21 @@ def validate_visualization_artifact(
             raise DetectionError("visualization_failed") from exc
         if not math.isclose(actual_fps, expected_fps, rel_tol=0.01, abs_tol=0.01):
             raise DetectionError("visualization_failed")
-    if expected_frame_count is not None:
-        try:
-            actual_frame_count = int(video.get("nb_read_frames", video.get("nb_frames", 0)))
-        except (TypeError, ValueError) as exc:
-            raise DetectionError("visualization_failed") from exc
-        if actual_frame_count != expected_frame_count:
-            raise DetectionError("visualization_failed")
+    try:
+        frame_count_value = (
+            video.get("nb_read_frames", video.get("nb_frames", 0))
+            if count_frames
+            else video.get("nb_frames", 0)
+        )
+        actual_frame_count = int(frame_count_value)
+    except (TypeError, ValueError) as exc:
+        raise DetectionError("visualization_failed") from exc
+    if actual_frame_count <= 0 or (
+        expected_frame_count is not None
+        and actual_frame_count != expected_frame_count
+    ):
+        raise DetectionError("visualization_failed")
+    return actual_frame_count
 
 
 def _mask_frame(cv2: Any, frame: np.ndarray) -> np.ndarray:

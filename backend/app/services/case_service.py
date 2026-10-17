@@ -352,6 +352,7 @@ def get_case(
             "status": summarize_status([job.status]),
             "created_at": job.created_at.isoformat(),
             "review_ready": job.status == "ready",
+            "reference_only": job.reference_only,
         }
         for job in jobs
     )

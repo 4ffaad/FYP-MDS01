@@ -36,14 +36,14 @@ const stages: StageDefinition[] = [
     id: "pose-and-inference",
     label: "Pose + VSViG",
     detail:
-      "Extract 15 patches and pose points, blur the patches, then score them.",
+      "Extract the 15 configured RGB patches and pose points, then score them.",
     icon: "activity",
     checkpoint: 72,
   },
   {
     id: "complete",
     label: "Review video",
-    detail: "Save scores and the face-blurred review video.",
+    detail: "Save scores and the protected review video.",
     icon: "list",
     checkpoint: 100,
   },
@@ -250,6 +250,69 @@ export function VideoUploadStatus({
 }
 
 export function VideoProcessingStatus({ job }: { job: DetectionJob }) {
+  if (job.reference_only) {
+    const complete = job.status === "ready" && job.video_available;
+    const terminal =
+      job.status === "failed" ||
+      job.status === "expired" ||
+      (job.status === "ready" && !job.video_available);
+    const statusLabel = complete
+      ? "Ready"
+      : terminal
+        ? "Unavailable"
+        : job.status === "queued"
+          ? "Queued"
+          : "Preparing";
+
+    return (
+      <MotionConfig reducedMotion="user">
+        <motion.section
+          className="video-processing-card panel mt-6 overflow-hidden"
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.36, ease: "easeOut" }}
+          aria-labelledby="video-processing-heading"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-5 px-5 py-5 sm:px-7">
+            <div className="max-w-2xl">
+              <p className="eyebrow">Owner-only video playback</p>
+              <h2
+                id="video-processing-heading"
+                className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl"
+              >
+                {complete
+                  ? "Reference video ready"
+                  : terminal
+                    ? "Reference video unavailable"
+                    : "Preparing reference video"}
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-ink-muted">
+                {complete
+                  ? "Owner-only playback is ready. This path does not run OpenPose or VSViG."
+                  : terminal
+                    ? job.video_access_status === "review_disabled"
+                      ? "Playback is disabled by the current review-access setting. No video-model inference was attempted."
+                      : "The reference copy is unavailable; no video-model inference was attempted."
+                    : "Preparing owner-only playback from the encrypted source. No video-model inference runs on this path."}
+              </p>
+            </div>
+            <StatusMark
+              label={statusLabel}
+              variant={complete ? "success" : terminal ? "attention" : "accent"}
+              spinning={!complete && !terminal}
+            />
+          </div>
+          {job.retention_policy === "until-deletion" && (
+            <p className="border-t border-rule bg-surface-soft px-5 py-4 text-xs text-ink-muted sm:px-7">
+              The encrypted original and review copy are retained until case
+              deletion.
+            </p>
+          )}
+        </motion.section>
+      </MotionConfig>
+    );
+  }
+
   const activeStage = getJobStage(job);
   const activeIndex = stageIndex(activeStage.id);
   const complete = job.status === "ready";
@@ -264,7 +327,9 @@ export function VideoProcessingStatus({ job }: { job: DetectionJob }) {
   const stagePosition = complete ? stages.length : Math.max(activeIndex + 1, 1);
   const statusLabel = getStatusLabel(job);
   const statusDescription = complete
-    ? "The protected video has been scored and the evidence timeline is ready for review."
+    ? job.blur_strength_percent === 0
+      ? "The unblurred protected video has been scored and the evidence timeline is ready for review."
+      : "The protected video has been scored and the evidence timeline is ready for review."
     : job.status === "failed"
       ? `Processing stopped during ${activeStage.label}. No detection result was published.`
       : job.status === "expired"

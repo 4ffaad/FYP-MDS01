@@ -97,7 +97,7 @@ class RetainedSignalRegressionTests(unittest.TestCase):
             self.assertEqual(len(set(paths)), 2)
             self.assertTrue(all(not path.exists() for path in paths))
 
-    def test_gap_preserving_preview_filters_continuous_model_windows(self) -> None:
+    def test_retained_model_windows_are_not_filtered_again_for_review(self) -> None:
         starts = np.asarray([0.0, 2.0, 4.0, 6.0], dtype=np.float64)
         samples = np.arange(10 * MODEL_SAMPLING_RATE) / MODEL_SAMPLING_RATE
         source = np.sin(2 * np.pi * 10 * samples) + np.sin(2 * np.pi * 50 * samples)
@@ -108,15 +108,13 @@ class RetainedSignalRegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory) / "retained.npz"
             write_model_window_npz(artifact, windows, starts, np.arange(len(starts)))
-            preview = _read_npz_preview(
-                artifact, [], 0.0, 10.0, 10_000, filter_for_display=True
-            )
-        self.assertEqual(preview["display_filter"], "0.5–70 Hz · 50 Hz notch")
+            preview = _read_npz_preview(artifact, [], 0.0, 10.0, 10_000)
+        self.assertIsNone(preview["display_filter"])
         self.assertEqual(len(preview["time_seconds"]), len(samples))
         spectrum = np.abs(np.fft.rfft(preview["channels"][0]["samples"]))
         frequencies = np.fft.rfftfreq(len(samples), 1 / MODEL_SAMPLING_RATE)
         self.assertGreater(spectrum[np.argmin(abs(frequencies - 10))], 900)
-        self.assertLess(spectrum[np.argmin(abs(frequencies - 50))], 130)
+        self.assertGreater(spectrum[np.argmin(abs(frequencies - 50))], 900)
 
     def test_auxiliary_review_channels_remain_time_aligned_in_encrypted_artifact_source(self) -> None:
         windows = np.zeros((1, 1024, len(MODEL_CHANNELS)), dtype=np.float32)
@@ -258,7 +256,7 @@ class RetainedSignalRegressionTests(unittest.TestCase):
 
     def test_gapped_npz_preview_representation_matches_privacy_profile(self) -> None:
         profiles = (
-            ("metadata-scrub", write_model_window_npz, "metadata-scrubbed"),
+            ("metadata-scrub", write_model_window_npz, "normalized-units"),
             (
                 "metadata-scrub+signal-obfuscation",
                 write_obfuscated_npz,

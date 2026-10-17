@@ -22,6 +22,7 @@ import { PredictionTimeline } from "./PredictionTimeline";
 import { SignalViewer, type SignalSeekRequest } from "./SignalViewer";
 import { SourceClockTimeline } from "./SourceClockTimeline";
 import { SyncedVideoReview, type VideoSeekRequest } from "./SyncedVideoReview";
+import { formatRelativeTime } from "@/lib/format";
 
 /** Render one recording result within its session-scoped navigation context. */
 export function ResultScreen({ recordId }: { recordId: string }) {
@@ -35,6 +36,10 @@ function ResultContent({ recordId }: { recordId: string }) {
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [caseVideoJobs, setCaseVideoJobs] = useState<DetectionJob[]>([]);
+  const [videoDialogOpen, setVideoDialogOpen] = useState(false);
+  const [playbackPlaying, setPlaybackPlaying] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [playbackRequestId, setPlaybackRequestId] = useState(0);
   const [selectedVideoJobId, setSelectedVideoJobId] = useState<string | null>(
     null,
   );
@@ -47,6 +52,7 @@ function ResultContent({ recordId }: { recordId: string }) {
     useState<SignalSeekRequest | null>(null);
   const videoSeekRequestId = useRef(0);
   const signalSeekRequestId = useRef(0);
+  const playbackTimeRef = useRef(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -156,17 +162,24 @@ function ResultContent({ recordId }: { recordId: string }) {
 
   const selectEegTime = useCallback(
     (seconds: number) => {
-      setSelectedEegTimeOverride(seconds);
+      const boundedSeconds = Math.max(
+        0,
+        Math.min(result?.recordingDurationSeconds ?? seconds, seconds),
+      );
+      playbackTimeRef.current = boundedSeconds;
+      setSelectedEegTimeOverride(boundedSeconds);
+      setPlaybackRequestId((current) => current + 1);
       setSignalSeekRequest({
-        timeSeconds: seconds,
+        timeSeconds: boundedSeconds,
         requestId: ++signalSeekRequestId.current,
       });
       const clip = linkedVideoClips.find(
         (job) =>
-          videoTimeForEegTime(job.sync?.mapped_segments, seconds) !== null,
+          videoTimeForEegTime(job.sync?.mapped_segments, boundedSeconds) !==
+          null,
       );
       const videoSeconds = clip?.sync
-        ? videoTimeForEegTime(clip.sync.mapped_segments, seconds)
+        ? videoTimeForEegTime(clip.sync.mapped_segments, boundedSeconds)
         : null;
       if (!clip || videoSeconds === null) {
         setVideoSeekRequest(null);
@@ -179,8 +192,65 @@ function ResultContent({ recordId }: { recordId: string }) {
         requestId: ++videoSeekRequestId.current,
       });
     },
-    [linkedVideoClips],
+    [linkedVideoClips, result?.recordingDurationSeconds],
   );
+
+  const updatePlaybackTime = useCallback((seconds: number) => {
+    playbackTimeRef.current = seconds;
+    setSelectedEegTimeOverride(seconds);
+  }, []);
+
+  const updatePlaybackState = useCallback((isPlaying: boolean) => {
+    setPlaybackPlaying(isPlaying);
+  }, []);
+
+  const updateLegacyPlaybackTime = useCallback((seconds: number | null) => {
+    if (seconds === null) return;
+    playbackTimeRef.current = seconds;
+    setSelectedEegTimeOverride(seconds);
+  }, []);
+
+  useEffect(() => {
+    if (!result || !playbackPlaying) return;
+    if (videoDialogOpen && mappedVideoClip?.video_available) return;
+    let previousFrame = performance.now();
+    let frameId = 0;
+    const advance = (now: number) => {
+      const elapsedSeconds = (now - previousFrame) / 1000;
+      previousFrame = now;
+      const nextTime = Math.min(
+        result.recordingDurationSeconds,
+        playbackTimeRef.current + elapsedSeconds * playbackRate,
+      );
+      playbackTimeRef.current = nextTime;
+      setSelectedEegTimeOverride(nextTime);
+      if (nextTime >= result.recordingDurationSeconds) {
+        setPlaybackPlaying(false);
+        return;
+      }
+      frameId = requestAnimationFrame(advance);
+    };
+    frameId = requestAnimationFrame(advance);
+    return () => cancelAnimationFrame(frameId);
+  }, [
+    mappedVideoClip?.job_id,
+    mappedVideoClip?.video_available,
+    playbackPlaying,
+    playbackRate,
+    result,
+    videoDialogOpen,
+  ]);
+
+  const startPlayback = () => {
+    if (!result) return;
+    const startAt =
+      selectedEegTime === null ||
+      selectedEegTime >= result.recordingDurationSeconds
+        ? 0
+        : selectedEegTime;
+    selectEegTime(startAt);
+    setPlaybackPlaying(true);
+  };
 
   if (sourceOnly)
     return (
@@ -337,6 +407,68 @@ function ResultContent({ recordId }: { recordId: string }) {
               selectedEegTime={selectedEegTime}
               onSelectEegTime={selectEegTime}
             />
+            <div className="flex flex-wrap items-center gap-2 border-b border-rule px-3 py-2 sm:px-4">
+              <button
+                className="min-h-10 rounded-md bg-teal-dark px-4 text-sm font-semibold text-white"
+                type="button"
+                onClick={
+                  playbackPlaying
+                    ? () => setPlaybackPlaying(false)
+                    : startPlayback
+                }
+                aria-label={
+                  playbackPlaying
+                    ? "Pause EEG and video playback"
+                    : "Play EEG and video"
+                }
+              >
+                {playbackPlaying ? "Pause" : "Play"}
+              </button>
+              <button
+                className="min-h-10 rounded-md border border-rule px-3 text-sm font-semibold"
+                type="button"
+                onClick={() => selectEegTime((selectedEegTime ?? 0) - 10)}
+                aria-label="Seek EEG back 10 seconds"
+              >
+                −10 s
+              </button>
+              <button
+                className="min-h-10 rounded-md border border-rule px-3 text-sm font-semibold"
+                type="button"
+                onClick={() => selectEegTime((selectedEegTime ?? 0) + 10)}
+                aria-label="Seek EEG forward 10 seconds"
+              >
+                +10 s
+              </button>
+              <label className="flex min-h-10 items-center gap-2 text-xs font-semibold text-ink-muted">
+                Speed
+                <select
+                  className="min-h-10 rounded-md border border-rule bg-surface px-2 text-sm text-ink"
+                  aria-label="Shared playback speed"
+                  value={playbackRate}
+                  onChange={(event) =>
+                    setPlaybackRate(Number(event.target.value))
+                  }
+                >
+                  {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => (
+                    <option key={rate} value={rate}>
+                      {rate}×
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <output
+                className="ml-auto font-mono text-xs tabular-nums text-ink-muted"
+                aria-label={`Current EEG recording time ${formatRelativeTime(selectedEegTime ?? 0)}`}
+              >
+                EEG {formatRelativeTime(selectedEegTime ?? 0)} ·{" "}
+                {mappedVideoClip?.video_available
+                  ? "Synchronized video"
+                  : mappedVideoClip
+                    ? "Matched clip unavailable"
+                    : "No synchronized video coverage"}
+              </output>
+            </div>
             <div
               className={
                 linkedVideoClips.length > 0
@@ -374,18 +506,27 @@ function ResultContent({ recordId }: { recordId: string }) {
               </div>
               {linkedVideoClips.length > 0 && (
                 <aside className="min-w-0 border-t border-rule p-3 xl:border-l xl:border-t-0">
-                  <Dialog.Root>
-                    <Dialog.Trigger asChild>
-                      <button
-                        className="min-h-10 rounded-lg border border-rule px-3 text-sm font-semibold"
-                        type="button"
-                      >
-                        Open synchronized video
-                      </button>
-                    </Dialog.Trigger>
+                  <Dialog.Root
+                    open={videoDialogOpen}
+                    modal={false}
+                    onOpenChange={setVideoDialogOpen}
+                  >
+                    <label className="flex min-h-10 cursor-pointer items-center gap-2 text-xs font-semibold text-ink-muted">
+                      <input
+                        className="size-4 accent-teal"
+                        type="checkbox"
+                        checked={videoDialogOpen}
+                        onChange={(event) =>
+                          setVideoDialogOpen(event.target.checked)
+                        }
+                      />
+                      Show synchronized video popup
+                    </label>
                     <Dialog.Portal>
-                      <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50" />
-                      <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-[min(960px,95vw)] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-xl bg-surface p-5 shadow-xl">
+                      <Dialog.Content
+                        onInteractOutside={(event) => event.preventDefault()}
+                        className="fixed inset-x-2 bottom-4 z-50 max-h-[45vh] overflow-auto rounded-xl border border-rule bg-surface p-3 shadow-2xl sm:inset-x-auto sm:bottom-auto sm:right-4 sm:top-20 sm:max-h-[min(82vh,560px)] sm:w-[min(480px,calc(100vw-2rem))]"
+                      >
                         <div className="mb-4 flex items-center justify-between">
                           <Dialog.Title className="font-semibold">
                             Synchronized video
@@ -407,17 +548,25 @@ function ResultContent({ recordId }: { recordId: string }) {
                           }
                           onSelectedJobIdChange={(jobId) => {
                             setSelectedVideoJobId(jobId);
-                            setSelectedEegTimeOverride(null);
-                            setSignalSeekRequest(null);
                             setVideoSeekRequest(null);
                           }}
                           selectedEegTime={selectedEegTime}
                           onEegTimeSelect={selectEegTime}
-                          onPlaybackEegTime={setSelectedEegTimeOverride}
+                          onPlaybackEegTime={updateLegacyPlaybackTime}
+                          playback={{
+                            timeSeconds: selectedEegTime ?? 0,
+                            isPlaying: playbackPlaying,
+                            playbackRate,
+                            requestId: playbackRequestId,
+                          }}
+                          onPlaybackTimeChange={updatePlaybackTime}
+                          onPlaybackStateChange={updatePlaybackState}
+                          onPlaybackRateChange={setPlaybackRate}
                           recordingDurationSeconds={
                             result.recordingDurationSeconds
                           }
                           seekRequest={videoSeekRequest}
+                          compact
                         />
                       </Dialog.Content>
                     </Dialog.Portal>

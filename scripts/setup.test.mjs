@@ -46,6 +46,7 @@ test("setup generates independent keys and preserves both existing config files"
     assert.match(values.POSTGRES_PASSWORD, /^[a-f0-9]{48}$/);
     assert.match(values.DEMO_ADMIN_PASSWORD, /^[a-f0-9]{32}$/);
     assert.equal(values.MODEL_RUNTIME, "h5");
+    assert.equal(values.MDS01_CLINICAL_VIDEO_REVIEW_ENABLED, "true");
     assert.equal(
       values.COMPOSE_FILE,
       ["docker-compose.yml", "docker-compose.local-research.yml"].join(
