@@ -11,8 +11,9 @@ is ready for hospital deployment.
 
 MDS01 is a local research prototype for reviewing EEG recordings, synchronizing
 verified video clips to EEG source time, and presenting separate research-model
-findings. Its users can inspect source waveforms, annotations, flagged model
-windows, and owner-authored observations. The system does not diagnose
+findings. Its users can inspect source waveforms, imported annotations, and
+flagged model windows. Owner-observation endpoints exist, but the current
+frontend does not expose an observation editor. The system does not diagnose
 seizures, infer seizure onset from movement side, or combine EEG and video
 scores.
 
@@ -30,7 +31,7 @@ with EEG just because both modalities exist in one case.
 | Database       | PostgreSQL 16 in Compose; SQLite in native mode | Accounts, cases, job state, safe metadata, annotations, and model results                |
 | File storage   | Private local filesystem or Docker volume       | Encrypted EEG archives, source recordings, video, and derived artifacts                  |
 | Schema changes | Alembic                                         | Versioned database migrations                                                            |
-| Async work     | FastAPI `BackgroundTasks`                       | Prototype EEG processing and serialized video preparation/inference                      |
+| Async work     | FastAPI `BackgroundTasks`                       | Prototype EEG processing; bounded background and owner-priority VEEG playback preparation; serialized standalone video inference |
 | EEG runtime    | Keras H5 adapter                                | Loads only the external model artifact and reviewed contract                             |
 | Video runtime  | Pinned VSViG and Lightweight OpenPose bundle    | Separate experimental pose and video inference                                           |
 
@@ -81,13 +82,17 @@ the [EEG walkthrough](inference-walkthrough.md#eeg-waveform-display).
 
 Combined uploads keep original EEG and video encrypted in private storage. EEG
 inference runs on its own processing path. When
-`MDS01_CLINICAL_VIDEO_REVIEW_ENABLED=true`, a separate reference worker removes
-audio and creates an unblurred browser-playable H.264 copy when needed. It does
-not run pose estimation or VSViG. AVI or other browser-incompatible source
-formats require conversion; already accepted jobs are prepared one clip at a
-time. Original and review files remain encrypted until case deletion. The
-`.env.example` template enables this for the local owner-only demo. A backend
-started without the setting defaults to disabled.
+`MDS01_CLINICAL_VIDEO_REVIEW_ENABLED=true`, an owner can open the reference
+video popup. Upload encrypts and stores the original, then acknowledges without
+probing, decrypting, or converting the video. A restart-recoverable background
+worker checks clock/format metadata and refreshes sync mappings; it does not run
+pose estimation or VSViG. New video originals use authenticated AES-256-GCM
+chunks, so browser-compatible originals stream only the requested byte ranges.
+An unsupported format gets an audio-free H.264 review copy only after the owner
+opens the clip. Originals and derived review files remain encrypted until case
+deletion. The `.env.example`
+template enables this for the local owner-only demo. A backend started without
+the setting defaults to disabled.
 
 For supported legacy Nicolet/AVI folder uploads, synchronization uses a
 case-scoped HMAC of the source-name token, encrypted clock/frame anchors, frame
@@ -99,16 +104,22 @@ the EEG trace still shows no samples in those intervals. Clips without a
 verified mapping remain available as independent reference video when the
 review setting is enabled, with their alignment status shown.
 
-The review popup is opt-in and remains open until the user closes it. A shared
-playhead coordinates EEG navigation, video seeking, playback state, and
-playback rate. The player supports slow motion, frame stepping, and
-timestamped bookmarks. The UI distinguishes source annotations, model flags,
-and time-linked owner observations.
+The review popup is opt-in and remains open until the user closes it. Compatible
+H.264 MP4 originals with optional AAC audio stream directly; unsupported clips
+are converted automatically in the background after encrypted upload, without
+VSViG. The EEG source clock drives verified video
+seeking, playback state, and playback rate; it holds during buffering, and
+routine video time updates do not reset it. The player supports slow motion,
+frame stepping, and timestamped bookmarks. The UI distinguishes source
+annotations and model flags. Owner-observation endpoints remain available in the
+backend API, but annotation entry is not exposed in the current UI.
 
 ## Standalone VSViG experiment
 
-The separate Video workflow normalizes supported input to the pinned model
-contract, samples at 6 frames per second, estimates multiple people with
+The separate Video workflow encrypts the uploaded source before private-file
+storage, then decrypts it only in the temporary worker workspace. It normalizes
+supported input to the pinned model contract, samples at 6 frames per second,
+estimates multiple people with
 Lightweight OpenPose, and builds 30-frame windows with a three-frame stride.
 The model input contains 15 selected joints and 15 RGB patches per sample:
 patch tensors have shape `[B, 30, 15, 3, 32, 32]`; pose coordinates and
@@ -124,6 +135,11 @@ Outputs are uncalibrated research scores. The local demo clip and HUKM clinical
 review are separate evidence paths; pose failure cannot block reference
 playback. Exact pinned assets, hashes, preprocessing details, and known pose
 limits live in the [video runbook](video-detection.md).
+
+The VSViG result, including window scores and Grad-CAM evidence, is compressed
+and AES-256-GCM encrypted in PostgreSQL, bound to the owner and job ID. Video
+binaries remain encrypted in private file storage. The owner-authorized results
+API decrypts the stored result for display; case deletion removes it.
 
 The separate `/api/video-privacy/` utility supports its own configured
 de-identification workflow. It is not part of combined VEEG review or the

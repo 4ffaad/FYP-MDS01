@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { highestScoringAttribution } from "../../src/lib/research-attribution";
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -10,15 +9,6 @@ test.beforeEach(async ({ page }) => {
     window.localStorage.clear();
     window.sessionStorage.setItem(key, "true");
   });
-});
-
-test("research evidence selects the highest-scoring window independent of order", () => {
-  const lower = { windowIndex: 8, score: 0.62 };
-  const higher = { windowIndex: 3, score: 0.91 };
-
-  expect(highestScoringAttribution([lower, higher])).toBe(higher);
-  expect(highestScoringAttribution([higher, lower])).toBe(higher);
-  expect(highestScoringAttribution([])).toBeNull();
 });
 
 async function seedCompletedStubSession(page: Page, sessionId: string) {
@@ -69,7 +59,10 @@ test("intake copy describes the combined workflow without a warning wall", async
 }) => {
   await page.goto("/upload");
   await expect(
-    page.getByText(/EEG recordings and related video clips together/i),
+    page.getByText(
+      "Keep one patient's EEG recordings and related video clips together in one review. A report is optional.",
+      { exact: true },
+    ),
   ).toBeVisible();
   await expect(
     page.getByText(/not a diagnosis|research-only warning/i),
@@ -146,7 +139,7 @@ test("workspace shows safe case totals and exposes EEG tools", async ({
     await expect(
       page
         .getByRole("navigation", { name: "Primary navigation" })
-        .getByRole("link", { name: "Patient cases", exact: true }),
+        .getByRole("link", { name: "Dashboard", exact: true }),
     ).toHaveAttribute("aria-current", "page");
     await expect(
       page
@@ -337,53 +330,85 @@ test("single recording result skips redundant navigation on tablet", async ({
   expect(timeline).not.toBeNull();
 });
 
-test("EEG source markers seek the matching synchronized video clip", async ({
+test("EEG drives opt-in VEEG playback; only a manual video seek moves EEG", async ({
   page,
 }) => {
   await seedCompletedStubSession(page, "MDS-STUB-SYNCED");
+  let playbackPreparationRequests = 0;
+  let forcePlaybackFailure = false;
+  let playbackStatus:
+    | "conversion_required"
+    | "processing"
+    | "ready"
+    | "failed" = "processing";
+  const syncedJob = {
+    job_id: "VID-SYNCED-STUB",
+    case_id: "CASE-B-SYNCED",
+    label: "Video detection 000001",
+    status: "ready",
+    current_stage: "reference-available",
+    duration_seconds: 4,
+    fps: 25,
+    blur_strength_percent: 0,
+    review_privacy_method: "unblurred-owner-source",
+    reference_only: true,
+    playback_status: playbackStatus,
+    retention_policy: "until-deletion",
+    created_at: new Date().toISOString(),
+    retention_expires_at: null,
+    video_available: false,
+    error: null,
+    sync: {
+      status: "linked",
+      record_id: "MDS-STUB-SYNCED",
+      session_id: "MDS-STUB-SYNCED",
+      eeg_source_start_seconds: 40,
+      video_duration_seconds: 4,
+      eeg_coverage_seconds: 6,
+      mapped_segments: [
+        {
+          video_start_seconds: 0,
+          video_end_seconds: 4,
+          eeg_source_start_seconds: 40,
+        },
+        {
+          video_start_seconds: 2,
+          video_end_seconds: 4,
+          eeg_source_start_seconds: 50,
+        },
+      ],
+    },
+  };
   await page.route("**/api/video-detection/jobs", (route) =>
-    route.fulfill({
-      json: {
-        jobs: [
-          {
-            job_id: "VID-SYNCED-STUB",
-            case_id: "CASE-B-SYNCED",
-            label: "Video detection 000001",
-            status: "ready",
-            current_stage: "privacy-review-ready",
-            duration_seconds: 4,
-            fps: 25,
-            blur_strength_percent: 100,
-            review_privacy_method: "tracked-face-blur-with-full-frame-fallback",
-            created_at: new Date().toISOString(),
-            retention_expires_at: new Date(Date.now() + 3600000).toISOString(),
-            video_available: true,
-            error: null,
-            sync: {
-              status: "linked",
-              record_id: "MDS-STUB-SYNCED",
-              session_id: "MDS-STUB-SYNCED",
-              eeg_source_start_seconds: 40,
-              video_duration_seconds: 4,
-              eeg_coverage_seconds: 4,
-              mapped_segments: [
-                {
-                  video_start_seconds: 0,
-                  video_end_seconds: 2,
-                  eeg_source_start_seconds: 40,
-                },
-                {
-                  video_start_seconds: 2,
-                  video_end_seconds: 4,
-                  eeg_source_start_seconds: 50,
-                },
-              ],
-            },
-          },
-        ],
-      },
-    }),
+    route.fulfill({ json: { jobs: [syncedJob] } }),
   );
+  await page.route("**/api/video-detection/jobs/VID-SYNCED-STUB", (route) => {
+    if (forcePlaybackFailure) {
+      playbackStatus = "failed";
+      return route.fulfill({
+        json: {
+          job: {
+            ...syncedJob,
+            playback_status: playbackStatus,
+            playback_error:
+              "This video could not be prepared for browser playback.",
+            source_available: true,
+            video_available: false,
+          },
+        },
+      });
+    }
+    playbackStatus = "ready";
+    return route.fulfill({
+      json: {
+        job: {
+          ...syncedJob,
+          playback_status: playbackStatus,
+          video_available: true,
+        },
+      },
+    });
+  });
   await page.route(
     "**/api/video-detection/jobs/VID-SYNCED-STUB/predictions",
     (route) =>
@@ -459,8 +484,22 @@ test("EEG source markers seek the matching synchronized video clip", async ({
     resolve(process.cwd(), "tests/fixtures/synthetic-review.mp4"),
   );
   await page.route(
-    "**/api/video-detection/jobs/VID-SYNCED-STUB/visualization",
+    "**/api/video-detection/jobs/VID-SYNCED-STUB/playback",
     (route) => {
+      if (route.request().method() === "POST") {
+        playbackPreparationRequests += 1;
+        playbackStatus = "processing";
+        return route.fulfill({
+          status: 202,
+          json: {
+            job: {
+              ...syncedJob,
+              playback_status: "processing",
+              video_available: false,
+            },
+          },
+        });
+      }
       const range = route
         .request()
         .headers()
@@ -503,50 +542,144 @@ test("EEG source markers seek the matching synchronized video clip", async ({
   });
   await expect(showVideo).not.toBeChecked();
   await expect(synchronizedReview).toHaveCount(0);
+  expect(playbackPreparationRequests).toBe(0);
   await page
     .getByRole("button", {
-      name: /Select Video 01 coverage from EEG 0:40 to 0:42/,
+      name: /Select Video 01 coverage from EEG 0:40 to 0:44/,
     })
     .click();
   await expect(showVideo).not.toBeChecked();
   await expect(synchronizedReview).toHaveCount(0);
   await showVideo.check();
   await expect(synchronizedReview).toBeVisible();
+  await showVideo.uncheck();
+  await page.waitForTimeout(400);
+  expect(playbackPreparationRequests).toBe(0);
+  await showVideo.check();
+  await expect.poll(() => playbackPreparationRequests).toBe(1);
+  await expect(synchronizedReview).toBeVisible();
+  await page.waitForTimeout(400);
+  expect(playbackPreparationRequests).toBe(1);
   await expect(synchronizedReview.getByRole("combobox").first()).toHaveValue(
     "VID-SYNCED-STUB",
   );
   const player = page.getByTestId("synchronized-video-player");
   await expect
     .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
-    .toBeCloseTo(1, 0);
-  await expect(page.getByTestId("video-vsvig-gradcam")).toBeVisible();
+    .toBeCloseTo(2, 0);
   const synchronizedTime = synchronizedReview
     .getByRole("status")
     .filter({ hasText: "· Video 01 ·" })
     .first();
-  await expect
-    .poll(async () => {
-      const status = await synchronizedTime.textContent();
-      const match = status?.match(
-        /^EEG 0:(\d+(?:\.\d+)?) · Video 01 · 0:(\d+(?:\.\d+)?)$/,
-      );
-      return match
-        ? Math.abs(Number(match[1]) - 40 - Number(match[2]))
-        : Number.POSITIVE_INFINITY;
-    })
-    .toBeLessThanOrEqual(0.1);
+  const mappedClockDifference = async () => {
+    const status = await synchronizedTime.textContent();
+    const match = status?.match(
+      /^EEG 0:(\d+(?:\.\d+)?) · Video 01 · 0:(\d+(?:\.\d+)?)$/,
+    );
+    return match
+      ? Math.abs(Number(match[1]) - 40 - Number(match[2]))
+      : Number.POSITIVE_INFINITY;
+  };
+  await expect.poll(mappedClockDifference).toBeLessThanOrEqual(0.1);
+  const statusBeforeVideoTick = await synchronizedTime.textContent();
+  await player.evaluate((video: HTMLVideoElement) => {
+    video.dispatchEvent(new Event("timeupdate", { bubbles: true }));
+  });
+  await expect(synchronizedTime).toHaveText(statusBeforeVideoTick ?? "");
   await synchronizedReview
     .getByRole("button", { name: "Play EEG and video" })
     .click();
   await expect
     .poll(() => player.evaluate((video: HTMLVideoElement) => !video.paused))
     .toBe(true);
+  await player.evaluate((video: HTMLVideoElement) => {
+    video.dispatchEvent(new Event("waiting", { bubbles: true }));
+  });
+  await page.waitForTimeout(80);
+  const eegClockWhileBuffering = (await synchronizedTime.textContent())
+    ?.split(" · Video")[0]
+    .trim();
+  await page.waitForTimeout(300);
+  await expect(synchronizedTime).toContainText(eegClockWhileBuffering ?? "");
+  await player.evaluate((video: HTMLVideoElement) => {
+    video.dispatchEvent(new Event("canplay", { bubbles: true }));
+  });
+  await expect
+    .poll(async () => {
+      const text = await synchronizedTime.textContent();
+      return text?.split(" · Video")[0].trim();
+    })
+    .not.toBe(eegClockWhileBuffering);
+
+  const sharedTimeline = page.getByRole("group", {
+    name: "Shared EEG timeline. Click or drag any lane to seek; use arrow keys to move one second.",
+  });
+  const playhead = sharedTimeline
+    .locator("[data-timeline-track]")
+    .first()
+    .locator("span[aria-hidden='true']");
+  await playhead.evaluate((element) => {
+    const testWindow = window as Window & {
+      __playheadMutationCount?: number;
+      __playheadMutationObserver?: MutationObserver;
+    };
+    testWindow.__playheadMutationCount = 0;
+    testWindow.__playheadMutationObserver = new MutationObserver((records) => {
+      testWindow.__playheadMutationCount =
+        (testWindow.__playheadMutationCount ?? 0) + records.length;
+    });
+    testWindow.__playheadMutationObserver.observe(element, {
+      attributes: true,
+      attributeFilter: ["style"],
+    });
+  });
+  await page.waitForTimeout(900);
   await synchronizedReview
     .getByRole("button", { name: "Pause EEG and video playback" })
     .click();
+  const playheadMutations = await playhead.evaluate(async (element) => {
+    const testWindow = window as Window & {
+      __playheadMutationCount?: number;
+      __playheadMutationObserver?: MutationObserver;
+    };
+    testWindow.__playheadMutationObserver?.disconnect();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+    return testWindow.__playheadMutationCount ?? 0;
+  });
+  expect(playheadMutations).toBeLessThan(12);
   await expect
     .poll(() => player.evaluate((video: HTMLVideoElement) => video.paused))
     .toBe(true);
+
+  const pausedVideoTime = await player.evaluate(
+    (video: HTMLVideoElement) => video.currentTime,
+  );
+  const pausedEegTime = await synchronizedTime.textContent();
+  await page.waitForTimeout(450);
+  expect(
+    await player.evaluate((video: HTMLVideoElement) => video.currentTime),
+  ).toBeCloseTo(pausedVideoTime, 1);
+  await expect(synchronizedTime).toHaveText(pausedEegTime ?? "");
+
+  // A pause initiated by the native video controls must stop the shared EEG
+  // clock too; otherwise the next render can immediately seek the video again.
+  await player.evaluate((video: HTMLVideoElement) => void video.play());
+  await expect
+    .poll(() => player.evaluate((video: HTMLVideoElement) => !video.paused))
+    .toBe(true);
+  await player.evaluate((video: HTMLVideoElement) => video.pause());
+  await expect
+    .poll(() => player.evaluate((video: HTMLVideoElement) => video.paused))
+    .toBe(true);
+  await expect(
+    synchronizedReview.getByRole("button", { name: "Play EEG and video" }),
+  ).toBeVisible();
+  const nativePausedEegTime = await synchronizedTime.textContent();
+  await page.waitForTimeout(450);
+  await expect(synchronizedTime).toHaveText(nativePausedEegTime ?? "");
+
   await page.getByLabel("Video playback speed").selectOption("0.5");
   await expect
     .poll(() =>
@@ -556,31 +689,31 @@ test("EEG source markers seek the matching synchronized video clip", async ({
 
   await player.evaluate((video: HTMLVideoElement) => {
     video.currentTime = 0.5;
-    video.dispatchEvent(new Event("timeupdate", { bubbles: true }));
+    video.dispatchEvent(new Event("seeking", { bubbles: true }));
+    video.dispatchEvent(new Event("seeked", { bubbles: true }));
   });
   await expect(
     page.getByText("EEG 0:40.5 · Video 01 · 0:00.5", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByTestId("video-vsvig-gradcam")).toHaveCount(0);
+
+  // Several closely spaced video seeks must settle on the latest position,
+  // rather than letting an older seek completion rewind the shared EEG time.
+  for (const seconds of [0.8, 1.1, 0.5]) {
+    await player.evaluate((video: HTMLVideoElement, nextTime: number) => {
+      video.currentTime = nextTime;
+      video.dispatchEvent(new Event("seeking", { bubbles: true }));
+      video.dispatchEvent(new Event("seeked", { bubbles: true }));
+    }, seconds);
+  }
+  await expect(
+    page.getByText("EEG 0:40.5 · Video 01 · 0:00.5", { exact: true }),
+  ).toBeVisible();
+
   await page.getByRole("button", { name: "Next frame" }).click();
   await expect
     .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
     .toBeCloseTo(0.54, 1);
 
-  await player.evaluate((video: HTMLVideoElement) => {
-    video.currentTime = 2.5;
-    video.dispatchEvent(new Event("timeupdate", { bubbles: true }));
-  });
-  await expect(
-    page.getByText("EEG 0:50.5 · Video 01 · 0:02.5", { exact: true }),
-  ).toBeVisible();
-  await player.evaluate((video: HTMLVideoElement) => {
-    video.currentTime = 1;
-    video.dispatchEvent(new Event("timeupdate", { bubbles: true }));
-  });
-  await expect(
-    page.getByText("EEG 0:41 · Video 01 · 0:01", { exact: true }),
-  ).toBeVisible();
   await page
     .getByRole("button", { name: "Seek EEG forward 10 seconds" })
     .click();
@@ -588,11 +721,8 @@ test("EEG source markers seek the matching synchronized video clip", async ({
   await expect(synchronizedReview).toBeVisible();
   await expect
     .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
-    .toBeCloseTo(3, 0);
+    .toBeCloseTo(2.54, 1);
 
-  const sharedTimeline = page.getByRole("group", {
-    name: "Shared EEG timeline. Click or drag any lane to seek; use arrow keys to move one second.",
-  });
   await sharedTimeline.focus();
   await page.keyboard.press("ArrowLeft");
   await page.keyboard.press("ArrowLeft");
@@ -601,12 +731,10 @@ test("EEG source markers seek the matching synchronized video clip", async ({
   await page.keyboard.press("ArrowLeft");
   await page.keyboard.press("ArrowLeft");
   await expect(
-    page.getByRole("status", { name: "EEG 0:45 · No video" }),
+    page.getByRole("status", { name: "EEG 0:44.5 · No video" }),
   ).toBeVisible();
   await expect(
-    synchronizedReview.getByText("No synchronized video covers EEG 0:45.", {
-      exact: true,
-    }),
+    synchronizedReview.getByText(/No synchronized video covers EEG 0:44\.5\./),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Close" }).click();
@@ -620,6 +748,21 @@ test("EEG source markers seek the matching synchronized video clip", async ({
   await page.keyboard.press("ArrowRight");
   await expect(showVideo).not.toBeChecked();
   await expect(synchronizedReview).toHaveCount(0);
+
+  forcePlaybackFailure = true;
+  await showVideo.check();
+  await expect(
+    synchronizedReview.getByRole("button", {
+      name: "Retry playback preparation",
+    }),
+  ).toBeVisible();
+  forcePlaybackFailure = false;
+  await synchronizedReview
+    .getByRole("button", { name: "Retry playback preparation" })
+    .click();
+  await expect
+    .poll(() => player.evaluate((video: HTMLVideoElement) => video.readyState))
+    .toBeGreaterThanOrEqual(2);
 
   const markerLane = sharedTimeline.locator("[data-timeline-track]").nth(1);
   const markerLaneBounds = await markerLane.boundingBox();

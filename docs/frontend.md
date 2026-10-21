@@ -20,9 +20,11 @@ Before visual changes, read [the design rules](../DESIGN.md) and
   same-case clips are present, **Show synchronized video popup** is unchecked
   by default. Seeking EEG never opens it automatically. When enabled, the
   non-blocking popup follows EEG navigation and stays open until dismissed;
-  when clinical review is enabled, matched clips synchronize through their
-  unique metadata mapping, while unmatched clips retain their alignment
-  status. Scores remain separate.
+  compatible video plays from the encrypted original, and unsupported video is
+  prepared only after the popup is opened. Matched clips follow the EEG source
+  clock through their unique metadata mapping; the clock holds during buffering
+  and routine video time updates do not move it. Unmatched clips retain their
+  alignment status. Scores remain separate.
 - /video-detection — one video workspace. Its tabs switch between upload and
   past reviews; /video-reviews redirects to the review tab. One detection job
   runs pose checks and VSViG independently of clinical reference playback.
@@ -55,9 +57,11 @@ EEG/video processing can still continue. The intake does not retain the
 DOC/DOCX source.
 
 In combined intake, EEG upload establishes the shared case reference. Once the
-service accepts it, EEG processing and video jobs run independently. Video
-jobs run one at a time; the progress panel shows the current clip and upload
-progress, while the full clip list stays collapsed for large batches. EEG
+service accepts it, EEG processing and VEEG reference storage run independently.
+Reference clips do not enter the VSViG queue; unsupported browser formats are
+prepared in the background after encrypted upload. Standalone VSViG jobs run one at a time; the
+progress panel shows the current model clip and upload progress, while the full
+clip list stays collapsed for large batches. EEG
 processing-stage rows come from safe, owner-scoped stage and timing metadata;
 error details and source paths are not included.
 
@@ -84,12 +88,10 @@ Label the development stub as synthetic development data. Label H5 and VSViG
 outputs as uncalibrated research scores unless their reviewed contracts say
 otherwise. A flagged interval is for human review, not a confirmed seizure.
 
-Imported source markers, model-flagged windows, and human observations are
-separate timeline items. The current owner can save an interval observation
-with movement/behavior labels and free text. Content is encrypted at rest and
-the annotation routes are owner-scoped. The UI states that these are
-observations, not diagnoses or seizure-onset localization. Left/right body
-observations are not translated into a brain side; see the
+Imported source markers and model-flagged windows are separate timeline items.
+The backend retains owner-scoped, encrypted observation APIs, but the current
+frontend does not expose an observation editor. Left/right body observations
+are not translated into a brain side; see the
 [ILAE 2025 classification](https://www.ilae.org/files/dmfile/updated-classification-of-epileptic-seizures-2025.pdf)
 and the ILAE Commission on Diagnostic Methods/EEG Task Force
 [seizure-semiology glossary](https://onlinelibrary.wiley.com/doi/full/10.1684/epd.2022.1430),
@@ -104,19 +106,20 @@ events remain the review evidence. Video's existing graph Grad-CAM is also
 research-only and maps contribution to sampled time/keypoint patches, not
 pixel-level localization or clinical cause.
 
-The shared source-clock playhead drives EEG navigation and verified video
-seeking. Video playback reports its position back to the same clock. The player
-switches between verified mapped segments, pauses in genuine coverage gaps,
-and leaves the EEG timeline available. Outside a verified mapping, an
-individual clip can be viewed only if the clinical-video gate allows access;
-it is not described as synchronized. Standalone VSViG results retain encrypted
+The shared EEG source-clock playhead drives EEG navigation and verified video
+seeking. Routine video position updates never move the EEG clock; only explicit
+manual video seeks map back to EEG time. During playback, the EEG clock holds
+while a mapped video buffers, switches between verified mapped segments, and
+continues through genuine coverage gaps while video pauses. Outside a verified
+mapping, an individual clip can be viewed only if the clinical-video gate
+allows access; it is not described as synchronized. Standalone VSViG results retain encrypted
 source/review media until case deletion; earlier expired jobs remain expired.
 The pinned model exposes body-pose and patch-relevance overlays, not facial
 Action Unit estimates.
 
 Generated local setup sets `MDS01_CLINICAL_VIDEO_REVIEW_ENABLED=true`; the
 backend fallback is `false` when no value is configured. Reference-only intake
-and owner playback work independently of VSViG. The UI labels
-human observations, source annotations, and model results separately. The
-pinned video pipeline provides body-pose and patch-relevance overlays; it does
+and owner playback work independently of VSViG. The UI distinguishes source
+annotations from model results; observation storage is currently backend-API
+only. The pinned video pipeline provides body-pose and patch-relevance overlays; it does
 not produce facial Action Units.

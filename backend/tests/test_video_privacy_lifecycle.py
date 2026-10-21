@@ -4,6 +4,7 @@ import asyncio
 from datetime import timedelta
 import io
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -20,6 +21,7 @@ from backend.app.database.models.video import (
 )
 from backend.app.services import video_privacy_service as service
 from backend.app.services.video_storage_service import VideoStorage
+from backend.app.video_detection.visualization import validate_visualization_artifact
 from backend.app.video_privacy.processor import VideoProcessorError
 
 
@@ -195,6 +197,54 @@ class VideoPrivacyLifecycleTests(unittest.TestCase):
             self.assertTrue(all(call.get("timeout") is not None for call in calls))
             self.assertIn("-an", calls[0]["command"])
             self.assertNotIn("1:a:0?", calls[0]["command"])
+
+    def test_reference_finalization_remuxes_browser_h264_without_reencoding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.avi"
+            output = Path(directory) / "output.mp4"
+            source.write_bytes(b"h264-source")
+            commands = []
+
+            def run(command, **_kwargs):
+                commands.append(command)
+                if command[0] == "/usr/bin/ffmpeg":
+                    output.write_bytes(b"remuxed-h264")
+                    return subprocess.CompletedProcess(command, 0, b"", b"")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    b'{"streams":[{"codec_type":"video"}],"format":{"tags":{}}}',
+                    b"",
+                )
+
+            with patch.object(service.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), patch.object(
+                service.subprocess, "run", side_effect=run
+            ):
+                service.finalize_protected_video(
+                    source, source, output, copy_h264_video=True
+                )
+
+            ffmpeg_command = commands[0]
+            self.assertIn("copy", ffmpeg_command)
+            self.assertIn("-c:v", ffmpeg_command)
+            self.assertIn("-an", ffmpeg_command)
+            self.assertNotIn("-crf", ffmpeg_command)
+            self.assertTrue(output.is_file())
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"),
+        "FFmpeg video tooling unavailable",
+    )
+    def test_h264_remux_output_is_browser_playable(self) -> None:
+        source = Path(__file__).parent / "fixtures" / "synthetic-review.mp4"
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "reference-playback.mp4"
+            service.finalize_protected_video(
+                source, source, output, copy_h264_video=True
+            )
+            self.assertEqual(
+                validate_visualization_artifact(output, count_frames=True), 24
+            )
 
     def test_finalization_rejects_unexpected_stream_encoder_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

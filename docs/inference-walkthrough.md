@@ -1,7 +1,8 @@
 # EEG and VEEG review, explained
 
-MDS01 presents source recordings, model flags, and human observations as
-separate evidence. EEG and video use independent models; their scores are not
+MDS01 presents source recordings, imported annotations, and model flags as
+separate review evidence. Owner-observation APIs exist, but the current frontend
+does not expose annotation entry. EEG and video use independent models; scores are not
 combined. A video can be synchronized to an EEG only when the uploaded
 recording metadata has one unique mapping and the clinical-video review gate is
 enabled. The prototype does not diagnose seizures or infer a brain-onset side
@@ -90,11 +91,18 @@ substitute for interpreting the signal.
 flowchart LR
     Original[Encrypted EEG and video sources] --> EEG[EEG source-clock timeline]
     Original --> Gate{MDS01_CLINICAL_VIDEO_REVIEW_ENABLED?}
-    Gate -->|enabled| Copy[Unblurred audio-free browser review copy]
+    Gate -->|enabled| Ack[Encrypted video retained; upload acknowledged]
     Gate -->|disabled| Block[Reference-only intake and unblurred access unavailable]
+    Ack --> Probe[Restart-recoverable background clock and format check]
     EEG --> Map[Unique metadata mapping, if available]
-    Copy --> Map
-    Map --> Player[Shared owner-controlled play, pause, seek, and rate]
+    Probe --> Map
+    Probe --> Format{H.264 MP4 with optional AAC?}
+    Format -->|yes| OriginalStream[Protected range stream of original]
+    Format -->|no, when opened| Convert[On-demand audio-free H.264 conversion]
+    Convert --> ProtectedCopy[Encrypted playback copy]
+    OriginalStream --> Map
+    ProtectedCopy --> Map
+    Map --> Player[EEG source clock drives synchronized playback]
     EEG --> Events[Source annotations and model-flagged intervals]
     Player --> Observe[Time-stamped human observation]
 ```
@@ -102,13 +110,17 @@ flowchart LR
 Generated local setup enables `MDS01_CLINICAL_VIDEO_REVIEW_ENABLED` for
 owner-only reference review; a backend with no explicit setting defaults to
 `false`. When false, reference-only intake, playback/download, and streaming
-are unavailable. When enabled, the reference copy is generated independently from
-OpenPose and VSViG. A pose failure or unavailable model therefore does not
-prevent playback. For a unique mapping, the EEG source clock drives the shared
-playback position, and video seeking updates the same position. The player
-changes clips at verified half-open segment boundaries. During video gaps,
-the video pauses while the EEG timeline can continue. Outside verified
-coverage, the interface reports that synchronized video is unavailable.
+are unavailable. Combined intake stores the encrypted original after metadata
+validation; it never waits for OpenPose, VSViG, or conversion. A compatible
+H.264 MP4 with optional AAC audio streams directly. Unsupported formats are converted only
+after the owner opens the clip. A pose failure or unavailable model therefore
+does not prevent playback. For a unique mapping, the EEG source clock drives
+playback; routine video time updates never reset it. A manual video seek maps
+back to EEG time. The player changes clips at verified half-open segment
+boundaries and holds the clock while mapped video buffers. During genuine
+coverage gaps, the video pauses while the EEG source timeline remains intact.
+Outside verified coverage, the interface reports synchronized video as
+unavailable.
 
 Matching uses the selected upload folder's metadata, including its opaque
 group, filename token HMAC, frame count, frame rate, and VEEG clock anchors.
@@ -121,14 +133,12 @@ remain owner-viewable but are not presented as synchronized.
 
 ## Human observation and medical limits
 
-The authenticated case owner can record an observation interval, select one or
-more observed categories (left/right arm, left/right leg, bilateral movement,
-head/eye deviation, other behavior, or uncertain/unobservable), and add a
-description. The observation is timestamped and encrypted separately from
-model results. It is displayed as a human observation, not as an automatic
-diagnosis. In the current prototype, the authenticated owner is the only
-authorized viewer and annotator; multi-user clinician roles are not
-implemented.
+The backend provides owner-scoped endpoints for recording a timestamped
+observation interval and encrypts its content separately from model results.
+The current frontend does not expose an observation editor. This API feature
+does not produce an automatic diagnosis. In the current prototype, the
+authenticated owner is the only authorized API user; multi-user clinician
+roles are not implemented.
 
 The [ILAE 2025 seizure classification](https://www.ilae.org/files/dmfile/updated-classification-of-epileptic-seizures-2025.pdf)
 uses descriptive semiology terms, including side plus body part, eye deviation,
@@ -157,6 +167,12 @@ An incomplete-pose or missing-pose result means that no supported model score
 was produced for that window. It is not evidence that no seizure occurred.
 Successful model loading, a synthetic test, or a high uncalibrated score does
 not establish clinical accuracy.
+
+The video upload is encrypted before private-file storage and decrypted only in
+the temporary worker workspace. Window scores and Grad-CAM evidence are
+compressed and AES-256-GCM encrypted in PostgreSQL, bound to the owner and job
+ID; video binaries stay outside the database. The owner-protected results API
+returns the validated output for review.
 
 ## Run locally
 

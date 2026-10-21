@@ -23,6 +23,7 @@ from backend.app.api.cases import router as cases_router
 from backend.app.core.config import (
     APP_ENV,
     CLEANUP_INTERVAL_SECONDS,
+    CLINICAL_VIDEO_REVIEW_ENABLED,
     CORS_ORIGINS,
     H5_CONTRACT_SHA256,
     LOCAL_RESEARCH_H5_CONTRACT_SHA256,
@@ -135,7 +136,10 @@ async def lifespan(_: FastAPI):
     cleanup_tasks.append(asyncio.create_task(draft_retention_loop()))
     cleanup_tasks.append(asyncio.create_task(case_source_report_retention_loop()))
     cleanup_tasks.append(asyncio.create_task(video_privacy_retention_loop()))
-    if os.environ.get("VIDEO_DETECTION_ENABLED", "false").lower() == "true":
+    if (
+        os.environ.get("VIDEO_DETECTION_ENABLED", "false").lower() == "true"
+        or CLINICAL_VIDEO_REVIEW_ENABLED
+    ):
         cleanup_tasks.append(asyncio.create_task(retention_loop()))
     try:
         yield

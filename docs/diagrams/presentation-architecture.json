@@ -1,0 +1,1445 @@
+{
+  "title": "MDS01 Secure EEG and Video AI Architecture",
+  "direction": "LR",
+  "page_width": 1920,
+  "page_height": 1080,
+  "auto_icons": false,
+  "nodes": [
+    {
+      "id": "background",
+      "label": "",
+      "x": 0,
+      "y": 0,
+      "width": 1920,
+      "height": 1080,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "title",
+      "label": "MDS01  |  SECURE EEG + VIDEO ANALYSIS",
+      "x": 48,
+      "y": 24,
+      "width": 1824,
+      "height": 44,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#132238;fontSize=28;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "subtitle",
+      "label": "Two independent model paths \u00b7 encrypted source files \u00b7 protected, reviewable outputs",
+      "x": 50,
+      "y": 69,
+      "width": 1820,
+      "height": 28,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=15;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "ui-panel",
+      "label": "",
+      "x": 36,
+      "y": 120,
+      "width": 228,
+      "height": 850,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F8FF;strokeColor=#4B83D1;strokeWidth=1.4;"
+    },
+    {
+      "id": "api-panel",
+      "label": "",
+      "x": 280,
+      "y": 120,
+      "width": 228,
+      "height": 850,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#F1FBFC;strokeColor=#1497A8;strokeWidth=1.4;"
+    },
+    {
+      "id": "backend-panel",
+      "label": "",
+      "x": 524,
+      "y": 120,
+      "width": 1360,
+      "height": 850,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#F8FAFC;strokeColor=#8797A8;strokeWidth=1.4;"
+    },
+    {
+      "id": "ui-head-bg",
+      "label": "",
+      "x": 36,
+      "y": 120,
+      "width": 228,
+      "height": 42,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#E7F0FF;strokeColor=#244E82;strokeWidth=1;"
+    },
+    {
+      "id": "api-head-bg",
+      "label": "",
+      "x": 280,
+      "y": 120,
+      "width": 228,
+      "height": 42,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#E1F6F7;strokeColor=#145C66;strokeWidth=1;"
+    },
+    {
+      "id": "backend-head-bg",
+      "label": "",
+      "x": 524,
+      "y": 120,
+      "width": 1360,
+      "height": 42,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#EDF1F5;strokeColor=#34465A;strokeWidth=1;"
+    },
+    {
+      "id": "ui-head",
+      "label": "NEXT.JS  \u00b7  CLINICIAN UI",
+      "x": 45,
+      "y": 124,
+      "width": 210,
+      "height": 34,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#244E82;fontSize=13;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "api-head",
+      "label": "FASTAPI  \u00b7  API",
+      "x": 289,
+      "y": 124,
+      "width": 210,
+      "height": 34,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#145C66;fontSize=13;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "backend-head",
+      "label": "BACKEND  \u00b7  TWO INDEPENDENT MODEL PIPELINES",
+      "x": 534,
+      "y": 124,
+      "width": 1340,
+      "height": 34,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#34465A;fontSize=13;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "clinician",
+      "label": "",
+      "x": 112,
+      "y": 180,
+      "width": 72,
+      "height": 58,
+      "type": "service",
+      "icon": "mdi:doctor",
+      "icon_font_size": 18,
+      "icon_font_color": "#142238"
+    },
+    {
+      "id": "clinician-label",
+      "label": "Clinician",
+      "x": 57,
+      "y": 238,
+      "width": 186,
+      "height": 22,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#244E82;fontSize=14;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "nextjs",
+      "label": "",
+      "x": 115,
+      "y": 272,
+      "width": 66,
+      "height": 54,
+      "type": "service",
+      "icon": "logos:nextjs-icon",
+      "icon_font_size": 18,
+      "icon_font_color": "#142238"
+    },
+    {
+      "id": "nextjs-label",
+      "label": "Next.js review UI",
+      "x": 48,
+      "y": 328,
+      "width": 204,
+      "height": 28,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#183B67;fontSize=15;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "outputs-title",
+      "label": "MODEL OUTPUTS",
+      "x": 48,
+      "y": 366,
+      "width": 204,
+      "height": 22,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#536274;fontSize=11;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "ui-eeg-card",
+      "label": "",
+      "x": 48,
+      "y": 395,
+      "width": 204,
+      "height": 197,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6D9ADB;strokeWidth=1.3;"
+    },
+    {
+      "id": "ui-eeg-title",
+      "label": "EEG \u00b7 H5",
+      "x": 58,
+      "y": 402,
+      "width": 184,
+      "height": 24,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#2B67B1;fontSize=13;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-score-baseline",
+      "label": "",
+      "x": 64,
+      "y": 505,
+      "width": 172,
+      "height": 1,
+      "style": "shape=line;strokeColor=#BDD0E8;strokeWidth=1;"
+    },
+    {
+      "id": "ui-eeg-bar-1",
+      "label": "",
+      "x": 68,
+      "y": 482,
+      "width": 9,
+      "height": 23,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#5A94D2;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-eeg-bar-2",
+      "label": "",
+      "x": 90,
+      "y": 471,
+      "width": 9,
+      "height": 34,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#5A94D2;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-eeg-bar-3",
+      "label": "",
+      "x": 112,
+      "y": 488,
+      "width": 9,
+      "height": 17,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#5A94D2;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-eeg-bar-4",
+      "label": "",
+      "x": 134,
+      "y": 458,
+      "width": 9,
+      "height": 47,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#5A94D2;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-eeg-bar-5",
+      "label": "",
+      "x": 156,
+      "y": 477,
+      "width": 9,
+      "height": 28,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#5A94D2;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-eeg-bar-6",
+      "label": "",
+      "x": 178,
+      "y": 486,
+      "width": 9,
+      "height": 19,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#5A94D2;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-eeg-bar-7",
+      "label": "",
+      "x": 200,
+      "y": 465,
+      "width": 9,
+      "height": 40,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#5A94D2;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-eeg-bar-8",
+      "label": "",
+      "x": 222,
+      "y": 480,
+      "width": 9,
+      "height": 25,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#5A94D2;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-eeg-caption",
+      "label": "Flagged windows + timestamps",
+      "x": 58,
+      "y": 520,
+      "width": 184,
+      "height": 56,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "ui-video-card",
+      "label": "",
+      "x": 48,
+      "y": 612,
+      "width": 204,
+      "height": 292,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9270C2;strokeWidth=1.3;"
+    },
+    {
+      "id": "ui-video-title",
+      "label": "VIDEO \u00b7 VSViG",
+      "x": 58,
+      "y": 620,
+      "width": 184,
+      "height": 24,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#7049A2;fontSize=13;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "ui-vsvig-icon",
+      "label": "",
+      "x": 62,
+      "y": 653,
+      "width": 34,
+      "height": 34,
+      "type": "service",
+      "icon": "mdi:motion-sensor",
+      "icon_font_size": 18,
+      "icon_font_color": "#7049A2"
+    },
+    {
+      "id": "ui-video-score-label",
+      "label": "Window scores",
+      "x": 102,
+      "y": 654,
+      "width": 136,
+      "height": 28,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "ui-video-score-baseline",
+      "label": "",
+      "x": 62,
+      "y": 706,
+      "width": 176,
+      "height": 1,
+      "style": "shape=line;strokeColor=#D9CAE8;strokeWidth=1;"
+    },
+    {
+      "id": "ui-video-bar-1",
+      "label": "",
+      "x": 67,
+      "y": 693,
+      "width": 8,
+      "height": 13,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#9670C0;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-video-bar-2",
+      "label": "",
+      "x": 87,
+      "y": 685,
+      "width": 8,
+      "height": 21,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#9670C0;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-video-bar-3",
+      "label": "",
+      "x": 107,
+      "y": 697,
+      "width": 8,
+      "height": 9,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#9670C0;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-video-bar-4",
+      "label": "",
+      "x": 127,
+      "y": 677,
+      "width": 8,
+      "height": 29,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#9670C0;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-video-bar-5",
+      "label": "",
+      "x": 147,
+      "y": 689,
+      "width": 8,
+      "height": 17,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#9670C0;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-video-bar-6",
+      "label": "",
+      "x": 167,
+      "y": 696,
+      "width": 8,
+      "height": 10,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#9670C0;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-video-bar-7",
+      "label": "",
+      "x": 187,
+      "y": 680,
+      "width": 8,
+      "height": 26,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#9670C0;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-video-bar-8",
+      "label": "",
+      "x": 207,
+      "y": 691,
+      "width": 8,
+      "height": 15,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#9670C0;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-video-bar-9",
+      "label": "",
+      "x": 227,
+      "y": 684,
+      "width": 8,
+      "height": 22,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#9670C0;strokeColor=none;strokeWidth=0;"
+    },
+    {
+      "id": "ui-video-gradcam-label",
+      "label": "Grad-CAM contribution",
+      "x": 58,
+      "y": 718,
+      "width": 184,
+      "height": 22,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "ui-gradcam-0-0",
+      "label": "",
+      "x": 72,
+      "y": 744,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#E3D4F0;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-0-1",
+      "label": "",
+      "x": 98,
+      "y": 744,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#7546A5;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-0-2",
+      "label": "",
+      "x": 124,
+      "y": 744,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#8B5BC1;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-0-3",
+      "label": "",
+      "x": 150,
+      "y": 744,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#B68CD5;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-0-4",
+      "label": "",
+      "x": 176,
+      "y": 744,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#D8C0E8;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-1-0",
+      "label": "",
+      "x": 72,
+      "y": 766,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#D8C0E8;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-1-1",
+      "label": "",
+      "x": 98,
+      "y": 766,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#E3D4F0;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-1-2",
+      "label": "",
+      "x": 124,
+      "y": 766,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#7546A5;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-1-3",
+      "label": "",
+      "x": 150,
+      "y": 766,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#8B5BC1;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-1-4",
+      "label": "",
+      "x": 176,
+      "y": 766,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#B68CD5;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-2-0",
+      "label": "",
+      "x": 72,
+      "y": 788,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#B68CD5;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-2-1",
+      "label": "",
+      "x": 98,
+      "y": 788,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#D8C0E8;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-2-2",
+      "label": "",
+      "x": 124,
+      "y": 788,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#E3D4F0;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-2-3",
+      "label": "",
+      "x": 150,
+      "y": 788,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#7546A5;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-gradcam-2-4",
+      "label": "",
+      "x": 176,
+      "y": 788,
+      "width": 20,
+      "height": 16,
+      "style": "shape=rect;rounded=0;whiteSpace=wrap;html=1;fillColor=#8B5BC1;strokeColor=#FFFFFF;strokeWidth=0.7;"
+    },
+    {
+      "id": "ui-video-note",
+      "label": "Relative time \u00d7 joint contribution; not seizure-origin localization.",
+      "x": 58,
+      "y": 820,
+      "width": 184,
+      "height": 42,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=10;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "ui-video-caption",
+      "label": "Research-only score",
+      "x": 58,
+      "y": 868,
+      "width": 184,
+      "height": 23,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#7049A2;fontSize=11;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "fastapi",
+      "label": "",
+      "x": 352,
+      "y": 183,
+      "width": 84,
+      "height": 70,
+      "type": "service",
+      "icon": "simple-icons:fastapi",
+      "icon_font_size": 18,
+      "icon_font_color": "#142238"
+    },
+    {
+      "id": "fastapi-label",
+      "label": "FastAPI",
+      "x": 300,
+      "y": 251,
+      "width": 188,
+      "height": 28,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#145C66;fontSize=15;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "auth-card",
+      "label": "",
+      "x": 296,
+      "y": 296,
+      "width": 196,
+      "height": 126,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#35A76B;strokeWidth=1.3;"
+    },
+    {
+      "id": "auth-icon",
+      "label": "",
+      "x": 371,
+      "y": 307,
+      "width": 46,
+      "height": 38,
+      "type": "service",
+      "icon": ".agents/skills/drawio-mxgraph/assets/icons/material-symbols--lock-person.svg",
+      "icon_font_size": 18,
+      "icon_font_color": "#142238"
+    },
+    {
+      "id": "auth-heading",
+      "label": "OWNER AUTHORIZATION",
+      "x": 306,
+      "y": 348,
+      "width": 176,
+      "height": 22,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#17613B;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "auth-body",
+      "label": "Authenticate account and check case ownership before every upload or result read.",
+      "x": 310,
+      "y": 371,
+      "width": 168,
+      "height": 44,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "routes-card",
+      "label": "",
+      "x": 296,
+      "y": 448,
+      "width": 196,
+      "height": 157,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#1497A8;strokeWidth=1.3;"
+    },
+    {
+      "id": "routes-title",
+      "label": "ANALYSIS API",
+      "x": 306,
+      "y": 458,
+      "width": 176,
+      "height": 23,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#145C66;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "routes-body",
+      "label": "EEG \u2192 H5\nVideo \u2192 VSViG",
+      "x": 310,
+      "y": 484,
+      "width": 168,
+      "height": 60,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#243B53;fontSize=14;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "api-response",
+      "label": "Owner-scoped results return to the review UI.",
+      "x": 306,
+      "y": 548,
+      "width": 176,
+      "height": 46,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "transport-note",
+      "label": "Local demo: loopback. Future network deployment requires HTTPS.",
+      "x": 300,
+      "y": 641,
+      "width": 188,
+      "height": 68,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-lane",
+      "label": "",
+      "x": 540,
+      "y": 175,
+      "width": 1328,
+      "height": 332,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#F2F7FD;strokeColor=#6D9ADB;strokeWidth=1.3;"
+    },
+    {
+      "id": "eeg-lane-title",
+      "label": "1  EEG UPLOAD + H5 ANALYSIS",
+      "x": 560,
+      "y": 182,
+      "width": 1288,
+      "height": 23,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#2B67B1;fontSize=14;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-lane-subtitle",
+      "label": "H5 receives the normal, de-identified tensor\u2014not encrypted bytes.",
+      "x": 560,
+      "y": 207,
+      "width": 1288,
+      "height": 22,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=12;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-lane",
+      "label": "",
+      "x": 540,
+      "y": 525,
+      "width": 1328,
+      "height": 332,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F2FB;strokeColor=#9270C2;strokeWidth=1.3;"
+    },
+    {
+      "id": "video-lane-title",
+      "label": "2  VIDEO-ONLY UPLOAD + VSViG ANALYSIS",
+      "x": 560,
+      "y": 532,
+      "width": 1288,
+      "height": 23,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#7049A2;fontSize=14;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-lane-subtitle",
+      "label": "Separate experimental video workflow; each detected person stays in a separate track.",
+      "x": 560,
+      "y": 557,
+      "width": 1288,
+      "height": 22,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=12;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-1",
+      "label": "",
+      "x": 554,
+      "y": 247,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6D9ADB;strokeWidth=1.2;"
+    },
+    {
+      "id": "eeg-step-1-number",
+      "label": "1",
+      "x": 561,
+      "y": 253,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#2B67B1;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-1-icon",
+      "label": "",
+      "x": 639,
+      "y": 271,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": "mdi:brain",
+      "icon_font_size": 18,
+      "icon_font_color": "#2B67B1"
+    },
+    {
+      "id": "eeg-step-1-title",
+      "label": "EEG ZIP upload",
+      "x": 562,
+      "y": 308,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-1-body",
+      "label": "Owner-scoped upload",
+      "x": 563,
+      "y": 352,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-2",
+      "label": "",
+      "x": 771,
+      "y": 247,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6D9ADB;strokeWidth=1.2;"
+    },
+    {
+      "id": "eeg-step-2-number",
+      "label": "2",
+      "x": 778,
+      "y": 253,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#2B67B1;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-2-icon",
+      "label": "",
+      "x": 856,
+      "y": 271,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": ".agents/skills/drawio-mxgraph/assets/icons/material-symbols--encrypted.svg",
+      "icon_font_size": 18,
+      "icon_font_color": "#2B67B1"
+    },
+    {
+      "id": "eeg-step-2-title",
+      "label": "Encrypt source",
+      "x": 779,
+      "y": 308,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-2-body",
+      "label": "AES-256-GCM\nbefore private storage",
+      "x": 780,
+      "y": 352,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-3",
+      "label": "",
+      "x": 988,
+      "y": 247,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6D9ADB;strokeWidth=1.2;"
+    },
+    {
+      "id": "eeg-step-3-number",
+      "label": "3",
+      "x": 995,
+      "y": 253,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#2B67B1;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-3-icon",
+      "label": "",
+      "x": 1073,
+      "y": 271,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": ".agents/skills/drawio-mxgraph/assets/icons/material-symbols--lock-person.svg",
+      "icon_font_size": 18,
+      "icon_font_color": "#2B67B1"
+    },
+    {
+      "id": "eeg-step-3-title",
+      "label": "Temporary decrypt",
+      "x": 996,
+      "y": 308,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-3-body",
+      "label": "Private workspace;\nclean plaintext after use",
+      "x": 997,
+      "y": 352,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-4",
+      "label": "",
+      "x": 1205,
+      "y": 247,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6D9ADB;strokeWidth=1.2;"
+    },
+    {
+      "id": "eeg-step-4-number",
+      "label": "4",
+      "x": 1212,
+      "y": 253,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#2B67B1;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-4-icon",
+      "label": "",
+      "x": 1290,
+      "y": 271,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": "material-symbols:privacy-tip",
+      "icon_font_size": 18,
+      "icon_font_color": "#2B67B1"
+    },
+    {
+      "id": "eeg-step-4-title",
+      "label": "De-identify + prep",
+      "x": 1213,
+      "y": 308,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-4-body",
+      "label": "Validate and build the\nreviewed model tensor",
+      "x": 1214,
+      "y": 352,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-5",
+      "label": "",
+      "x": 1422,
+      "y": 247,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6D9ADB;strokeWidth=1.2;"
+    },
+    {
+      "id": "eeg-step-5-number",
+      "label": "5",
+      "x": 1429,
+      "y": 253,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#2B67B1;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-5-icon",
+      "label": "",
+      "x": 1507,
+      "y": 271,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": "mdi:brain",
+      "icon_font_size": 18,
+      "icon_font_color": "#2B67B1"
+    },
+    {
+      "id": "eeg-step-5-title",
+      "label": "Local H5 inference",
+      "x": 1430,
+      "y": 308,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-5-body",
+      "label": "256 Hz \u00b7 18 channels\nnormal float32 input",
+      "x": 1431,
+      "y": 352,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-6",
+      "label": "",
+      "x": 1639,
+      "y": 247,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6D9ADB;strokeWidth=1.2;"
+    },
+    {
+      "id": "eeg-step-6-number",
+      "label": "6",
+      "x": 1646,
+      "y": 253,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#2B67B1;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-6-icon",
+      "label": "",
+      "x": 1724,
+      "y": 271,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": "mdi:database-cog-outline",
+      "icon_font_size": 18,
+      "icon_font_color": "#2B67B1"
+    },
+    {
+      "id": "eeg-step-6-title",
+      "label": "Store EEG + scores",
+      "x": 1647,
+      "y": 308,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "eeg-step-6-body",
+      "label": "Encrypted source outside DB;\nH5 scores in PostgreSQL",
+      "x": 1648,
+      "y": 352,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-1",
+      "label": "",
+      "x": 554,
+      "y": 597,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9270C2;strokeWidth=1.2;"
+    },
+    {
+      "id": "video-ai-step-1-number",
+      "label": "1",
+      "x": 561,
+      "y": 603,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#7049A2;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-1-icon",
+      "label": "",
+      "x": 639,
+      "y": 621,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": "mdi:file-video-outline",
+      "icon_font_size": 18,
+      "icon_font_color": "#7049A2"
+    },
+    {
+      "id": "video-ai-step-1-title",
+      "label": "Video-only upload",
+      "x": 562,
+      "y": 658,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-1-body",
+      "label": "Submitted to separate\nAI analysis",
+      "x": 563,
+      "y": 702,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-2",
+      "label": "",
+      "x": 771,
+      "y": 597,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9270C2;strokeWidth=1.2;"
+    },
+    {
+      "id": "video-ai-step-2-number",
+      "label": "2",
+      "x": 778,
+      "y": 603,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#7049A2;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-2-icon",
+      "label": "",
+      "x": 856,
+      "y": 621,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": ".agents/skills/drawio-mxgraph/assets/icons/material-symbols--encrypted.svg",
+      "icon_font_size": 18,
+      "icon_font_color": "#7049A2"
+    },
+    {
+      "id": "video-ai-step-2-title",
+      "label": "Encrypt original",
+      "x": 779,
+      "y": 658,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-2-body",
+      "label": "AES-256-GCM\nbefore private storage",
+      "x": 780,
+      "y": 702,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-3",
+      "label": "",
+      "x": 988,
+      "y": 597,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9270C2;strokeWidth=1.2;"
+    },
+    {
+      "id": "video-ai-step-3-number",
+      "label": "3",
+      "x": 995,
+      "y": 603,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#7049A2;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-3-icon",
+      "label": "",
+      "x": 1073,
+      "y": 621,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": ".agents/skills/drawio-mxgraph/assets/icons/material-symbols--lock-person.svg",
+      "icon_font_size": 18,
+      "icon_font_color": "#7049A2"
+    },
+    {
+      "id": "video-ai-step-3-title",
+      "label": "Temporary frames",
+      "x": 996,
+      "y": 658,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-3-body",
+      "label": "Decrypt for processing;\nremove work files",
+      "x": 997,
+      "y": 702,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-4",
+      "label": "",
+      "x": 1205,
+      "y": 597,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9270C2;strokeWidth=1.2;"
+    },
+    {
+      "id": "video-ai-step-4-number",
+      "label": "4",
+      "x": 1212,
+      "y": 603,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#7049A2;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-4-icon",
+      "label": "",
+      "x": 1290,
+      "y": 621,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": "mdi:motion-sensor",
+      "icon_font_size": 18,
+      "icon_font_color": "#7049A2"
+    },
+    {
+      "id": "video-ai-step-4-title",
+      "label": "OpenPose + patches",
+      "x": 1213,
+      "y": 658,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-4-body",
+      "label": "15 selected joints;\ntracks kept separate",
+      "x": 1214,
+      "y": 702,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-5",
+      "label": "",
+      "x": 1422,
+      "y": 597,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9270C2;strokeWidth=1.2;"
+    },
+    {
+      "id": "video-ai-step-5-number",
+      "label": "5",
+      "x": 1429,
+      "y": 603,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#7049A2;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-5-icon",
+      "label": "",
+      "x": 1507,
+      "y": 621,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": "mdi:brain",
+      "icon_font_size": 18,
+      "icon_font_color": "#7049A2"
+    },
+    {
+      "id": "video-ai-step-5-title",
+      "label": "Pinned VSViG",
+      "x": 1430,
+      "y": 658,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-5-body",
+      "label": "30-frame windows;\nresearch inference",
+      "x": 1431,
+      "y": 702,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-6",
+      "label": "",
+      "x": 1639,
+      "y": 597,
+      "width": 204,
+      "height": 210,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9270C2;strokeWidth=1.2;"
+    },
+    {
+      "id": "video-ai-step-6-number",
+      "label": "6",
+      "x": 1646,
+      "y": 603,
+      "width": 22,
+      "height": 17,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#7049A2;fontSize=10;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-6-icon",
+      "label": "",
+      "x": 1724,
+      "y": 621,
+      "width": 34,
+      "height": 30,
+      "type": "service",
+      "icon": "mdi:database-cog-outline",
+      "icon_font_size": 18,
+      "icon_font_color": "#7049A2"
+    },
+    {
+      "id": "video-ai-step-6-title",
+      "label": "Store result",
+      "x": 1647,
+      "y": 658,
+      "width": 188,
+      "height": 38,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#22384F;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "video-ai-step-6-body",
+      "label": "Encrypted score + Grad-CAM\nin PostgreSQL; video outside DB",
+      "x": 1648,
+      "y": 702,
+      "width": 186,
+      "height": 78,
+      "style": "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontColor=#526277;fontSize=11;fontStyle=0;strokeColor=none;fillColor=none;"
+    },
+    {
+      "id": "security-footer",
+      "label": "",
+      "x": 540,
+      "y": 872,
+      "width": 1328,
+      "height": 72,
+      "style": "shape=rect;rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF9F3;strokeColor=#3BA56C;strokeWidth=1.1;"
+    },
+    {
+      "id": "security-icon",
+      "label": "",
+      "x": 562,
+      "y": 890,
+      "width": 36,
+      "height": 32,
+      "type": "service",
+      "icon": "material-symbols:privacy-tip",
+      "icon_font_size": 18,
+      "icon_font_color": "#16844A"
+    },
+    {
+      "id": "security-text",
+      "label": "AES-256-GCM protects retained files and VSViG result payloads. The runtime key stays outside PostgreSQL and Git; owner authorization is enforced by FastAPI.",
+      "x": 606,
+      "y": 884,
+      "width": 1244,
+      "height": 48,
+      "style": "text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#315944;fontSize=12;fontStyle=1;strokeColor=none;fillColor=none;"
+    }
+  ],
+  "edges": [
+    {
+      "id": "eeg-flow-1",
+      "source": "eeg-step-1",
+      "target": "eeg-step-2",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6D9ADB;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "eeg-flow-2",
+      "source": "eeg-step-2",
+      "target": "eeg-step-3",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6D9ADB;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "eeg-flow-3",
+      "source": "eeg-step-3",
+      "target": "eeg-step-4",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6D9ADB;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "eeg-flow-4",
+      "source": "eeg-step-4",
+      "target": "eeg-step-5",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6D9ADB;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "eeg-flow-5",
+      "source": "eeg-step-5",
+      "target": "eeg-step-6",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6D9ADB;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "video-ai-flow-1",
+      "source": "video-ai-step-1",
+      "target": "video-ai-step-2",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#9270C2;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "video-ai-flow-2",
+      "source": "video-ai-step-2",
+      "target": "video-ai-step-3",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#9270C2;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "video-ai-flow-3",
+      "source": "video-ai-step-3",
+      "target": "video-ai-step-4",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#9270C2;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "video-ai-flow-4",
+      "source": "video-ai-step-4",
+      "target": "video-ai-step-5",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#9270C2;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "video-ai-flow-5",
+      "source": "video-ai-step-5",
+      "target": "video-ai-step-6",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#9270C2;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "clinician-ui",
+      "source": "clinician",
+      "target": "nextjs",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4B83D1;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "ui-api",
+      "source": "nextjs",
+      "target": "auth-card",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#526277;strokeWidth=1.5;endArrow=block;endFill=1;",
+      "label": "HTTPS"
+    },
+    {
+      "id": "auth-routes",
+      "source": "auth-card",
+      "target": "routes-card",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#1497A8;strokeWidth=1.5;endArrow=block;endFill=1;"
+    },
+    {
+      "id": "api-eeg",
+      "source": "routes-card",
+      "target": "eeg-step-1",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6D9ADB;strokeWidth=1.4;endArrow=block;endFill=1;dashed=1;",
+      "points": [
+        {
+          "x": 514,
+          "y": 528
+        },
+        {
+          "x": 528,
+          "y": 350
+        }
+      ]
+    },
+    {
+      "id": "api-video",
+      "source": "routes-card",
+      "target": "video-ai-step-1",
+      "style": "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#9270C2;strokeWidth=1.4;endArrow=block;endFill=1;dashed=1;",
+      "points": [
+        {
+          "x": 514,
+          "y": 528
+        },
+        {
+          "x": 528,
+          "y": 700
+        }
+      ]
+    }
+  ]
+}

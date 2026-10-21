@@ -137,8 +137,8 @@ export function DashboardScreen() {
     },
     {
       label: "VIDEO",
-      detail: "Video files",
-      count: videoJobs.length,
+      detail: "VSViG analyses",
+      count: videoJobs.filter((job) => !job.reference_only).length,
       href: "/video-reviews",
     },
   ];

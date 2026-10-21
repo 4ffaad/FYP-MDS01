@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import logging
 import fcntl
+import math
 import shutil
 import re
 import os
@@ -12,12 +13,14 @@ import secrets
 import stat
 import time
 import unicodedata
+import struct
 from datetime import datetime, timezone
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterator
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import UploadFile
 
 from backend.app.core.config import (
@@ -38,8 +41,12 @@ class StorageError(ValueError):
 
 _ENCRYPTED_MAGIC = b"MDS01GCM1"
 _BOUND_ENCRYPTED_MAGIC = b"MDS01GCM2"
+_CHUNKED_ENCRYPTED_MAGIC = b"MDS01VGC1"
 _NONCE_BYTES = 12
 _TAG_BYTES = 16
+_CHUNKED_HEADER_BYTES = len(_CHUNKED_ENCRYPTED_MAGIC) + 4 + 8 + _NONCE_BYTES + _TAG_BYTES
+_CHUNKED_BYTES = 1024 * 1024
+_CHUNKED_RECORD_OVERHEAD = _NONCE_BYTES + _TAG_BYTES
 _MAX_ANNOTATION_MEMBER_BYTES = 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES = int(os.getenv("MDS01_MAX_ARCHIVE_TOTAL_BYTES", str(2 * 1024**3)))
 MAX_ZIP_COMPRESSION_RATIO = float(os.getenv("MDS01_MAX_ZIP_COMPRESSION_RATIO", "100"))
@@ -221,6 +228,252 @@ class SessionStorage:
         destination = self.directory(session_id, "original") / filename
         return await self._encrypt_upload(upload, destination, max_bytes=max_bytes)
 
+    async def save_chunked_upload(
+        self,
+        session_id: str,
+        upload: UploadFile,
+        *,
+        filename: str,
+        max_bytes: int,
+        chunk_bytes: int = _CHUNKED_BYTES,
+    ) -> Path:
+        """Encrypt a media upload in independently authenticated random-access chunks."""
+
+        if not upload.filename:
+            raise StorageError("Uploaded media has no filename.")
+        if Path(filename).name != filename or not filename:
+            raise StorageError("Stored upload name is invalid.")
+        destination = self.directory(session_id, "original") / filename
+        return await self._encrypt_chunked_upload(
+            upload, destination, max_bytes=max_bytes, chunk_bytes=chunk_bytes
+        )
+
+    async def _encrypt_chunked_upload(
+        self,
+        upload: UploadFile,
+        destination: Path,
+        *,
+        max_bytes: int,
+        chunk_bytes: int,
+    ) -> Path:
+        if not 64 * 1024 <= chunk_bytes <= 4 * 1024 * 1024:
+            raise StorageError("Encrypted media chunk size is invalid.")
+        aes = AESGCM(self._key())
+        path_aad = self._associated_data(destination)
+        total = 0
+        chunk_count = 0
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(destination, flags, 0o600)
+            with os.fdopen(descriptor, "w+b") as output:
+                output.write(b"\0" * _CHUNKED_HEADER_BYTES)
+                while chunk := await upload.read(chunk_bytes):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise StorageError("Uploaded video exceeds the size limit.")
+                    nonce = secrets.token_bytes(_NONCE_BYTES)
+                    aad = self._chunk_aad(path_aad, chunk_count, len(chunk))
+                    output.write(nonce)
+                    output.write(aes.encrypt(nonce, chunk, aad))
+                    chunk_count += 1
+                if total == 0:
+                    raise StorageError("Uploaded video is empty.")
+                header_nonce = secrets.token_bytes(_NONCE_BYTES)
+                header_aad = self._chunked_header_aad(
+                    path_aad, chunk_bytes, total, chunk_count
+                )
+                header_tag = aes.encrypt(header_nonce, b"", header_aad)
+                output.seek(0)
+                output.write(_CHUNKED_ENCRYPTED_MAGIC)
+                output.write(struct.pack(">IQ", chunk_bytes, total))
+                output.write(header_nonce)
+                output.write(header_tag)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+        os.chmod(destination, 0o600)
+        return destination
+
+    def store_chunked_artifact(
+        self,
+        session_id: str,
+        source_path: Path,
+        name: str,
+        *,
+        chunk_bytes: int = _CHUNKED_BYTES,
+    ) -> Path:
+        """Encrypt a retained media artifact in authenticated random-access chunks."""
+
+        if Path(name).name != name or not name:
+            raise StorageError("Retained artifact name is invalid.")
+        if source_path.is_symlink() or not source_path.is_file():
+            raise StorageError("Plaintext media artifact is unavailable.")
+        if not 64 * 1024 <= chunk_bytes <= 4 * 1024 * 1024:
+            raise StorageError("Encrypted media chunk size is invalid.")
+        destination = self.directory(session_id, "retained") / f"{name}.enc"
+        aes = AESGCM(self._key())
+        path_aad = self._associated_data(destination)
+        total = 0
+        chunk_count = 0
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(destination, flags, 0o600)
+            with source_path.open("rb") as source, os.fdopen(descriptor, "w+b") as output:
+                output.write(b"\0" * _CHUNKED_HEADER_BYTES)
+                while chunk := source.read(chunk_bytes):
+                    total += len(chunk)
+                    nonce = secrets.token_bytes(_NONCE_BYTES)
+                    aad = self._chunk_aad(path_aad, chunk_count, len(chunk))
+                    output.write(nonce)
+                    output.write(aes.encrypt(nonce, chunk, aad))
+                    chunk_count += 1
+                if total == 0:
+                    raise StorageError("Retained media artifact is empty.")
+                header_nonce = secrets.token_bytes(_NONCE_BYTES)
+                header_aad = self._chunked_header_aad(
+                    path_aad, chunk_bytes, total, chunk_count
+                )
+                header_tag = aes.encrypt(header_nonce, b"", header_aad)
+                output.seek(0)
+                output.write(_CHUNKED_ENCRYPTED_MAGIC)
+                output.write(struct.pack(">IQ", chunk_bytes, total))
+                output.write(header_nonce)
+                output.write(header_tag)
+            os.chmod(destination, 0o600)
+            source_path.unlink()
+            return destination
+        except Exception as exc:
+            destination.unlink(missing_ok=True)
+            if isinstance(exc, StorageError):
+                raise
+            raise StorageError("Retained media artifact could not be encrypted.") from exc
+
+    @staticmethod
+    def _chunk_aad(path_aad: bytes, chunk_index: int, chunk_length: int) -> bytes:
+        return (
+            b"MDS01 media chunk v1\0"
+            + path_aad
+            + struct.pack(">QI", chunk_index, chunk_length)
+        )
+
+    @staticmethod
+    def _chunked_header_aad(
+        path_aad: bytes, chunk_bytes: int, total_bytes: int, chunk_count: int
+    ) -> bytes:
+        return (
+            b"MDS01 media header v1\0"
+            + path_aad
+            + struct.pack(">IQQ", chunk_bytes, total_bytes, chunk_count)
+        )
+
+    def _chunked_info(self, encrypted_path: Path) -> tuple[int, int, int, bytes]:
+        try:
+            with self._open_private_input(encrypted_path) as source:
+                header = source.read(_CHUNKED_HEADER_BYTES)
+                if len(header) != _CHUNKED_HEADER_BYTES or not header.startswith(_CHUNKED_ENCRYPTED_MAGIC):
+                    raise StorageError("Stored media is not chunk-encrypted.")
+                cursor = len(_CHUNKED_ENCRYPTED_MAGIC)
+                chunk_bytes, total_bytes = struct.unpack_from(">IQ", header, cursor)
+                cursor += 12
+                header_nonce = header[cursor : cursor + _NONCE_BYTES]
+                cursor += _NONCE_BYTES
+                header_tag = header[cursor : cursor + _TAG_BYTES]
+                if not 64 * 1024 <= chunk_bytes <= 4 * 1024 * 1024 or total_bytes <= 0:
+                    raise StorageError("Encrypted media header is invalid.")
+                chunk_count = math.ceil(total_bytes / chunk_bytes)
+                expected_size = (
+                    _CHUNKED_HEADER_BYTES
+                    + total_bytes
+                    + chunk_count * _CHUNKED_RECORD_OVERHEAD
+                )
+                if source.seek(0, os.SEEK_END) != expected_size:
+                    raise StorageError("Encrypted media is incomplete.")
+            path_aad = self._associated_data(encrypted_path)
+            header_aad = self._chunked_header_aad(
+                path_aad, chunk_bytes, total_bytes, chunk_count
+            )
+            AESGCM(self._key()).decrypt(header_nonce, header_tag, header_aad)
+            return chunk_bytes, total_bytes, chunk_count, path_aad
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError("Encrypted media header authentication failed.") from exc
+
+    def is_chunked_envelope(self, encrypted_path: Path) -> bool:
+        try:
+            with self._open_private_input(encrypted_path) as source:
+                return source.read(len(_CHUNKED_ENCRYPTED_MAGIC)) == _CHUNKED_ENCRYPTED_MAGIC
+        except OSError as exc:
+            raise StorageError("Encrypted media is unavailable.") from exc
+
+    def chunked_plaintext_size(self, encrypted_path: Path) -> int:
+        return self._chunked_info(encrypted_path)[1]
+
+    def iter_decrypted_range(
+        self, encrypted_path: Path, start: int, end: int
+    ) -> Iterator[bytes]:
+        """Yield one authenticated plaintext range without materializing the whole video."""
+
+        chunk_bytes, total_bytes, chunk_count, path_aad = self._chunked_info(encrypted_path)
+        if start < 0 or end < start or end >= total_bytes:
+            raise StorageError("Encrypted media range is invalid.")
+        first_chunk = start // chunk_bytes
+        last_chunk = end // chunk_bytes
+        aes = AESGCM(self._key())
+        try:
+            with self._open_private_input(encrypted_path) as source:
+                for index in range(first_chunk, min(last_chunk + 1, chunk_count)):
+                    plain_start = index * chunk_bytes
+                    plain_length = min(chunk_bytes, total_bytes - plain_start)
+                    record_offset = (
+                        _CHUNKED_HEADER_BYTES + index * (chunk_bytes + _CHUNKED_RECORD_OVERHEAD)
+                    )
+                    source.seek(record_offset)
+                    nonce = source.read(_NONCE_BYTES)
+                    ciphertext = source.read(plain_length + _TAG_BYTES)
+                    if len(nonce) != _NONCE_BYTES or len(ciphertext) != plain_length + _TAG_BYTES:
+                        raise StorageError("Encrypted media chunk is incomplete.")
+                    plaintext = aes.decrypt(
+                        nonce,
+                        ciphertext,
+                        self._chunk_aad(path_aad, index, plain_length),
+                    )
+                    left = max(start, plain_start) - plain_start
+                    right = min(end + 1, plain_start + plain_length) - plain_start
+                    yield plaintext[left:right]
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError("Encrypted media chunk authentication failed.") from exc
+
+    def _materialize_chunked(self, encrypted_path: Path, destination: Path) -> Path:
+        chunk_bytes, total_bytes, chunk_count, path_aad = self._chunked_info(encrypted_path)
+        aes = AESGCM(self._key())
+        try:
+            with self._open_private_input(encrypted_path) as source, self._open_private_output(destination) as output:
+                for index in range(chunk_count):
+                    plain_length = min(chunk_bytes, total_bytes - index * chunk_bytes)
+                    record_offset = (
+                        _CHUNKED_HEADER_BYTES + index * (chunk_bytes + _CHUNKED_RECORD_OVERHEAD)
+                    )
+                    source.seek(record_offset)
+                    nonce = source.read(_NONCE_BYTES)
+                    ciphertext = source.read(plain_length + _TAG_BYTES)
+                    if len(nonce) != _NONCE_BYTES or len(ciphertext) != plain_length + _TAG_BYTES:
+                        raise StorageError("Encrypted media chunk is incomplete.")
+                    output.write(
+                        aes.decrypt(
+                            nonce,
+                            ciphertext,
+                            self._chunk_aad(path_aad, index, plain_length),
+                        )
+                    )
+            os.chmod(destination, 0o600)
+            return destination
+        except Exception:
+            self._remove_plaintext_file(destination)
+            raise
+
     async def save_draft_upload(self, draft_id: str, upload: UploadFile) -> Path:
         """Encrypt a ZIP into short-lived private draft storage."""
 
@@ -355,6 +608,8 @@ class SessionStorage:
         try:
             if destination.is_symlink() or (destination.exists() and not destination.is_file()):
                 raise StorageError("Plaintext destination is invalid.")
+            if self.is_chunked_envelope(encrypted_path):
+                return self._materialize_chunked(encrypted_path, destination)
             size = encrypted_path.stat().st_size
             minimum_size = len(_ENCRYPTED_MAGIC) + _NONCE_BYTES + _TAG_BYTES
             if size < minimum_size:

@@ -7,12 +7,20 @@ off. EEG and VSViG scores remain separate. Human
 observations and model flags are review evidence, not a diagnosis or
 seizure-onset localization.
 
+The standalone VSViG workflow stores its result and Grad-CAM evidence as
+AES-GCM-encrypted PostgreSQL data; video files remain encrypted in private file
+storage outside the database.
+
 The EEG review opens on the fixed 12-second HUKM-style profile (100 µV/cm,
 30 mm/s, 0.5–70 Hz plus 50 Hz notch where supported) with the longitudinal
-bipolar montage. Combined EEG/video intake creates reference video artifacts
-without running VSViG; the separate Video workflow runs VSViG. Standalone video
-analysis artifacts are retained encrypted until case deletion. Facial Action
-Unit estimates are not produced by the pinned pose/VSViG assets.
+bipolar montage. Combined EEG/video intake encrypts each original before
+background clock and format checks; upload does not wait for those checks and
+never runs OpenPose, VSViG, or video conversion. Compatible H.264 MP4 with
+optional AAC audio plays directly through authenticated encrypted byte ranges;
+unsupported video is converted to an encrypted browser-playable copy only when
+opened. The separate Video
+workflow runs VSViG. Retained media is encrypted until case deletion. Facial
+Action Unit estimates are not produced by the pinned pose/VSViG assets.
 
 ## Run locally
 

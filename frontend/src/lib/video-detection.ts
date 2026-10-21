@@ -89,6 +89,17 @@ export interface DetectionJob {
   created_at: string;
   retention_expires_at: string | null;
   reference_only?: boolean;
+  playback_status?:
+    | "not_applicable"
+    | "metadata_pending"
+    | "metadata_checking"
+    | "direct"
+    | "conversion_required"
+    | "processing"
+    | "ready"
+    | "failed"
+    | "unavailable";
+  playback_error?: string | null;
   source_available?: boolean;
   source_download_available?: boolean;
   retention_policy?: "until-deletion" | "legacy-expiry";
@@ -287,48 +298,6 @@ export interface DetectionTrackResult {
   summary?: DetectionResult["summary"];
 }
 
-export interface VideoPreflightResult {
-  accepted: boolean;
-  width: number | null;
-  height: number | null;
-  required_width: 1920;
-  required_height: 1080;
-  adaptation?: "none" | "letterbox";
-  experimental?: boolean;
-  fps?: number;
-  duration_seconds?: number;
-  pose_readiness?: {
-    ready: boolean;
-    checked_frames: number;
-    required_frames: number;
-    window_seconds: number;
-    tracks_seen: number;
-    usable_tracks: number;
-    frames_without_person: number;
-    frames_with_multiple_people: number;
-    frames_with_tracking_break: number;
-    frames_with_incomplete_pose: number;
-    missing_landmarks: Record<string, number>;
-  };
-  message: string;
-}
-
-export function preflightDetection(
-  file: File,
-  progress: (value: number) => void,
-  signal?: AbortSignal,
-) {
-  const safeName = prepareVideoUploadFile(file);
-  const extension = safeName.name.split(".").pop() ?? "";
-  return uploadBinary<VideoPreflightResult>(
-    "/api/video-detection/preflight",
-    safeName,
-    progress,
-    signal,
-    { "X-Video-Format": extension },
-  );
-}
-
 type VeegSyncUpload = { sourceName: string; groupId: string };
 
 function uploadVideo(
@@ -414,6 +383,12 @@ export const getDetection = (id: string, signal?: AbortSignal) =>
     `/api/video-detection/jobs/${encodeURIComponent(id)}`,
     signal,
   );
+export const prepareReferencePlayback = (id: string, signal?: AbortSignal) =>
+  postJson<{ job: DetectionJob }>(
+    `/api/video-detection/jobs/${encodeURIComponent(id)}/playback`,
+    {},
+    signal,
+  );
 export const getDetectionResults = (id: string, signal?: AbortSignal) =>
   getJson<DetectionResult>(
     `/api/video-detection/jobs/${encodeURIComponent(id)}/predictions`,
@@ -423,3 +398,5 @@ export const detectionVisualizationUrl = (id: string) =>
   apiMediaUrl(
     `/api/video-detection/jobs/${encodeURIComponent(id)}/visualization`,
   );
+export const referencePlaybackUrl = (id: string) =>
+  apiMediaUrl(`/api/video-detection/jobs/${encodeURIComponent(id)}/playback`);

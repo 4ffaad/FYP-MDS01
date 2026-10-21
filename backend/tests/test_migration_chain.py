@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_CONFIG = REPOSITORY_ROOT / "backend" / "alembic.ini"
-EXPECTED_HEAD = "035_video_until_deletion"
+EXPECTED_HEAD = "037_encrypted_video_results"
 
 
 class MigrationChainTests(unittest.TestCase):
@@ -89,6 +89,8 @@ class MigrationChainTests(unittest.TestCase):
                 )
             }
             self.assertIn("blur_strength_percent", detection_columns)
+            self.assertIn("result_nonce", detection_columns)
+            self.assertIn("result_ciphertext", detection_columns)
             self.assertEqual(1, detection_columns["blur_strength_percent"][3])
             self.assertEqual("100", detection_columns["blur_strength_percent"][4])
             for name in (

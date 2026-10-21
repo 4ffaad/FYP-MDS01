@@ -278,7 +278,7 @@ def topological_positions(nodes, edges, direction: str):
     return positions
 
 
-def create_base(title: str) -> tuple[ET.Element, ET.Element]:
+def create_base(title: str, page_width: float = 1600, page_height: float = 900) -> tuple[ET.Element, ET.Element]:
     mxfile = ET.Element("mxfile", {
         "host": "app.diagrams.net",
         "agent": "Codex drawio-mxgraph skill",
@@ -290,7 +290,8 @@ def create_base(title: str) -> tuple[ET.Element, ET.Element]:
     model = ET.SubElement(diagram, "mxGraphModel", {
         "dx": "1200", "dy": "800", "grid": "1", "gridSize": "10", "guides": "1",
         "tooltips": "1", "connect": "1", "arrows": "1", "fold": "1", "page": "1",
-        "pageScale": "1", "pageWidth": "1600", "pageHeight": "900", "math": "0", "shadow": "0",
+        "pageScale": "1", "pageWidth": fmt(page_width), "pageHeight": fmt(page_height),
+        "math": "0", "shadow": "0",
     })
     root = ET.SubElement(model, "root")
     ET.SubElement(root, "mxCell", {"id": "0"})
@@ -431,7 +432,9 @@ def build(spec, catalog=None, cache_dir=DEFAULT_ICON_CACHE, offline=False, auto_
     nodes = spec.get("nodes", [])
     edges = spec.get("edges", [])
     positions = topological_positions(nodes, edges, direction)
-    mxfile, root = create_base(str(spec.get("title", "Page-1")))
+    page_width = max(1, num(spec.get("page_width"), 1600))
+    page_height = max(1, num(spec.get("page_height"), 900))
+    mxfile, root = create_base(str(spec.get("title", "Page-1")), page_width, page_height)
     for node in nodes:
         rendered_node = auto_decorate_node(node, catalog or {}) if auto_icons else node
         if rendered_node.get("icon") and spec.get("icon_layout"):

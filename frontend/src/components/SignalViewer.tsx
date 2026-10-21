@@ -28,6 +28,7 @@ const DEFAULT_PIXELS_PER_MM = 3;
 const SENSITIVITY_UV_PER_MM = 10;
 const RELATIVE_UNITS_PER_5_MM = 1;
 const PAPER_SPEED_MM_PER_SECOND = 30;
+const SEEK_SETTLE_DELAY_MS = 120;
 
 export type SignalSeekRequest = {
   timeSeconds: number;
@@ -152,34 +153,40 @@ export function SignalViewer({
   useEffect(() => {
     if (!ENABLE_SIGNAL_PREVIEW || !requestablePage || pageStateIsCurrent)
       return;
-    const controller = new AbortController();
-    void getSignalPreview(
-      recordId,
-      requestedStart,
-      viewportDuration,
-      VIEWPORT_POINTS,
-      controller.signal,
-    )
-      .then((nextPreview) => {
-        if (!controller.signal.aborted)
+    let controller: AbortController | null = null;
+    const timer = window.setTimeout(() => {
+      controller = new AbortController();
+      void getSignalPreview(
+        recordId,
+        requestedStart,
+        viewportDuration,
+        VIEWPORT_POINTS,
+        controller.signal,
+      )
+        .then((nextPreview) => {
+          if (!controller?.signal.aborted)
+            setPreviewState({
+              pageKey,
+              preview: nextPreview,
+              error: null,
+            });
+        })
+        .catch((error: unknown) => {
+          if (controller?.signal.aborted) return;
           setPreviewState({
             pageKey,
-            preview: nextPreview,
-            error: null,
+            preview: null,
+            error:
+              error instanceof Error
+                ? error.message
+                : "The retained EEG view is unavailable.",
           });
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        setPreviewState({
-          pageKey,
-          preview: null,
-          error:
-            error instanceof Error
-              ? error.message
-              : "The retained EEG view is unavailable.",
         });
-      });
-    return () => controller.abort();
+    }, SEEK_SETTLE_DELAY_MS);
+    return () => {
+      window.clearTimeout(timer);
+      controller?.abort();
+    };
   }, [
     pageKey,
     requestablePage,

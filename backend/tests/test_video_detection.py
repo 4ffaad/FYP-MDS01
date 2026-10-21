@@ -7,12 +7,15 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+import zlib
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import UploadFile
 from fastapi.testclient import TestClient
 from starlette.datastructures import Headers
@@ -415,7 +418,8 @@ class VideoDetectionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.storage = VideoStorage(Path(self.temp.name) / "sessions", storage_key=os.urandom(32))
+        self.storage_key = os.urandom(32)
+        self.storage = VideoStorage(Path(self.temp.name) / "sessions", storage_key=self.storage_key)
         self.engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
         SQLModel.metadata.create_all(self.engine)
         self.addCleanup(self.engine.dispose)
@@ -428,7 +432,12 @@ class VideoDetectionTests(unittest.TestCase):
                               ("backend.app.services.video_detection_service.VideoStorage", lambda: self.storage),
                               ("backend.app.services.video_detection_service.engine", self.engine)):
             p = patch(target, value); p.start(); self.addCleanup(p.stop)
-        p = patch.dict(os.environ, {"APP_ENV": "test", "AUTH_MODE": "local-accounts", "VIDEO_DETECTION_ENABLED": "true"})
+        p = patch.dict(os.environ, {
+            "APP_ENV": "test",
+            "AUTH_MODE": "local-accounts",
+            "VIDEO_DETECTION_ENABLED": "true",
+            STORAGE_KEY_ENV: base64.b64encode(self.storage_key).decode("ascii"),
+        })
         p.start(); self.addCleanup(p.stop)
         p = patch.object(service, "_run_pose_readiness", return_value=POSE_READY)
         p.start(); self.addCleanup(p.stop)
@@ -506,7 +515,10 @@ class VideoDetectionTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 202, response.text)
-        self.assertEqual(create_job.call_args.args[6], "Private recording.avi")
+        self.assertEqual(
+            create_job.call_args.kwargs["source_video_name"],
+            "Private recording.avi",
+        )
         self.assertNotIn("Private recording.avi", response.text)
 
     def test_sync_group_cannot_be_closed_before_all_expected_clips_are_uploaded(self):
@@ -845,6 +857,68 @@ class VideoDetectionTests(unittest.TestCase):
             {"patch_index": 0, "component": "patch-0", "score_change": 0.0},
         )
 
+    def test_prediction_response_reads_encrypted_result_from_database(self):
+        job_id = self.seed()
+        with Session(self.engine) as db:
+            job = db.exec(
+                select(VideoDetectionJob).where(VideoDetectionJob.job_id == job_id)
+            ).one()
+            result = validate_predictions(
+                [{"start_time": 0.0, "end_time": 2.0, "raw_score": 0.8}],
+                10.0,
+                {"threshold": 0.5},
+            )
+            nonce = os.urandom(12)
+            aad = f"MDS01-VIDEO-RESULT-v1:{job.owner_user_id}:{job.job_id}".encode()
+            ciphertext = AESGCM(self.storage_key).encrypt(
+                nonce,
+                zlib.compress(json.dumps(result, allow_nan=False).encode()),
+                aad,
+            )
+            job.result_nonce = nonce
+            job.result_ciphertext = ciphertext
+            job.predictions_path = None
+            db.add(job)
+            db.commit()
+
+        response = self.alice.get(f"/api/video-detection/jobs/{job_id}/predictions")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["predictions"][0]["score"], 0.8)
+        with Session(self.engine) as db, patch.object(
+            service, "CLINICAL_VIDEO_REVIEW_ENABLED", True
+        ):
+            saved = db.exec(
+                select(VideoDetectionJob).where(VideoDetectionJob.job_id == job_id)
+            ).one()
+            self.assertIsNone(saved.predictions_path)
+            self.assertNotIn(b"0.8", saved.result_ciphertext)
+
+    def test_tampered_encrypted_database_result_is_not_returned(self):
+        job_id = self.seed()
+        with Session(self.engine) as db:
+            job = db.exec(
+                select(VideoDetectionJob).where(VideoDetectionJob.job_id == job_id)
+            ).one()
+            result = validate_predictions(
+                [{"start_time": 0.0, "end_time": 2.0, "raw_score": 0.8}],
+                10.0,
+                {"threshold": 0.5},
+            )
+            job.result_nonce, job.result_ciphertext = service.encrypt_video_result(job, result)
+            job.predictions_path = None
+            db.add(job)
+            db.commit()
+            job.result_ciphertext = job.result_ciphertext[:-1] + bytes(
+                [job.result_ciphertext[-1] ^ 1]
+            )
+            db.add(job)
+            db.commit()
+
+        response = self.alice.get(f"/api/video-detection/jobs/{job_id}/predictions")
+
+        self.assertEqual(response.status_code, 409)
+
     def test_prediction_response_keeps_person_tracks_separate_and_redacts_track_metadata(self):
         scored = validate_predictions(
             [{"start_time": 0.0, "end_time": 5.0, "raw_score": 0.7}],
@@ -923,7 +997,7 @@ class VideoDetectionTests(unittest.TestCase):
             self.addCleanup(admin.close)
             login = admin.post(
                 "/api/auth/login",
-                json={"email": "admin@mds01.local", "password": admin_password},
+                json={"email": "admin@mds01.com", "password": admin_password},
                 headers=self.headers,
             )
             self.assertEqual(login.status_code, 200, login.text)
@@ -1185,6 +1259,56 @@ class VideoDetectionTests(unittest.TestCase):
             0,
         )
 
+    def test_combined_veeg_upload_finishes_without_model_queue_or_conversion(self):
+        from backend.app.api import video_detection as video_api
+
+        source = Path("backend/tests/fixtures/synthetic-review.mp4").read_bytes()
+        with patch.object(video_api, "CLINICAL_VIDEO_REVIEW_ENABLED", True), patch.object(
+            service, "CLINICAL_VIDEO_REVIEW_ENABLED", True
+        ), patch.object(
+            service, "load_contract", side_effect=AssertionError("VEEG must not load VSViG")
+        ), patch.object(
+            service,
+            "_preflight_uploaded_video",
+            side_effect=AssertionError("VEEG must not run OpenPose readiness"),
+        ), patch.object(
+            service,
+            "process_job",
+            side_effect=AssertionError("VEEG must not enter the model queue"),
+        ), patch(
+            "backend.app.services.video_privacy_service.finalize_protected_video",
+            side_effect=AssertionError("upload must not convert reference video"),
+        ), patch.object(
+            service,
+            "enqueue_reference_metadata",
+        ) as enqueue_metadata:
+            response = self.alice.post(
+                "/api/video-detection/jobs",
+                content=source,
+                headers={
+                    **self.headers,
+                    "Content-Type": "application/octet-stream",
+                    "X-Video-Format": "mp4",
+                    "X-Video-Purpose": "reference",
+                },
+            )
+
+        self.assertEqual(response.status_code, 202, response.text)
+        enqueue_metadata.assert_called_once()
+        job = response.json()["job"]
+        self.assertEqual(job["status"], "ready")
+        self.assertEqual(job["playback_status"], "metadata_pending")
+        self.assertTrue(job["source_available"])
+        self.assertFalse(job["video_available"])
+        self.assertNotIn("playback_path", job)
+        with Session(self.engine) as db:
+            saved = db.exec(
+                select(VideoDetectionJob).where(VideoDetectionJob.job_id == job["job_id"])
+            ).one()
+            self.assertTrue(saved.reference_only)
+            self.assertIsNone(saved.playback_path)
+            self.assertIsNone(saved.predictions_path)
+
     def test_video_upload_is_accepted_while_another_video_job_is_active(self):
         active = VideoDetectionJob(
             owner_user_id=self.owner,
@@ -1241,30 +1365,26 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertIn("disabled by the current runtime setting", response.json()["detail"])
         create_job.assert_not_awaited()
 
-    def test_reference_video_retains_encrypted_media_without_model_or_pose_admission(self):
+    def test_reference_upload_retains_ciphertext_then_queues_playback_preparation(self):
         source_bytes = b"synthetic-reference-video"
         metadata = {
             "fps": 30.0,
             "frame_count": 300,
             "width": 640,
             "height": 480,
+            "codec_name": "mpeg4",
+            "pix_fmt": "yuv420p",
+            "format_name": "avi",
+            "has_audio": False,
         }
         with patch.object(service, "CLINICAL_VIDEO_REVIEW_ENABLED", True), patch.object(
             service, "load_contract", side_effect=AssertionError("reference must not load VSViG")
         ), patch.object(
-            service,
-            "_preflight_uploaded_video",
-            side_effect=AssertionError("reference must not run pose preflight"),
-        ), patch.object(
-            service.VideoPrivacyProcessor, "preflight", return_value=metadata
-        ), patch(
+            service, "_probe_reference_video_path", side_effect=AssertionError("upload must not probe or decrypt the source")
+        ) as probe, patch(
             "backend.app.services.video_privacy_service.finalize_protected_video",
-            side_effect=lambda source, visual, output: output.write_bytes(
-                source.read_bytes() + b"-browser-copy"
-            ),
+            side_effect=AssertionError("upload must not convert reference video"),
         ), patch.object(
-            service, "validate_visualization_artifact", return_value=299
-        ) as validate_review, patch.object(
             service, "VideoStorage", return_value=self.storage
         ):
             with Session(self.engine) as db:
@@ -1283,9 +1403,25 @@ class VideoDetectionTests(unittest.TestCase):
                     )
                 )
                 self.assertTrue(job.reference_only)
+                self.assertEqual(job.status, "ready")
+                self.assertEqual(job.current_stage, "reference-metadata")
+                self.assertEqual(job.playback_status, "metadata_pending")
+                self.assertIsNone(job.playback_path)
                 self.assertIsNone(job.retention_expires_at)
+                self.assertEqual(job.duration_seconds, 0.0)
+                self.assertEqual(job.fps, 0.0)
+                self.assertTrue(Path(job.original_path or "").is_file())
+                self.assertIsNone(job.visualization_path)
+                self.assertIsNone(job.predictions_path)
+                probe.assert_not_called()
 
-            service.process_job(job.job_id)
+        with patch.object(service, "engine", self.engine), patch.object(
+            service, "VideoStorage", return_value=self.storage
+        ), patch.object(
+            service, "_probe_reference_video_path", return_value=metadata
+        ), patch.object(service, "enqueue_reference_playback") as enqueue_playback:
+            service.process_reference_metadata(job.job_id)
+            enqueue_playback.assert_called_once_with(job.job_id)
 
         with Session(self.engine) as db:
             saved = db.exec(
@@ -1294,33 +1430,186 @@ class VideoDetectionTests(unittest.TestCase):
                 )
             ).one()
             self.assertEqual(saved.status, "ready")
-            self.assertEqual(saved.error_code, "source_frame_count_mismatch")
+            self.assertEqual(saved.playback_status, "processing")
+            self.assertIsNone(saved.error_code)
             self.assertTrue(Path(saved.original_path or "").is_file())
-            self.assertTrue(Path(saved.visualization_path or "").is_file())
+            self.assertIsNone(saved.visualization_path)
+            self.assertIsNone(saved.playback_path)
             self.assertIsNone(saved.retention_expires_at)
             self.assertIsNone(saved.predictions_path)
             self.assertNotIn(source_bytes, Path(saved.original_path or "").read_bytes())
-        validate_review.assert_called_once()
-        self.assertEqual(validate_review.call_args.kwargs["expected_fps"], 30.0)
-        self.assertFalse(validate_review.call_args.kwargs["count_frames"])
-        self.assertEqual(saved.duration_seconds, 299 / 30.0)
         with Session(self.engine) as db, patch.object(
             service, "CLINICAL_VIDEO_REVIEW_ENABLED", True
         ):
             review = service.public_job(db, saved, self.storage)
+        self.assertEqual(review["playback_status"], "processing")
+        self.assertFalse(review["video_available"])
+        self.assertTrue(review["source_available"])
+
+    def test_reference_playback_keeps_one_dropped_frame_as_a_review_warning(self):
+        metadata = {
+            "fps": 25.0,
+            "frame_count": 330,
+            "width": 640,
+            "height": 480,
+            "codec_name": "mpeg4",
+            "pix_fmt": "yuv420p",
+            "format_name": "avi",
+            "has_audio": True,
+        }
+        with patch.object(service, "CLINICAL_VIDEO_REVIEW_ENABLED", True), patch.object(
+            service, "VideoStorage", return_value=self.storage
+        ):
+            with Session(self.engine) as db:
+                job = asyncio.run(
+                    service.create_job(
+                        db,
+                        self.storage,
+                        UploadFile(
+                            filename="camera.avi",
+                            file=io.BytesIO(b"synthetic-reference-video"),
+                            headers=Headers({"content-type": "video/x-msvideo"}),
+                        ),
+                        self.owner,
+                        reference_only=True,
+                    )
+                )
+                job_id = job.job_id
+                job.playback_status = "processing"
+                db.add(job)
+                db.commit()
+
+        def write_review_copy(_source, _visual, output, **_kwargs):
+            output.write_bytes(b"temporary-playback-copy")
+
+        with patch.object(service, "engine", self.engine), patch.object(
+            service, "VideoStorage", return_value=self.storage
+        ), patch.object(service, "_probe_reference_video_path", return_value=metadata), patch(
+            "backend.app.services.video_privacy_service.finalize_protected_video",
+            side_effect=write_review_copy,
+        ), patch.object(service, "validate_visualization_artifact", return_value=329):
+            service.process_reference_playback(job_id)
+
+        with Session(self.engine) as db, patch.object(
+            service, "CLINICAL_VIDEO_REVIEW_ENABLED", True
+        ):
+            saved = db.exec(
+                select(VideoDetectionJob).where(
+                    VideoDetectionJob.job_id == job_id
+                )
+            ).one()
+            self.assertEqual(saved.playback_status, "ready")
+            self.assertEqual(saved.error_code, "source_frame_count_mismatch")
+            self.assertTrue(Path(saved.original_path or "").is_file())
+            self.assertTrue(Path(saved.playback_path or "").is_file())
+            saved_playback_path = Path(saved.playback_path or "")
+            self.assertNotIn(
+                b"temporary-playback-copy", saved_playback_path.read_bytes()
+            )
+            review = service.public_job(db, saved, self.storage)
+
+        self.assertIn("frame counts differ", review["review_warning"])
+        self.assertTrue(review["video_available"])
         self.assertEqual(
-            review["review_warning"],
-            "The source and review-copy reported frame counts differ. Playback uses the validated review-copy frame clock; EEG alignment uses the original clock anchors.",
+            list((self.storage.root / job_id / "work").glob("*.mp4")), []
         )
-        review = self.storage.materialize_artifact(
-            job.job_id,
-            Path(saved.visualization_path or ""),
-            "reference-review.mp4",
+
+        self.storage._storage.delete_retained_artifact(saved_playback_path)
+        with Session(self.engine) as db:
+            saved = db.exec(
+                select(VideoDetectionJob).where(
+                    VideoDetectionJob.job_id == job_id
+                )
+            ).one()
+            saved.playback_status = "processing"
+            saved.playback_path = None
+            db.add(saved)
+            db.commit()
+
+        with patch.object(service, "engine", self.engine), patch.object(
+            service, "VideoStorage", return_value=self.storage
+        ), patch.object(service, "_probe_reference_video_path", return_value=metadata), patch(
+            "backend.app.services.video_privacy_service.finalize_protected_video",
+            side_effect=write_review_copy,
+        ), patch.object(service, "validate_visualization_artifact", return_value=328):
+            service.process_reference_playback(job_id)
+
+        with Session(self.engine) as db:
+            saved = db.exec(
+                select(VideoDetectionJob).where(
+                    VideoDetectionJob.job_id == job_id
+                )
+            ).one()
+            self.assertEqual(saved.playback_status, "failed")
+            self.assertEqual(saved.error_code, "playback_conversion_failed")
+
+    def test_h264_reference_upload_is_not_probed_until_after_acknowledgement(self):
+        metadata = {
+            "fps": 30.0,
+            "frame_count": 300,
+            "width": 640,
+            "height": 480,
+            "codec_name": "h264",
+            "pix_fmt": "yuv420p",
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "has_audio": False,
+            "browser_compatible": True,
+        }
+        with patch.object(service, "CLINICAL_VIDEO_REVIEW_ENABLED", True), patch.object(
+            service, "_probe_reference_video_path", side_effect=AssertionError("upload must not probe the source")
+        ), patch.object(service, "VideoStorage", return_value=self.storage):
+            with Session(self.engine) as db:
+                job = asyncio.run(
+                    service.create_job(
+                        db,
+                        self.storage,
+                        UploadFile(
+                            filename="camera.mp4",
+                            file=io.BytesIO(b"encrypted-source"),
+                            headers=Headers({"content-type": "video/mp4"}),
+                        ),
+                        self.owner,
+                        reference_only=True,
+                    )
+                )
+                self.assertEqual(job.playback_status, "metadata_pending")
+                self.assertEqual(job.duration_seconds, 0.0)
+                self.assertIsNone(job.playback_path)
+                self.assertTrue(Path(job.original_path or "").is_file())
+        with patch.object(service, "engine", self.engine), patch.object(
+            service, "VideoStorage", return_value=self.storage
+        ), patch.object(service, "_probe_reference_video_path", return_value=metadata):
+            service.process_reference_metadata(job.job_id)
+        with Session(self.engine) as db:
+            saved = db.exec(
+                select(VideoDetectionJob).where(VideoDetectionJob.job_id == job.job_id)
+            ).one()
+            self.assertEqual(saved.playback_status, "direct")
+            self.assertIsNone(saved.playback_path)
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"),
+        "FFmpeg video tooling unavailable",
+    )
+    def test_h264_mp4_with_aac_audio_qualifies_for_direct_browser_playback(self):
+        source = Path(self.temp.name) / "browser-compatible-audio.mp4"
+        subprocess.run(
+            [
+                shutil.which("ffmpeg") or "ffmpeg",
+                "-v", "error", "-f", "lavfi", "-i",
+                "testsrc2=size=96x64:rate=6", "-f", "lavfi", "-i",
+                "sine=frequency=440:sample_rate=44100", "-t", "5",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-movflags", "+faststart", "-y", str(source),
+            ],
+            check=True,
+            timeout=30,
         )
-        try:
-            self.assertEqual(review.read_bytes(), source_bytes + b"-browser-copy")
-        finally:
-            self.storage.delete_work_file(review)
+
+        metadata = service._probe_reference_video_path(source)
+
+        self.assertTrue(metadata["has_audio"])
+        self.assertTrue(metadata["browser_compatible"])
 
     def test_model_blur_operates_on_extracted_rgb_patches(self):
         import numpy as np
@@ -1622,9 +1911,11 @@ class VideoDetectionTests(unittest.TestCase):
             self.assertIsNone(saved.original_path)
             self.assertIsNone(saved.video_path)
             predictions_path = saved.predictions_path
-            if predictions_path is None:
-                self.fail("predictions artifact path was not stored")
-            self.assertTrue(predictions_path.endswith(".enc"))
+            self.assertIsNone(predictions_path)
+            self.assertEqual(len(saved.result_nonce), 12)
+            self.assertTrue(saved.result_ciphertext)
+            self.assertNotIn(b"0.8", saved.result_ciphertext)
+            stored_result = service.read_encrypted_video_result(saved)
             visualization_path = saved.visualization_path
             if visualization_path is None:
                 self.fail("redacted visualization artifact path was not stored")
@@ -1634,13 +1925,6 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertEqual(len(runtime), 8)
         self.assertEqual(runtime[6], runtime[3])
         self.assertEqual(runtime[7], "65")
-        private_predictions = self.storage.materialize_artifact(
-            job.job_id, Path(predictions_path), "inspect-predictions.json"
-        )
-        try:
-            stored_result = json.loads(private_predictions.read_text())
-        finally:
-            self.storage.delete_work_file(private_predictions)
         self.assertNotIn(
             "source_timestamp_offset_seconds", stored_result.get("privacy", {})
         )

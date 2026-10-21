@@ -19,7 +19,7 @@ from backend.app.database.models.auth import AuthSession, User
 MIN_PASSWORD_LENGTH = 8
 MAX_PASSWORD_LENGTH = 1024
 DEMO_ADMIN_PUBLIC_ID = "USR-DEMO-ADMIN"
-DEFAULT_DEMO_ADMIN_EMAIL = "admin@mds01.local"
+DEFAULT_DEMO_ADMIN_EMAIL = "admin@mds01.com"
 DEMO_ADMIN_DISPLAY_NAME = "Dr. Aisha Rahman (Demo)"
 SESSION_TTL = timedelta(hours=8)
 _SCRYPT_N = 2**14

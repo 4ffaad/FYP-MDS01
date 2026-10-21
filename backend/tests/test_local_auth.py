@@ -107,12 +107,12 @@ class LocalAuthenticationTests(unittest.TestCase):
                 "APP_ENV": "development",
                 "AUTH_MODE": "local-accounts",
                 "DEMO_ADMIN_ENABLED": "true",
-                "DEMO_ADMIN_EMAIL": "admin@mds01.local",
+                "DEMO_ADMIN_EMAIL": "admin@mds01.com",
                 "DEMO_ADMIN_PASSWORD": demo_password,
             },
         ):
             admin = ensure_demo_admin(db)
-            self.assertEqual(admin.email, "admin@mds01.local")
+            self.assertEqual(admin.email, "admin@mds01.com")
             self.assertEqual(admin.display_name, "Dr. Aisha Rahman (Demo)")
             self.assertTrue(admin.is_admin)
             self.assertIs(ensure_demo_admin(db), admin)
@@ -137,7 +137,7 @@ class LocalAuthenticationTests(unittest.TestCase):
             with patch("backend.app.main.engine", self.engine), self._client() as client:
                 login = client.post(
                     "/api/auth/login",
-                    json={"email": "admin@mds01.local", "password": demo_password},
+                    json={"email": "admin@mds01.com", "password": demo_password},
                     headers=self._headers(),
                 )
                 self.assertEqual(login.status_code, 200, login.text)

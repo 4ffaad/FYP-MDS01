@@ -15,6 +15,7 @@ _ACTIONS = {
     "session_report_download",
     "video_result_view",
     "video_stream",
+    "video_playback_prepare",
     "video_download",
     "clinical_observation_view",
     "clinical_observation_create",

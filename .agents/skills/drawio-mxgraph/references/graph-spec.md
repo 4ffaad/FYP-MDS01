@@ -8,6 +8,8 @@ Use this shape:
 {
   "title": "Agent Platform Architecture",
   "direction": "LR",
+  "page_width": 1600,
+  "page_height": 900,
   "auto_icons": true,
   "icon_layout": "tile",
   "icon_tile_size": 96,
@@ -27,6 +29,9 @@ Use this shape:
 ```
 
 Allowed directions are `LR`, `RL`, `TB`, and `BT`.
+
+`page_width` and `page_height` optionally set the Draw.io page dimensions in
+pixels; they default to 1600 × 900.
 
 `auto_icons` defaults to `true`. Automatic selection only fills nodes that do not already define `style`, `drawio_shape`, or `icon`.
 

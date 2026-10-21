@@ -119,7 +119,13 @@ def parse_profile(value: str | None) -> VideoPrivacyProfile:
     raise ValueError("Only available profiles are face redaction and redacted pose preview.")
 
 
-def finalize_protected_video(source: Path, visual: Path, output: Path) -> None:
+def finalize_protected_video(
+    source: Path,
+    visual: Path,
+    output: Path,
+    *,
+    copy_h264_video: bool = False,
+) -> None:
     """Finalize one audio-free H.264 review video without source metadata."""
 
     ffmpeg = shutil.which("ffmpeg")
@@ -131,13 +137,18 @@ def finalize_protected_video(source: Path, visual: Path, output: Path) -> None:
         if output.is_symlink() or (output.exists() and not output.is_file()):
             raise VideoProcessorError("Protected output path is invalid.")
         output.unlink(missing_ok=True)
+        video_codec_args = (
+            ["-c:v", "copy"]
+            if copy_h264_video
+            else ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p"]
+        )
         subprocess.run(  # nosec B603
             [
                 ffmpeg, "-nostdin", "-v", "error", "-y",
                 "-i", str(visual),
-                "-map", "0:v:0", "-an", "-c:v", "libx264",
-                "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p",
-                "-map_metadata", "-1", "-map_chapters", "-1", "-sn", "-dn",
+                "-map", "0:v:0", "-an", *video_codec_args,
+                "-map_metadata", "-1", "-map_metadata:s:v:0", "-1",
+                "-map_chapters", "-1", "-sn", "-dn",
                 "-movflags", "+faststart", "-fs", str(VIDEO_MAX_OUTPUT_BYTES), str(output),
             ],
             check=True,

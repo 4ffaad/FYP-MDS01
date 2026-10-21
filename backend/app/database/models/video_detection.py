@@ -43,10 +43,23 @@ class VideoDetectionJob(SQLModel, table=True):
     )
     duration_seconds: float = 0
     fps: float = 0
+    source_frame_count: int = 0
+    source_width: int = 0
+    source_height: int = 0
+    playback_status: str = Field(default="not_applicable", max_length=24)
     original_path: str | None = None
     video_path: str | None = None
+    playback_path: str | None = None
     visualization_path: str | None = None
     predictions_path: str | None = None
+    result_nonce: bytes | None = Field(
+        default=None,
+        sa_column=Column(LargeBinary, nullable=True),
+    )
+    result_ciphertext: bytes | None = Field(
+        default=None,
+        sa_column=Column(LargeBinary, nullable=True),
+    )
     error_code: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     retention_expires_at: datetime | None = None

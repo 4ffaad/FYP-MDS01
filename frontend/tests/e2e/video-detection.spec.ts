@@ -518,6 +518,17 @@ test("video review history keeps rejected clips and shows the failure reason", a
 test("video reviews lists past uploads and opens the protected result", async ({
   page,
 }) => {
+  const referenceClip = {
+    ...job,
+    job_id: "VID-veeg-reference",
+    label: "VEEG reference clip",
+    reference_only: true,
+  };
+  await page.route("**/api/video-detection/jobs", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    return route.fulfill({ json: { jobs: [referenceClip, job] } });
+  });
+
   await page.goto("/video-reviews");
   await expect(page).toHaveURL(/\/video-detection\?view=reviews$/);
   await expect(
@@ -526,6 +537,9 @@ test("video reviews lists past uploads and opens the protected result", async ({
   await expect(
     page.getByRole("link", { name: /Synthetic video detection/ }),
   ).toHaveAttribute("href", "/video-detection/VID-synthetic");
+  await expect(
+    page.getByRole("link", { name: /VEEG reference clip/ }),
+  ).toHaveCount(0);
   await expect(
     page
       .getByRole("navigation", { name: "Video workspace" })
@@ -545,6 +559,37 @@ test("video reviews lists past uploads and opens the protected result", async ({
   await expect(
     page.getByRole("heading", { name: "Video reviews" }),
   ).toBeVisible();
+});
+
+test("ready VSViG results stop status polling", async ({ page }) => {
+  let statusRequests = 0;
+  await page.addInitScript(() => {
+    const originalSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = ((
+      handler: TimerHandler,
+      timeout?: number,
+      ...arguments_: unknown[]
+    ) =>
+      originalSetTimeout(
+        handler,
+        timeout === 15_000 ? 50 : timeout,
+        ...arguments_,
+      )) as typeof window.setTimeout;
+  });
+  await page.route("**/api/video-detection/jobs/VID-synthetic", (route) => {
+    statusRequests += 1;
+    return route.fulfill({ json: { job } });
+  });
+
+  await page.goto("/video-detection/VID-synthetic");
+  await expect(
+    page.getByRole("heading", { name: "VSViG score over time" }),
+  ).toBeVisible();
+  await page.waitForTimeout(250);
+  // React Strict Mode can issue the initial read twice in development, but a
+  // ready job must not schedule another status poll.
+  expect(statusRequests).toBeGreaterThan(0);
+  expect(statusRequests).toBeLessThanOrEqual(2);
 });
 
 test("retries a transient ready-result failure without a reload", async ({
@@ -714,6 +759,7 @@ test("reference-only jobs show playback status without a VSViG pipeline", async 
           job_id: "VID-reference",
           label: "Reference camera",
           reference_only: true,
+          playback_status: "direct",
           review_warning:
             "The source container and decodable frame counts differ. Playback preserves all decodable frames; EEG alignment uses the original clock anchors.",
           sync: {

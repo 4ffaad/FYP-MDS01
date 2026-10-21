@@ -4,6 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import io
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -28,7 +30,10 @@ from backend.app.database.models.eeg import EEGSession, EEGRecording, AnalysisSt
 from backend.app.database.models.video_detection import VideoDetectionJob
 from backend.app.eeg.contracts import MODEL_CHANNELS
 from backend.app.services import processing_service, video_detection_service
-from backend.app.services.case_deletion_service import delete_case
+from backend.app.services.case_deletion_service import (
+    CaseDeletionInProgress,
+    delete_case,
+)
 from backend.app.services.session_service import create_session
 from backend.app.services.signal_service import build_signal_preview
 from backend.app.services.storage_service import SessionStorage
@@ -167,6 +172,44 @@ class SecureOwnerReviewTests(unittest.TestCase):
             future.result(timeout=2)
         self.assertFalse((self.storage.root / self.session_id).exists())
 
+    def test_chunk_encrypted_media_supports_random_ranges_and_rejects_tampering(self):
+        job_id = "VID-" + "A" * 32
+        payload = bytes((index * 29) % 251 for index in range(170_123))
+        encrypted = asyncio.run(
+            self.storage.save_chunked_upload(
+                job_id,
+                UploadFile(
+                    filename="clip.mp4",
+                    file=io.BytesIO(payload),
+                ),
+                filename="video.input.enc",
+                max_bytes=200_000,
+                chunk_bytes=64 * 1024,
+            )
+        )
+        ciphertext = encrypted.read_bytes()
+        self.assertNotIn(payload[:128], ciphertext)
+        self.assertEqual(self.storage.chunked_plaintext_size(encrypted), len(payload))
+        selected = b"".join(self.storage.iter_decrypted_range(encrypted, 65_530, 131_090))
+        self.assertEqual(selected, payload[65_530:131_091])
+        suffix = b"".join(self.storage.iter_decrypted_range(encrypted, len(payload) - 73, len(payload) - 1))
+        self.assertEqual(suffix, payload[-73:])
+
+        # The second encrypted data record starts after the header and first
+        # independently authenticated chunk. A modified tag must fail closed.
+        from backend.app.services.storage_service import _CHUNKED_HEADER_BYTES
+
+        tampered = bytearray(encrypted.read_bytes())
+        second_record = _CHUNKED_HEADER_BYTES + 64 * 1024 + 12
+        tampered[second_record + 64 * 1024] ^= 1
+        encrypted.write_bytes(tampered)
+        with self.assertRaises(Exception):
+            b"".join(
+                self.storage.iter_decrypted_range(
+                    encrypted, 64 * 1024, 64 * 1024 + 32
+                )
+            )
+
     def test_parallel_waveforms_cleanup_restart_missing_artifact_and_case_deletion(self):
         self.source()
         with self.storage.read_lease(self.session_id):
@@ -188,8 +231,8 @@ class SecureOwnerReviewTests(unittest.TestCase):
             self.assertIsNone(db.get(EEGSession, 1))
         self.assertFalse((self.storage.root / self.session_id).exists())
 
-    @unittest.skipUnless(__import__("cv2").__dict__.get("VideoCapture"), "OpenCV video runtime unavailable")
-    def test_reference_video_without_pose_assets_can_play_download_and_reopen(self):
+    @unittest.skipUnless(shutil.which("ffprobe"), "ffprobe video metadata probe unavailable")
+    def test_reference_video_upload_acknowledges_before_probe_then_streams_authenticated_ranges(self):
         enabled_service = patch.object(video_detection_service, "CLINICAL_VIDEO_REVIEW_ENABLED", True)
         enabled_api = patch.object(video_detection, "CLINICAL_VIDEO_REVIEW_ENABLED", True)
         enabled_service.start()
@@ -197,13 +240,21 @@ class SecureOwnerReviewTests(unittest.TestCase):
         self.addCleanup(enabled_service.stop)
         self.addCleanup(enabled_api.stop)
         video_bytes = Path("backend/tests/fixtures/synthetic-review.mp4").read_bytes()
-        with Session(self.engine) as db, patch.object(video_detection_service, "load_contract", side_effect=AssertionError("must not load models")), patch.object(video_detection_service, "_preflight_uploaded_video", side_effect=AssertionError("must not run pose")):
+        with Session(self.engine) as db, patch.object(video_detection_service, "load_contract", side_effect=AssertionError("must not load models")), patch.object(video_detection_service, "_preflight_uploaded_video", side_effect=AssertionError("must not run pose")), patch.object(video_detection_service, "process_job", side_effect=AssertionError("reference upload must not enter the model worker")):
             job = asyncio.run(video_detection_service.create_job(db, self.video,
                 UploadFile(filename="source.mp4", file=io.BytesIO(video_bytes), headers=Headers({"content-type": "video/mp4"})),
                 1, reference_only=True))
             job_id, case_id = job.job_id, job.case_id
+            self.assertEqual(job.status, "ready")
+            self.assertEqual(job.playback_status, "metadata_pending")
+            self.assertIsNone(job.playback_path)
+            self.assertEqual(job.duration_seconds, 0.0)
+        with patch.object(video_detection_service, "engine", self.engine), patch.object(
+            video_detection_service, "VideoStorage", return_value=self.video
+        ):
+            video_detection_service.process_reference_metadata(job_id)
         with patch.object(video_detection_service, "engine", self.engine), patch.object(video_detection_service, "VideoStorage", return_value=self.video), patch.object(video_detection_service, "execute", side_effect=AssertionError("must not run VSViG")):
-            video_detection_service.process_job(job_id)
+            video_detection_service.process_reference_metadata(job_id)
             video_detection_service.sweep(startup=True)
         response = self.client.get(f"/api/video-detection/jobs/{job_id}")
         job = response.json()["job"]
@@ -212,17 +263,248 @@ class SecureOwnerReviewTests(unittest.TestCase):
         self.assertIsNone(job["retention_expires_at"])
         self.assertEqual(job["retention_policy"], "until-deletion")
         self.assertEqual(job["video_access_status"], "available")
+        self.assertEqual(job["playback_status"], "direct")
         self.assertTrue(job["source_download_available"])
         self.assertEqual(self.client.get(f"/api/video-detection/jobs/{job_id}/original").content, video_bytes)
-        ranged = self.client.get(f"/api/video-detection/jobs/{job_id}/visualization", headers={"Range": "bytes=0-63"})
+        ranged = self.client.get(f"/api/video-detection/jobs/{job_id}/playback", headers={"Range": "bytes=0-63"})
         self.assertEqual(ranged.status_code, 206)
         self.assertEqual(len(ranged.content), 64)
+        self.assertEqual(ranged.headers.get("cache-control"), "private, no-store, max-age=0")
+        self.assertEqual(ranged.headers.get("content-range"), f"bytes 0-63/{len(video_bytes)}")
         self.user = User(id=2, public_id="USR-OTHER", email="other@example.test")
-        for suffix in ("/original", "/visualization", "/predictions"):
+        for suffix in ("/original", "/playback", "/visualization", "/predictions"):
             self.assertEqual(self.client.get(f"/api/video-detection/jobs/{job_id}{suffix}").status_code, 404)
         with Session(self.engine) as db:
             delete_case(db, case_id=case_id, owner_user_id=1, eeg_storage=self.storage, video_storage=self.video)
         self.assertFalse((self.storage.root / job_id).exists())
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg video tooling unavailable")
+    def test_unsupported_reference_is_prepared_in_background_after_upload(self):
+        service_review = patch.object(video_detection_service, "CLINICAL_VIDEO_REVIEW_ENABLED", True)
+        api_review = patch.object(video_detection, "CLINICAL_VIDEO_REVIEW_ENABLED", True)
+        service_review.start()
+        api_review.start()
+        self.addCleanup(service_review.stop)
+        self.addCleanup(api_review.stop)
+        source = self.root / "unsupported-reference.avi"
+        subprocess.run(
+            [
+                shutil.which("ffmpeg") or "ffmpeg",
+                "-v", "error", "-f", "lavfi", "-i",
+                "testsrc2=size=96x64:rate=6", "-frames:v", "24",
+                "-an", "-c:v", "mpeg4", "-y", str(source),
+            ],
+            check=True,
+            timeout=30,
+        )
+        source_bytes = source.read_bytes()
+        with Session(self.engine) as db:
+            job = asyncio.run(
+                video_detection_service.create_job(
+                    db,
+                    self.video,
+                    UploadFile(
+                        filename="source.avi",
+                        file=io.BytesIO(source_bytes),
+                        headers=Headers({"content-type": "video/x-msvideo"}),
+                    ),
+                    1,
+                    reference_only=True,
+                )
+            )
+            job_id = job.job_id
+            case_id = job.case_id
+            self.assertEqual(job.status, "ready")
+            self.assertEqual(job.playback_status, "metadata_pending")
+            self.assertIsNone(job.playback_path)
+
+        retained_original = Path(job.original_path or "")
+        self.assertTrue(retained_original.is_file())
+        self.assertNotIn(source_bytes, retained_original.read_bytes())
+        with patch.object(video_detection_service, "engine", self.engine), patch.object(
+            video_detection_service, "VideoStorage", return_value=self.video
+        ), patch.object(video_detection_service, "enqueue_reference_playback") as enqueue_playback:
+            video_detection_service.process_reference_metadata(job_id)
+            enqueue_playback.assert_called_once_with(job_id)
+
+        metadata_ready = self.client.get(f"/api/video-detection/jobs/{job_id}").json()["job"]
+        self.assertEqual(metadata_ready["playback_status"], "processing")
+        with patch.object(
+            video_detection_service,
+            "prioritize_reference_playback",
+        ) as enqueue_playback:
+            response = self.client.post(f"/api/video-detection/jobs/{job_id}/playback")
+        self.assertEqual(response.status_code, 202, response.text)
+        enqueue_playback.assert_called_once_with(job_id)
+        self.assertEqual(
+            self.client.get(f"/api/video-detection/jobs/{job_id}").json()["job"]["playback_status"],
+            "processing",
+        )
+        with patch.object(video_detection_service, "engine", self.engine), patch.object(
+            video_detection_service, "VideoStorage", return_value=self.video
+        ):
+            video_detection_service.process_reference_playback(job_id)
+        prepared = self.client.get(f"/api/video-detection/jobs/{job_id}").json()["job"]
+        self.assertEqual(prepared["playback_status"], "ready", prepared)
+        self.assertTrue(prepared["video_available"])
+        playback_path = Path(prepared["playback_path"]) if "playback_path" in prepared else self.video.playback_path(job_id)
+        self.assertTrue(playback_path.is_file())
+        self.assertNotIn(b"ftyp", playback_path.read_bytes()[:64])
+        self.assertTrue(retained_original.is_file())
+        ranged = self.client.get(
+            f"/api/video-detection/jobs/{job_id}/playback",
+            headers={"Range": "bytes=0-31"},
+        )
+        self.assertEqual(ranged.status_code, 206, ranged.text)
+        self.assertEqual(len(ranged.content), 32)
+        self.assertEqual(ranged.headers.get("cache-control"), "private, no-store, max-age=0")
+        first_mtime = playback_path.stat().st_mtime_ns
+        repeated = self.client.post(f"/api/video-detection/jobs/{job_id}/playback")
+        self.assertEqual(repeated.status_code, 202, repeated.text)
+        self.assertEqual(playback_path.stat().st_mtime_ns, first_mtime)
+        cache_path = self.video.root / job_id / "work" / "reference-playback-cache.mp4"
+        self.assertFalse(cache_path.exists())
+        self.user = User(id=2, public_id="USR-OTHER", email="other@example.test")
+        self.assertEqual(self.client.get(f"/api/video-detection/jobs/{job_id}/playback").status_code, 404)
+        self.assertEqual(self.client.post(f"/api/video-detection/jobs/{job_id}/playback").status_code, 404)
+        self.user = User(id=1, public_id="USR-OWNER", email="owner@example.test")
+        self.video.cleanup_stale_playback(job_id, now=time.time() + 11 * 60)
+        self.assertFalse(cache_path.exists())
+        with Session(self.engine) as db:
+            delete_case(db, case_id=case_id, owner_user_id=1, eeg_storage=self.storage, video_storage=self.video)
+        self.assertFalse((self.video.root / job_id).exists())
+
+    def test_case_deletion_waits_for_on_demand_reference_conversion(self):
+        job_id = "VID-ACTIVE-PLAYBACK-CONVERSION"
+        case_id = "CASE-A17E0001"
+        encrypted_original = self.video.root / job_id / "original" / "video.input.enc"
+        encrypted_original.parent.mkdir(parents=True)
+        encrypted_original.write_bytes(b"encrypted original")
+        with Session(self.engine) as db:
+            db.add(
+                VideoDetectionJob(
+                    owner_user_id=1,
+                    case_id=case_id,
+                    job_id=job_id,
+                    status="ready",
+                    reference_only=True,
+                    playback_status="processing",
+                    original_path=str(encrypted_original),
+                )
+            )
+            db.commit()
+            with self.assertRaises(CaseDeletionInProgress):
+                delete_case(
+                    db,
+                    case_id=case_id,
+                    owner_user_id=1,
+                    eeg_storage=self.storage,
+                    video_storage=self.video,
+                )
+        self.assertTrue(encrypted_original.is_file())
+
+    def test_reference_conversion_claim_is_owner_scoped_and_idempotent(self):
+        with Session(self.engine) as db:
+            job = VideoDetectionJob(
+                owner_user_id=1,
+                case_id="CASE-PLAYBACK-CLAIM",
+                job_id="VID-PLAYBACK-CLAIM",
+                status="ready",
+                reference_only=True,
+                playback_status="conversion_required",
+            )
+            db.add(job)
+            db.commit()
+
+            claimed_job, claimed = video_detection_service.request_reference_playback(
+                db, job.job_id, 1
+            )
+            self.assertTrue(claimed)
+            self.assertEqual(claimed_job.playback_status, "processing")
+            repeated_job, repeated_claim = (
+                video_detection_service.request_reference_playback(db, job.job_id, 1)
+            )
+            self.assertFalse(repeated_claim)
+            self.assertEqual(repeated_job.playback_status, "processing")
+
+    def test_opened_reference_clip_is_promoted_ahead_of_background_queue(self):
+        background_started = threading.Event()
+        release_background = threading.Event()
+        background_finished = threading.Event()
+        priority_finished = threading.Event()
+        order = []
+
+        def fake_process(job_id):
+            if job_id == "VID-BACKGROUND-RUNNING":
+                background_started.set()
+                release_background.wait(timeout=5)
+                order.append(job_id)
+                background_finished.set()
+            else:
+                order.append(job_id)
+                priority_finished.set()
+
+        background_executor = ThreadPoolExecutor(max_workers=1)
+        priority_executor = ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(background_executor.shutdown, wait=True)
+        self.addCleanup(priority_executor.shutdown, wait=True)
+        with patch.object(
+            video_detection_service,
+            "REFERENCE_PLAYBACK_EXECUTOR",
+            background_executor,
+        ), patch.object(
+            video_detection_service,
+            "REFERENCE_PLAYBACK_PRIORITY_EXECUTOR",
+            priority_executor,
+        ), patch.object(
+            video_detection_service, "REFERENCE_PLAYBACK_SCHEDULE_LOCK", threading.Lock()
+        ), patch.object(video_detection_service, "REFERENCE_PLAYBACK_FUTURES", {}), patch.object(
+            video_detection_service, "REFERENCE_PLAYBACK_RUNNING", set()
+        ), patch.object(
+            video_detection_service, "process_reference_playback", side_effect=fake_process
+        ):
+            video_detection_service.enqueue_reference_playback("VID-BACKGROUND-RUNNING")
+            self.assertTrue(background_started.wait(timeout=2))
+            video_detection_service.enqueue_reference_playback("VID-OWNER-OPENED")
+            video_detection_service.prioritize_reference_playback("VID-OWNER-OPENED")
+            self.assertTrue(priority_finished.wait(timeout=2))
+            self.assertEqual(order, ["VID-OWNER-OPENED"])
+            release_background.set()
+            self.assertTrue(background_finished.wait(timeout=2))
+
+    def test_startup_requeues_interrupted_reference_playback_preparation(self):
+        job_id = "VID-PLAYBACK-RECOVERY"
+        original = self.video.root / job_id / "original" / "video.input.enc"
+        original.parent.mkdir(parents=True)
+        original.write_bytes(b"encrypted source")
+        with Session(self.engine) as db:
+            db.add(
+                VideoDetectionJob(
+                    owner_user_id=1,
+                    case_id="CASE-PLAYBACK-RECOVERY",
+                    job_id=job_id,
+                    status="ready",
+                    reference_only=True,
+                    playback_status="processing",
+                    original_path=str(original),
+                )
+            )
+            db.commit()
+
+        with patch.object(video_detection_service, "engine", self.engine), patch.object(
+            video_detection_service, "VideoStorage", return_value=self.video
+        ), patch.object(
+            video_detection_service, "enqueue_reference_playback"
+        ) as enqueue_playback:
+            video_detection_service.sweep(startup=True)
+
+        enqueue_playback.assert_called_once_with(job_id)
+        with Session(self.engine) as db:
+            recovered = db.exec(
+                select(VideoDetectionJob).where(VideoDetectionJob.job_id == job_id)
+            ).one()
+        self.assertEqual(recovered.playback_status, "processing")
+        self.assertTrue(original.is_file())
 
     def test_unblurred_video_is_hidden_and_blocked_without_institutional_approval(self):
         job_id = "VID-UNAPPROVED-REVIEW"

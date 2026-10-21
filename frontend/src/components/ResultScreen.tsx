@@ -24,6 +24,8 @@ import { SourceClockTimeline } from "./SourceClockTimeline";
 import { SyncedVideoReview, type VideoSeekRequest } from "./SyncedVideoReview";
 import { formatRelativeTime } from "@/lib/format";
 
+const PLAYBACK_UI_UPDATE_INTERVAL_MS = 200;
+
 /** Render one recording result within its session-scoped navigation context. */
 export function ResultScreen({ recordId }: { recordId: string }) {
   return <ResultContent key={recordId} recordId={recordId} />;
@@ -37,6 +39,7 @@ function ResultContent({ recordId }: { recordId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [caseVideoJobs, setCaseVideoJobs] = useState<DetectionJob[]>([]);
   const [videoDialogOpen, setVideoDialogOpen] = useState(false);
+  const [videoBuffering, setVideoBuffering] = useState(false);
   const [playbackPlaying, setPlaybackPlaying] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [playbackRequestId, setPlaybackRequestId] = useState(0);
@@ -53,6 +56,7 @@ function ResultContent({ recordId }: { recordId: string }) {
   const videoSeekRequestId = useRef(0);
   const signalSeekRequestId = useRef(0);
   const playbackTimeRef = useRef(0);
+  const playbackPlayingRef = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -108,8 +112,11 @@ function ResultContent({ recordId }: { recordId: string }) {
   useEffect(() => {
     if (!result || !session?.caseId) return;
     const controller = new AbortController();
-    void listDetections(controller.signal)
-      .then(({ jobs }) => {
+    let timer: number | undefined;
+    let refreshCount = 0;
+    const load = async () => {
+      try {
+        const { jobs } = await listDetections(controller.signal);
         if (controller.signal.aborted) return;
         const caseJobs = jobs
           .filter((job) => job.case_id === session.caseId)
@@ -117,16 +124,32 @@ function ResultContent({ recordId }: { recordId: string }) {
             left.created_at.localeCompare(right.created_at),
           );
         setCaseVideoJobs(caseJobs);
-      })
-      .catch((loadError: unknown) => {
+        const syncOrMetadataPending = caseJobs.some(
+          (job) =>
+            job.reference_only &&
+            (["metadata_pending", "metadata_checking"].includes(
+              job.playback_status ?? "",
+            ) ||
+              job.sync?.status === "pending"),
+        );
+        if (syncOrMetadataPending && refreshCount < 80) {
+          refreshCount += 1;
+          timer = window.setTimeout(() => void load(), 1500);
+        }
+      } catch (loadError: unknown) {
         if (
           loadError instanceof DOMException &&
           loadError.name === "AbortError"
         )
           return;
         setCaseVideoJobs([]);
-      });
-    return () => controller.abort();
+      }
+    };
+    void load();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [result, session?.caseId]);
 
   const linkedVideoClips = caseVideoJobs
@@ -195,27 +218,61 @@ function ResultContent({ recordId }: { recordId: string }) {
     [linkedVideoClips, result?.recordingDurationSeconds],
   );
 
-  const updatePlaybackTime = useCallback((seconds: number) => {
-    playbackTimeRef.current = seconds;
-    setSelectedEegTimeOverride(seconds);
-  }, []);
-
   const updatePlaybackState = useCallback((isPlaying: boolean) => {
+    playbackPlayingRef.current = isPlaying;
     setPlaybackPlaying(isPlaying);
   }, []);
 
-  const updateLegacyPlaybackTime = useCallback((seconds: number | null) => {
-    if (seconds === null) return;
-    playbackTimeRef.current = seconds;
-    setSelectedEegTimeOverride(seconds);
+  const updateVideoBuffering = useCallback((isBuffering: boolean) => {
+    setVideoBuffering(isBuffering);
   }, []);
+
+  const setVideoPopupOpen = useCallback(
+    (open: boolean) => {
+      setVideoDialogOpen(open);
+      if (!open) {
+        setVideoBuffering(false);
+        return;
+      }
+      const clipNeedsPlayback =
+        mappedVideoClip?.video_available ||
+        ["conversion_required", "processing"].includes(
+          mappedVideoClip?.playback_status ?? "",
+        );
+      setVideoBuffering(Boolean(clipNeedsPlayback));
+    },
+    [mappedVideoClip],
+  );
+
+  const selectVideoClip = useCallback(
+    (jobId: string) => {
+      const nextClip = linkedVideoClips.find((clip) => clip.job_id === jobId);
+      if (
+        nextClip?.video_available ||
+        ["conversion_required", "processing"].includes(
+          nextClip?.playback_status ?? "",
+        )
+      ) {
+        setVideoBuffering(true);
+      }
+      setSelectedVideoJobId(jobId);
+      setVideoSeekRequest(null);
+    },
+    [linkedVideoClips],
+  );
 
   useEffect(() => {
     if (!result || !playbackPlaying) return;
-    if (videoDialogOpen && mappedVideoClip?.video_available) return;
     let previousFrame = performance.now();
+    let previousPublish = previousFrame;
     let frameId = 0;
     const advance = (now: number) => {
+      if (!playbackPlayingRef.current) return;
+      if (videoDialogOpen && videoBuffering) {
+        previousFrame = now;
+        frameId = requestAnimationFrame(advance);
+        return;
+      }
       const elapsedSeconds = (now - previousFrame) / 1000;
       previousFrame = now;
       const nextTime = Math.min(
@@ -223,9 +280,18 @@ function ResultContent({ recordId }: { recordId: string }) {
         playbackTimeRef.current + elapsedSeconds * playbackRate,
       );
       playbackTimeRef.current = nextTime;
-      setSelectedEegTimeOverride(nextTime);
+      // Keep the source-clock ref at animation-frame precision for video sync,
+      // but publish slowly enough to avoid rebuilding the model/event timelines
+      // for every display frame. The player follows the video element itself.
+      if (
+        now - previousPublish >= PLAYBACK_UI_UPDATE_INTERVAL_MS ||
+        nextTime >= result.recordingDurationSeconds
+      ) {
+        previousPublish = now;
+        setSelectedEegTimeOverride(nextTime);
+      }
       if (nextTime >= result.recordingDurationSeconds) {
-        setPlaybackPlaying(false);
+        updatePlaybackState(false);
         return;
       }
       frameId = requestAnimationFrame(advance);
@@ -234,10 +300,11 @@ function ResultContent({ recordId }: { recordId: string }) {
     return () => cancelAnimationFrame(frameId);
   }, [
     mappedVideoClip?.job_id,
-    mappedVideoClip?.video_available,
     playbackPlaying,
     playbackRate,
     result,
+    updatePlaybackState,
+    videoBuffering,
     videoDialogOpen,
   ]);
 
@@ -249,7 +316,7 @@ function ResultContent({ recordId }: { recordId: string }) {
         ? 0
         : selectedEegTime;
     selectEegTime(startAt);
-    setPlaybackPlaying(true);
+    updatePlaybackState(true);
   };
 
   if (sourceOnly)
@@ -413,7 +480,7 @@ function ResultContent({ recordId }: { recordId: string }) {
                 type="button"
                 onClick={
                   playbackPlaying
-                    ? () => setPlaybackPlaying(false)
+                    ? () => updatePlaybackState(false)
                     : startPlayback
                 }
                 aria-label={
@@ -509,7 +576,7 @@ function ResultContent({ recordId }: { recordId: string }) {
                   <Dialog.Root
                     open={videoDialogOpen}
                     modal={false}
-                    onOpenChange={setVideoDialogOpen}
+                    onOpenChange={setVideoPopupOpen}
                   >
                     <label className="flex min-h-10 cursor-pointer items-center gap-2 text-xs font-semibold text-ink-muted">
                       <input
@@ -517,7 +584,7 @@ function ResultContent({ recordId }: { recordId: string }) {
                         type="checkbox"
                         checked={videoDialogOpen}
                         onChange={(event) =>
-                          setVideoDialogOpen(event.target.checked)
+                          setVideoPopupOpen(event.target.checked)
                         }
                       />
                       Show synchronized video popup
@@ -546,22 +613,18 @@ function ResultContent({ recordId }: { recordId: string }) {
                             selectedVideoJobId ??
                             linkedVideoClips[0].job_id
                           }
-                          onSelectedJobIdChange={(jobId) => {
-                            setSelectedVideoJobId(jobId);
-                            setVideoSeekRequest(null);
-                          }}
+                          onSelectedJobIdChange={selectVideoClip}
                           selectedEegTime={selectedEegTime}
                           onEegTimeSelect={selectEegTime}
-                          onPlaybackEegTime={updateLegacyPlaybackTime}
                           playback={{
                             timeSeconds: selectedEegTime ?? 0,
                             isPlaying: playbackPlaying,
                             playbackRate,
                             requestId: playbackRequestId,
                           }}
-                          onPlaybackTimeChange={updatePlaybackTime}
                           onPlaybackStateChange={updatePlaybackState}
                           onPlaybackRateChange={setPlaybackRate}
+                          onBufferingChange={updateVideoBuffering}
                           recordingDurationSeconds={
                             result.recordingDurationSeconds
                           }

@@ -2,28 +2,39 @@
 
 import asyncio
 from datetime import timedelta, timezone
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import json
 import logging
 import math
 import os
 from pathlib import Path
 import secrets
+import shutil
 import tempfile
 import time
+import zlib
+from fractions import Fraction
 from uuid import UUID
 # The runtime passes fixed module arguments and server-generated paths only.
 import subprocess  # nosec B404
 import sys
 import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 
 from fastapi import UploadFile
-from sqlalchemy import inspect
-from sqlmodel import Session
+from sqlalchemy import inspect, update
+from sqlmodel import Session, select
 
 from backend.app.core.config import (
     STORAGE_KEY_ENV,
     CLINICAL_VIDEO_REVIEW_ENABLED,
     VIDEO_MAX_DURATION_SECONDS,
+    VIDEO_MAX_FPS,
+    VIDEO_MAX_FRAMES,
+    VIDEO_MAX_HEIGHT,
+    VIDEO_MAX_WIDTH,
+    VIDEO_MIN_FPS,
     VIDEO_PREFLIGHT_TIMEOUT_SECONDS,
     VIDEO_POSE_READINESS_TIMEOUT_SECONDS,
     VSVIG_ALLOW_LETTERBOX_ADAPTATION,
@@ -85,11 +96,13 @@ ERRORS = {
     "interrupted": "Processing was interrupted by a server restart. Submit the video again.",
     "invalid_blur_strength": "New video analyses require unblurred model input (0 percent blur).",
     "sync_metadata_invalid": "Video synchronization metadata is invalid.",
+    "playback_conversion_failed": "This video could not be prepared for browser playback. The encrypted original remains available for download.",
 }
 REVIEW_WARNINGS = {
     "source_frame_count_mismatch": "The source and review-copy reported frame counts differ. Playback uses the validated review-copy frame clock; EEG alignment uses the original clock anchors.",
 }
 LOGGER = logging.getLogger(__name__)
+_VIDEO_RESULT_MAX_BYTES = 128 * 1024 * 1024
 _BLURRED_REVIEW_METHODS = frozenset(
     {
         "legacy-face-blur",
@@ -97,10 +110,151 @@ _BLURRED_REVIEW_METHODS = frozenset(
         "tracked-face-blur-with-full-frame-fallback",
     }
 )
-# ponytail: one CPU video job at a time per backend process; use a durable worker
-# queue before running multiple backend workers or processing hospital batches.
+# Standalone VSViG inference remains serialized. VEEG playback has a separate
+# background prewarm lane and one owner-priority lane, bounded to two encoders.
 PROCESS_LOCK = threading.Lock()
 UPLOAD_LOCK = asyncio.Lock()
+REFERENCE_METADATA_LOCK = threading.Lock()
+# Reference uploads only persist ciphertext in the request. Container probing
+# and automatic playback preparation run outside FastAPI's response lifecycle
+# so a serial browser upload does not wait for whole-file decryption or encoding.
+# The database status is the durable queue: sweep() re-enqueues pending work
+# after process restarts, and the worker's conditional UPDATE claims each item
+# exactly once across concurrent submitters.
+REFERENCE_METADATA_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="veeg-metadata"
+)
+# One background worker prewarms clips after upload. A separate interactive
+# worker lets the clip currently opened by the owner start without waiting for
+# the rest of a long folder upload. At most two FFmpeg conversions run at once.
+REFERENCE_PLAYBACK_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="veeg-playback"
+)
+REFERENCE_PLAYBACK_PRIORITY_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="veeg-playback-priority"
+)
+REFERENCE_PLAYBACK_SCHEDULE_LOCK = threading.Lock()
+REFERENCE_PLAYBACK_FUTURES: dict[str, Future[None]] = {}
+REFERENCE_PLAYBACK_RUNNING: set[str] = set()
+
+
+def _video_result_associated_data(job: VideoDetectionJob) -> bytes:
+    """Bind encrypted model output to its database owner and job row."""
+
+    return f"MDS01-VIDEO-RESULT-v1:{job.owner_user_id}:{job.job_id}".encode("ascii")
+
+
+def encrypt_video_result(job: VideoDetectionJob, result: dict) -> tuple[bytes, bytes]:
+    """Encrypt one validated VSViG result for storage in PostgreSQL."""
+
+    plaintext = json.dumps(
+        result, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    if len(plaintext) > _VIDEO_RESULT_MAX_BYTES:
+        raise DetectionError("invalid_model_output")
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(read_base64_key(STORAGE_KEY_ENV)).encrypt(
+        nonce,
+        zlib.compress(plaintext),
+        _video_result_associated_data(job),
+    )
+    return nonce, ciphertext
+
+
+def read_encrypted_video_result(job: VideoDetectionJob) -> dict | None:
+    """Decrypt a current database result, or return None for legacy file-only rows."""
+
+    if job.result_nonce is None and job.result_ciphertext is None:
+        return None
+    if (
+        not isinstance(job.result_nonce, bytes)
+        or len(job.result_nonce) != 12
+        or not isinstance(job.result_ciphertext, bytes)
+        or not job.result_ciphertext
+    ):
+        raise DetectionError("invalid_model_output")
+    try:
+        compressed = AESGCM(read_base64_key(STORAGE_KEY_ENV)).decrypt(
+            job.result_nonce,
+            job.result_ciphertext,
+            _video_result_associated_data(job),
+        )
+        decompressor = zlib.decompressobj()
+        plaintext = decompressor.decompress(compressed, _VIDEO_RESULT_MAX_BYTES + 1)
+        if (
+            len(plaintext) > _VIDEO_RESULT_MAX_BYTES
+            or decompressor.unconsumed_tail
+            or not decompressor.eof
+            or decompressor.unused_data
+        ):
+            raise DetectionError("invalid_model_output")
+        plaintext += decompressor.flush()
+        if len(plaintext) > _VIDEO_RESULT_MAX_BYTES:
+            raise DetectionError("invalid_model_output")
+        result = json.loads(plaintext)
+    except (InvalidTag, ValueError, zlib.error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DetectionError("invalid_model_output") from exc
+    if not isinstance(result, dict):
+        raise DetectionError("invalid_model_output")
+    return result
+
+
+def enqueue_reference_metadata(job_id: str) -> None:
+    """Schedule metadata validation without holding the upload response open."""
+
+    try:
+        REFERENCE_METADATA_EXECUTOR.submit(process_reference_metadata, job_id)
+    except RuntimeError:
+        # Executor shutdown leaves the durable metadata_pending row for sweep().
+        LOGGER.warning("Reference metadata worker is shutting down; job remains pending.")
+
+
+def enqueue_reference_playback(job_id: str) -> None:
+    """Schedule protected playback preparation outside the request lifecycle."""
+
+    _schedule_reference_playback(job_id, prioritize=False)
+
+
+def prioritize_reference_playback(job_id: str) -> None:
+    """Move an owner-opened clip ahead of background prewarming when possible."""
+
+    _schedule_reference_playback(job_id, prioritize=True)
+
+
+def _run_scheduled_reference_playback(job_id: str) -> None:
+    with REFERENCE_PLAYBACK_SCHEDULE_LOCK:
+        REFERENCE_PLAYBACK_RUNNING.add(job_id)
+    try:
+        process_reference_playback(job_id)
+    finally:
+        with REFERENCE_PLAYBACK_SCHEDULE_LOCK:
+            REFERENCE_PLAYBACK_RUNNING.discard(job_id)
+            REFERENCE_PLAYBACK_FUTURES.pop(job_id, None)
+
+
+def _schedule_reference_playback(job_id: str, *, prioritize: bool) -> None:
+    """Deduplicate work and promote queued jobs without restarting active work."""
+
+    try:
+        with REFERENCE_PLAYBACK_SCHEDULE_LOCK:
+            future = REFERENCE_PLAYBACK_FUTURES.get(job_id)
+            if job_id in REFERENCE_PLAYBACK_RUNNING:
+                return
+            if future is not None and not future.done():
+                if not prioritize or not future.cancel():
+                    return
+            REFERENCE_PLAYBACK_FUTURES.pop(job_id, None)
+            executor = (
+                REFERENCE_PLAYBACK_PRIORITY_EXECUTOR
+                if prioritize
+                else REFERENCE_PLAYBACK_EXECUTOR
+            )
+            REFERENCE_PLAYBACK_FUTURES[job_id] = executor.submit(
+                _run_scheduled_reference_playback, job_id
+            )
+    except RuntimeError:
+        # A restart sweep returns interrupted processing to conversion_required.
+        LOGGER.warning("Reference playback worker is shutting down; job remains recoverable.")
 
 
 def expired(job) -> bool:
@@ -597,6 +751,10 @@ def expire_job(db, job, storage, *, force: bool = False):
         job.current_stage = "expired"
         if cleanup_succeeded:
             job.original_path = job.video_path = job.visualization_path = job.predictions_path = None
+            job.playback_path = None
+            job.result_nonce = job.result_ciphertext = None
+            if job.reference_only:
+                job.playback_status = "unavailable"
         db.add(job)
         db.commit()
     return job
@@ -620,7 +778,58 @@ def public_job(db, job, storage):
         and not stored_review.is_symlink()
     )
     review_allowed = clinical_review_video_allowed(job)
-    if job.status not in {"ready", "failed", "expired"}:
+    playback_status = job.playback_status if job.reference_only else "not_applicable"
+    expected_playback = storage.playback_path(job.job_id)
+    stored_playback = Path(job.playback_path) if job.playback_path else None
+    converted_playback_available = bool(
+        stored_playback == expected_playback
+        and stored_playback.is_file()
+        and not stored_playback.is_symlink()
+    )
+    # Migration 036 retains already-created reference copies in their original
+    # encrypted visualization location so existing cases remain playable.
+    legacy_reference_playback_available = bool(
+        job.reference_only
+        and playback_status == "ready"
+        and review_artifact_available
+        and stored_playback == expected_review
+    )
+    direct_playback_available = bool(
+        job.reference_only
+        and playback_status == "direct"
+        and source_available
+    )
+    if job.reference_only and playback_status == "direct" and not source_available:
+        playback_status = "unavailable"
+    elif (
+        job.reference_only
+        and playback_status == "ready"
+        and not converted_playback_available
+        and not legacy_reference_playback_available
+    ):
+        playback_status = "conversion_required" if source_available else "unavailable"
+    if job.reference_only:
+        video_available = bool(
+            review_allowed
+            and (
+                direct_playback_available
+                or (playback_status == "ready" and (converted_playback_available or legacy_reference_playback_available))
+            )
+        )
+        if not review_allowed:
+            video_access_status = "review_disabled"
+        elif video_available:
+            video_access_status = "available"
+        elif playback_status in {
+            "metadata_pending",
+            "metadata_checking",
+            "conversion_required",
+            "processing",
+        }:
+            video_access_status = "pending"
+        else:
+            video_access_status = "unavailable"
+    elif job.status not in {"ready", "failed", "expired"}:
         video_access_status = "pending"
     elif job.status == "expired" or not review_artifact_available:
         video_access_status = "unavailable"
@@ -628,6 +837,8 @@ def public_job(db, job, storage):
         video_access_status = "available"
     else:
         video_access_status = "review_disabled"
+    if not job.reference_only:
+        video_available = review_artifact_available and review_allowed
     sync = {
         "status": (
             "incomplete_folder"
@@ -641,6 +852,8 @@ def public_job(db, job, storage):
         "eeg_coverage_seconds": None,
         "mapped_segments": [],
     }
+
+
     if job.eeg_sync_status == "linked" and job.eeg_recording_db_id is not None:
         recording = db.get(EEGRecording, job.eeg_recording_db_id)
         session = db.get(EEGSession, recording.session_db_id) if recording else None
@@ -688,6 +901,7 @@ def public_job(db, job, storage):
         "status": job.status, "current_stage": job.current_stage,
         "review_privacy_method": job.review_privacy_method,
         "reference_only": job.reference_only,
+        "playback_status": playback_status,
         "retention_policy": "until-deletion" if job.retention_expires_at is None else "legacy-expiry",
         "source_available": source_available,
         "source_download_available": source_available and CLINICAL_VIDEO_REVIEW_ENABLED,
@@ -695,12 +909,119 @@ def public_job(db, job, storage):
         "duration_seconds": job.duration_seconds, "fps": job.fps,
         "blur_strength_percent": job.blur_strength_percent,
         "created_at": job.created_at, "retention_expires_at": job.retention_expires_at,
-        "video_available": review_artifact_available and review_allowed,
+        "video_available": video_available,
+        "playback_error": (
+            ERRORS.get(job.error_code)
+            if job.reference_only and playback_status in {"failed", "unavailable"}
+            else None
+        ),
         "error": ERRORS.get(job.error_code) if job.status != "ready" else None,
         "review_warning": REVIEW_WARNINGS.get(job.error_code) if job.reference_only else None,
         "research_only": True,
         "sync": sync,
     }
+
+
+def _probe_reference_video_path(source: Path) -> dict[str, object]:
+    """Read container/codec metadata only; never decode frames for VEEG upload."""
+
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        raise VideoProcessorError("Reference video metadata probe is unavailable.")
+    try:
+        inspected = subprocess.run(  # nosec B603
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=format_name,duration:format_tags=major_brand:stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,nb_frames,duration",
+                "-of",
+                "json",
+                str(source),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=min(VIDEO_PREFLIGHT_TIMEOUT_SECONDS, 30),
+            check=False,
+            env=video_worker_environment(),
+        )
+        if inspected.returncode != 0 or len(inspected.stdout) > 64 * 1024:
+            raise ValueError("invalid probe output")
+        payload = json.loads(inspected.stdout)
+        streams = payload.get("streams")
+        format_data = payload.get("format")
+        if (
+            not isinstance(streams, list)
+            or not all(isinstance(stream, dict) for stream in streams)
+            or not isinstance(format_data, dict)
+        ):
+            raise ValueError("invalid probe metadata")
+        video_streams = [
+            stream for stream in streams if stream.get("codec_type") == "video"
+        ]
+        audio_streams = [
+            stream for stream in streams if stream.get("codec_type") == "audio"
+        ]
+        if len(video_streams) != 1:
+            raise ValueError("unsupported video stream count")
+        video = video_streams[0]
+        fps_value = video.get("avg_frame_rate")
+        fps = float(Fraction(fps_value)) if isinstance(fps_value, str) else 0.0
+        width, height = int(video.get("width", 0)), int(video.get("height", 0))
+        frame_value = video.get("nb_frames")
+        frame_count = int(frame_value) if isinstance(frame_value, str) and frame_value.isdigit() else 0
+        duration_value = video.get("duration") or format_data.get("duration")
+        duration = float(duration_value) if duration_value is not None else 0.0
+        if frame_count <= 0 and duration > 0 and fps > 0:
+            inferred = duration * fps
+            if abs(inferred - round(inferred)) <= 0.02:
+                frame_count = round(inferred)
+        if (
+            not math.isfinite(fps)
+            or not VIDEO_MIN_FPS <= fps <= VIDEO_MAX_FPS
+            or width <= 0
+            or height <= 0
+            or width > VIDEO_MAX_WIDTH
+            or height > VIDEO_MAX_HEIGHT
+            or width * height > VIDEO_MAX_WIDTH * VIDEO_MAX_HEIGHT
+            or frame_count <= 0
+            or frame_count > VIDEO_MAX_FRAMES
+            or not math.isfinite(duration)
+            or duration <= 0
+            or frame_count / fps > VIDEO_MAX_DURATION_SECONDS
+        ):
+            raise ValueError("metadata is outside the bounded video contract")
+        # H.264/yuv420p in MP4 with no audio or one AAC track is broadly
+        # browser-playable. Preserve that original for direct owner playback;
+        # unusual audio/container combinations use the audio-free review copy.
+        format_names = set(str(format_data.get("format_name", "")).split(","))
+        browser_compatible = (
+            "mp4" in format_names
+            and video.get("codec_name") == "h264"
+            and video.get("pix_fmt") == "yuv420p"
+            and (
+                not audio_streams
+                or (
+                    len(audio_streams) == 1
+                    and audio_streams[0].get("codec_name") == "aac"
+                )
+            )
+        )
+        return {
+            "fps": fps,
+            "frame_count": frame_count,
+            "width": width,
+            "height": height,
+            "codec_name": video.get("codec_name"),
+            "pix_fmt": video.get("pix_fmt"),
+            "format_name": str(format_data.get("format_name", "")),
+            "has_audio": bool(audio_streams),
+            "browser_compatible": browser_compatible,
+        }
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, ZeroDivisionError, json.JSONDecodeError) as exc:
+        raise VideoProcessorError("Reference video metadata could not be validated.") from exc
 
 
 def clinical_review_video_allowed(job: VideoDetectionJob) -> bool:
@@ -790,21 +1111,24 @@ async def create_job(
     try:
         encrypted = await storage.save_upload(job.job_id, upload)
         job.original_path = str(encrypted)
+        if reference_only:
+            # A reference upload is acknowledged after encrypted retention. A
+            # background metadata pass determines the clock map and browser
+            # compatibility without delaying the next selected clip or running
+            # any pose/model work.
+            job.playback_status = "metadata_pending"
+            job.status = "ready"
+            job.current_stage = "reference-metadata"
+            job.review_privacy_method = "unblurred-owner-source"
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            return job
+
         try:
-            if reference_only:
-                def metadata_only():
-                    source = storage.materialize_original(job.job_id, encrypted)
-                    try:
-                        return VideoPrivacyProcessor.preflight(source)
-                    finally:
-                        storage.delete_work_file(source)
-                info = await asyncio.to_thread(metadata_only)
-            else:
-                info = await asyncio.to_thread(_preflight_uploaded_video, storage, job.job_id, encrypted)
+            info = await asyncio.to_thread(_preflight_uploaded_video, storage, job.job_id, encrypted)
         except VideoProcessorError:
-            return _record_admission_failure(
-                db, storage, job, "video_incompatible"
-            )
+            return _record_admission_failure(db, storage, job, "video_incompatible")
         admission = _video_admission(info)
         if not reference_only and not admission["accepted"]:
             metadata_admission = _video_metadata_admission(info)
@@ -865,19 +1189,25 @@ def process_job(_trigger_job_id: str):
         if expired(job):
             expire_job(db, job, storage)
             return
+        if job.reference_only:
+            # Older reference uploads may still be queued from before the
+            # independent playback-preparation path was introduced. Make them
+            # reviewable without routing them through the model worker.
+            job.status = "ready"
+            job.current_stage = "reference-available"
+            if job.playback_status == "not_applicable":
+                job.playback_status = (
+                    "ready" if job.playback_path or job.visualization_path else "conversion_required"
+                )
+            db.add(job)
+            db.commit()
+            return
         source: Path | None = None
         try:
             job.status, job.current_stage = "processing", "normalization"
             db.add(job)
             db.commit()
             source = storage.materialize_original(job_id, Path(job.original_path))
-            if job.reference_only:
-                if not _make_unblurred_review_copy(db, storage, job, source):
-                    raise DetectionError("visualization_failed")
-                job.status, job.current_stage = "ready", "reference-review-ready"
-                db.add(job)
-                db.commit()
-                return
             source_metadata = VideoPrivacyProcessor.preflight(source)
             source_width = int(source_metadata["width"])
             source_height = int(source_metadata["height"])
@@ -1026,7 +1356,8 @@ def process_job(_trigger_job_id: str):
             if expired(job):
                 expire_job(db, job, storage, force=True)
                 return
-            job.predictions_path = str(storage.store_artifact(job_id, output, "predictions.json"))
+            job.result_nonce, job.result_ciphertext = encrypt_video_result(job, result)
+            job.predictions_path = None
             job.review_privacy_method = visualization_meta["privacy_method"].removesuffix("-and-skeleton-overlay")
             job.visualization_path = str(
                 storage.store_artifact(job_id, visualization, "video.visualization.mp4")
@@ -1047,6 +1378,7 @@ def process_job(_trigger_job_id: str):
             job.status = "failed"
             job.current_stage = job.current_stage or "failed"
             job.error_code = "interrupted"
+            job.result_nonce = job.result_ciphertext = None
             if cleanup_succeeded:
                 if job.retention_expires_at is not None:
                     job.original_path = None
@@ -1054,6 +1386,8 @@ def process_job(_trigger_job_id: str):
             db.add(job)
             db.commit()
             raise
+
+
         except Exception as exc:
             LOGGER.warning(
                 "Video detection failed at stage=%s exception_type=%s",
@@ -1087,6 +1421,7 @@ def process_job(_trigger_job_id: str):
                 if job.retention_expires_at is not None:
                     job.original_path = None
                 job.video_path = job.predictions_path = None
+                job.result_nonce = job.result_ciphertext = None
                 if not review_available:
                     job.visualization_path = None
             job.status = "failed"
@@ -1097,6 +1432,223 @@ def process_job(_trigger_job_id: str):
         db.commit()
 
 
+def request_reference_playback(
+    db: Session, job_id: str, owner_user_id: int
+) -> tuple[VideoDetectionJob, bool]:
+    """Atomically claim one owner-requested reference conversion."""
+
+    result = db.exec(
+        update(VideoDetectionJob)
+        .where(
+            VideoDetectionJob.job_id == job_id,
+            VideoDetectionJob.owner_user_id == owner_user_id,
+            VideoDetectionJob.reference_only.is_(True),
+            VideoDetectionJob.playback_status.in_(("conversion_required", "failed")),
+        )
+        .values(
+            playback_status="processing",
+            playback_path=None,
+            current_stage="reference-playback",
+        )
+    )
+    claimed = result.rowcount == 1
+    db.commit()
+    job = repository.get_job(db, job_id, owner_user_id)
+    if job is None:
+        raise DetectionError("video_incompatible")
+    return job, claimed
+
+
+def process_reference_metadata(job_id: str) -> None:
+    """Probe a retained clip, refresh sync, and queue browser preparation if needed."""
+
+    with REFERENCE_METADATA_LOCK:
+        with Session(engine) as db:
+            claimed = db.exec(
+                update(VideoDetectionJob)
+                .where(
+                    VideoDetectionJob.job_id == job_id,
+                    VideoDetectionJob.reference_only.is_(True),
+                    VideoDetectionJob.playback_status == "metadata_pending",
+                )
+                .values(
+                    playback_status="metadata_checking",
+                    current_stage="reference-metadata",
+                )
+            )
+            if claimed.rowcount != 1:
+                db.rollback()
+                return
+            db.commit()
+            job = repository.get_job(db, job_id, None)
+            if job is None:
+                return
+            if not job.original_path:
+                job.playback_status = "unavailable"
+                job.current_stage = "reference-unavailable"
+                job.error_code = "video_incompatible"
+                db.add(job)
+                db.commit()
+                return
+            storage = VideoStorage()
+            source: Path | None = None
+            try:
+                with storage._storage.read_lease(job.job_id):
+                    source = storage.materialize_original(
+                        job.job_id, Path(job.original_path)
+                    )
+                    info = _probe_reference_video_path(source)
+                job.fps = float(info["fps"])
+                job.source_frame_count = int(info["frame_count"])
+                job.source_width = int(info["width"])
+                job.source_height = int(info["height"])
+                job.duration_seconds = job.source_frame_count / job.fps
+                job.playback_status = (
+                    "direct"
+                    if info.get("browser_compatible") is True
+                    else "conversion_required"
+                )
+                job.current_stage = "reference-available"
+                job.error_code = None
+            except Exception as exc:
+                job.playback_status = "unavailable"
+                job.current_stage = "reference-unavailable"
+                job.error_code = "video_incompatible"
+                LOGGER.warning(
+                    "Reference video metadata unavailable (exception_type=%s).",
+                    type(exc).__name__,
+                )
+            finally:
+                if source is not None:
+                    try:
+                        storage.delete_work_file(source)
+                    except Exception:
+                        LOGGER.warning("Reference video metadata cleanup is pending.")
+            db.add(job)
+            db.commit()
+            if job.case_id and job.source_group_id:
+                try:
+                    from backend.app.services.video_sync_service import resolve_case_video_sync
+
+                    resolve_case_video_sync(db, job.owner_user_id, job.case_id)
+                except Exception as exc:
+                    db.rollback()
+                    LOGGER.warning(
+                        "Reference video sync refresh failed (exception_type=%s).",
+                        type(exc).__name__,
+                    )
+            # Browser-incompatible VEEG clips are prepared immediately after
+            # encrypted upload so they are ready when clinical review begins.
+            # This is a format-only copy; the retained source remains encrypted
+            # and the reference path never enters pose extraction or VSViG.
+            refreshed = repository.get_job(db, job_id, None)
+            if (
+                refreshed is not None
+                and refreshed.reference_only
+                and refreshed.playback_status == "conversion_required"
+            ):
+                _, claimed = request_reference_playback(
+                    db, job_id, refreshed.owner_user_id
+                )
+                if claimed:
+                    enqueue_reference_playback(job_id)
+
+
+def process_reference_playback(job_id: str) -> None:
+    """Prepare one unsupported reference clip, without VSViG or OpenPose."""
+
+    with Session(engine) as db:
+        job = repository.get_job(db, job_id, None)
+        if (
+            job is None
+            or not job.reference_only
+            or job.playback_status != "processing"
+            or not job.original_path
+        ):
+            return
+        storage = VideoStorage()
+        source: Path | None = None
+        output: Path | None = None
+        encrypted_output: Path | None = None
+        try:
+            with storage._storage.read_lease(job.job_id):
+                source = storage.materialize_original(
+                    job.job_id, Path(job.original_path)
+                )
+                info = _probe_reference_video_path(source)
+                job.fps = float(info["fps"])
+                job.source_frame_count = int(info["frame_count"])
+                job.source_width = int(info["width"])
+                job.source_height = int(info["height"])
+                job.duration_seconds = job.source_frame_count / job.fps
+                output = storage.work_path(job.job_id, "reference-playback.mp4")
+                from backend.app.services.video_privacy_service import finalize_protected_video
+
+                copy_h264_video = (
+                    info.get("codec_name") == "h264"
+                    and info.get("pix_fmt") == "yuv420p"
+                )
+
+                def finalize_and_validate(*, copy_video: bool) -> int:
+                    finalize_protected_video(
+                        source,
+                        source,
+                        output,
+                        copy_h264_video=copy_video,
+                    )
+                    return validate_visualization_artifact(
+                        output,
+                        expected_fps=job.fps,
+                        expected_width=job.source_width,
+                        expected_height=job.source_height,
+                        expected_duration=job.duration_seconds,
+                        count_frames=False,
+                    )
+
+                if copy_h264_video:
+                    try:
+                        output_frames = finalize_and_validate(copy_video=True)
+                    except (VideoProcessorError, DetectionError):
+                        output_frames = finalize_and_validate(copy_video=False)
+                else:
+                    output_frames = finalize_and_validate(copy_video=False)
+                if abs(output_frames - job.source_frame_count) > 1:
+                    raise DetectionError("visualization_failed")
+                job.error_code = (
+                    "source_frame_count_mismatch"
+                    if output_frames != job.source_frame_count
+                    else None
+                )
+                encrypted_output = storage.store_artifact(
+                    job.job_id, output, "video.playback.mp4"
+                )
+                output = None  # store_artifact encrypts and removes plaintext.
+                job.playback_path = str(encrypted_output)
+                job.playback_status = "ready"
+                job.current_stage = "reference-playback-ready"
+                job.review_privacy_method = "unblurred-owner-source"
+                db.add(job)
+                db.commit()
+        except Exception as exc:
+            if output is not None:
+                storage.delete_work_file(output)
+            if encrypted_output is not None:
+                try:
+                    storage._storage.delete_retained_artifact(encrypted_output)
+                except Exception:
+                    LOGGER.warning("Unreferenced playback ciphertext cleanup is pending.")
+            job.playback_status = "failed"
+            job.current_stage = "reference-playback-failed"
+            job.error_code = "playback_conversion_failed"
+            db.add(job)
+            db.commit()
+            LOGGER.warning(
+                "Owner reference playback preparation failed (exception_type=%s).",
+                type(exc).__name__,
+            )
+        finally:
+            if source is not None:
+                storage.delete_work_file(source)
 def sweep(*, startup=False):
     """Remove expired ciphertext and safely retry old standalone preflight cleanup."""
 
@@ -1107,7 +1659,41 @@ def sweep(*, startup=False):
         LOGGER.warning("Stale video preflight cleanup unavailable; retrying next sweep.")
     if not inspect(engine).has_table(VideoDetectionJob.__tablename__):
         return
+    pending_metadata: list[str] = []
+    pending_playback: list[str] = []
     with Session(engine) as db:
+        if startup:
+            # BackgroundTasks are process-local. A conversion interrupted by a
+            # restart becomes requestable again; valid committed output survives.
+            for job in repository.list_all_jobs_for_cleanup(db):
+                if not job.reference_only:
+                    continue
+                if job.playback_status == "metadata_checking":
+                    job.playback_status = "metadata_pending"
+                    job.current_stage = "reference-metadata"
+                    db.add(job)
+                    continue
+                if job.playback_status != "processing":
+                    continue
+                expected_output = storage.playback_path(job.job_id)
+                if (
+                    job.playback_path == str(expected_output)
+                    and expected_output.is_file()
+                    and not expected_output.is_symlink()
+                ):
+                    job.playback_status = "ready"
+                    job.current_stage = "reference-playback-ready"
+                else:
+                    if expected_output.exists() and not expected_output.is_symlink():
+                        try:
+                            storage._storage.delete_retained_artifact(expected_output)
+                        except Exception:
+                            LOGGER.warning("Interrupted playback ciphertext cleanup is pending.")
+                    job.playback_status = "conversion_required"
+                    job.playback_path = None
+                    job.current_stage = "reference-available"
+                db.add(job)
+            db.commit()
         if not startup:
             for ready_job in repository.list_ready_jobs(db):
                 try:
@@ -1180,6 +1766,39 @@ def sweep(*, startup=False):
             if startup and job.status == "ready":
                 storage.cleanup(job.job_id, keep_retained=True, keep_original=job.retention_expires_at is None)
             expire_job(db, job, storage)
+        pending_metadata = [
+            job.job_id
+            for job in jobs
+            if job.reference_only and job.playback_status == "metadata_pending"
+        ]
+        pending_playback = [
+            job.job_id
+            for job in jobs
+            if job.reference_only and job.playback_status == "conversion_required"
+        ]
+        db.commit()
+    # Do not make the 30-second retention sweep perform media decryption. The
+    # persisted pending status lets the executor recover after restarts.
+    for job_id in pending_metadata:
+        enqueue_reference_metadata(job_id)
+    for job_id in pending_playback:
+        job, claimed = _claim_reference_playback_for_recovery(job_id)
+        if claimed and job is not None:
+            enqueue_reference_playback(job_id)
+
+
+def _claim_reference_playback_for_recovery(job_id: str) -> tuple[VideoDetectionJob | None, bool]:
+    """Claim a persisted VEEG conversion that was pending across a restart."""
+
+    with Session(engine) as db:
+        job = repository.get_job(db, job_id, None)
+        if job is None or not job.reference_only:
+            return None, False
+        try:
+            return request_reference_playback(db, job_id, job.owner_user_id)
+        except DetectionError:
+            # The owner may have deleted the case between listing and claiming.
+            return None, False
 
 
 async def retention_loop():

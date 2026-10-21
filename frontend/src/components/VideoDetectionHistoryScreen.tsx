@@ -26,6 +26,7 @@ export function VideoDetectionHistoryScreen() {
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
+  const analysisJobs = jobs.filter((job) => !job.reference_only);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -53,7 +54,7 @@ export function VideoDetectionHistoryScreen() {
           Video reviews
         </h1>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-muted">
-          Past uploads, model scores, and protected review videos.
+          Standalone VSViG analyses, model scores, and review outputs.
         </p>
         <ModalityWorkspaceTabs modality="video" active="reviews" />
       </header>
@@ -80,9 +81,9 @@ export function VideoDetectionHistoryScreen() {
         <section className="panel mt-6 p-6" aria-live="polite">
           <p className="text-sm text-ink-muted">Loading video reviews…</p>
         </section>
-      ) : jobs.length ? (
+      ) : analysisJobs.length ? (
         <ul className="mt-6 divide-y divide-rule overflow-hidden rounded-2xl border border-rule bg-surface">
-          {jobs.map((job) => (
+          {analysisJobs.map((job) => (
             <li key={job.job_id}>
               <Link
                 href={`/video-detection/${encodeURIComponent(job.job_id)}`}
@@ -118,11 +119,12 @@ export function VideoDetectionHistoryScreen() {
         <section className="panel mt-6 p-7 text-center">
           <Icon name="video" className="mx-auto size-8 text-teal-dark" />
           <h2 className="mt-3 text-lg font-semibold text-ink">
-            No video reviews yet
+            No VSViG analyses yet
           </h2>
           <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-ink-muted">
-            Upload a clip to see its score timeline and protected review video
-            here.
+            Upload a clip for standalone VSViG analysis to see its score
+            timeline and review output here. VEEG reference clips stay with
+            their EEG case and do not appear in this workspace.
           </p>
           <Button asChild className="mt-5">
             <Link href="/video-detection">Upload a video</Link>

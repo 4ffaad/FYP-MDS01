@@ -53,7 +53,7 @@ services:
       APP_ENV: ${APP_ENV:-development}
       AUTH_MODE: ${AUTH_MODE:-local-accounts}
       DEMO_ADMIN_ENABLED: ${DEMO_ADMIN_ENABLED:-false}
-      DEMO_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:-admin@mds01.local}
+      DEMO_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:-admin@mds01.com}
       DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-}
       MODEL_RUNTIME: ${MODEL_RUNTIME:-stub}
       H5_MODEL_PATH: ${H5_MODEL_PATH:-/opt/eeg-model/best_seizure_model.h5}

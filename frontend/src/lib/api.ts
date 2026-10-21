@@ -20,12 +20,7 @@ import type {
   ResearchAttribution,
   SignalPreview,
   UploadDraft,
-  VideoPrivacyJob,
-  VideoPrivacyPoseEvidence,
-  VideoPrivacyProfile,
-  VideoPrivacyStage,
 } from "./types";
-import { prepareVideoUploadFile } from "./safe-upload";
 
 function defaultApiBaseUrl(): string {
   if (process.env.NODE_ENV === "production") {
@@ -50,12 +45,8 @@ export const API_STUB_ENABLED = USE_STUB;
 export const AUTH_MODE = process.env.NEXT_PUBLIC_AUTH_MODE ?? "backend";
 export const ENABLE_SIGNAL_PREVIEW =
   process.env.NEXT_PUBLIC_ENABLE_SIGNAL_PREVIEW !== "false";
-export const ENABLE_FULL_SIGNAL_PREVIEW =
-  ENABLE_SIGNAL_PREVIEW &&
-  process.env.NEXT_PUBLIC_ENABLE_FULL_SIGNAL_PREVIEW !== "false";
 const JOBS_KEY = "mds01.jobs.v1";
 const DRAFTS_KEY = "mds01.upload-drafts.v1";
-const VIDEO_JOBS_KEY = "mds01.video-privacy.v1";
 /** Exact channel order required by the backend model contract. */
 export const PRIVACY_SIGNAL_CHANNELS = [
   "FP1-F7",
@@ -172,8 +163,6 @@ type StubJob = {
 
 type StubDraft = UploadDraft & { fileSize: number };
 
-type StubVideoJob = { job: VideoPrivacyJob; submittedAt: string };
-
 type BackendAuthResponse = {
   authenticated: boolean;
   mode: string;
@@ -239,192 +228,6 @@ export async function loginAccount(
 export async function logoutAccount(): Promise<void> {
   if (AUTH_MODE === "stub") return;
   await requestWithoutBody("/api/auth/logout", "POST", undefined, false);
-}
-
-type BackendVideoJob = {
-  job_id: string;
-  case_id: string | null;
-  label: string;
-  profile: VideoPrivacyProfile;
-  profile_label: string;
-  profile_description: string;
-  status: VideoPrivacyJob["status"];
-  current_stage: string | null;
-  stages: VideoPrivacyStage[];
-  quality_flags: string[];
-  output_usable: boolean;
-  requires_acknowledgement: boolean;
-  acknowledged: boolean;
-  preview_available: boolean;
-  preview_url: string | null;
-  download_available: boolean;
-  download_url: string | null;
-  retention_expires_at: string | null;
-  duration_seconds: number | null;
-  fps: number | null;
-  width: number | null;
-  height: number | null;
-  pose_evidence: {
-    model: "Lightweight OpenPose";
-    detected_frames: number;
-    sampled_frames: number;
-    tracking_stopped: boolean;
-    status: VideoPrivacyPoseEvidence["status"];
-    action_units: "not-configured";
-  } | null;
-  created_at: string;
-  completed_at: string | null;
-  error: string | null;
-  research_only: boolean;
-  anonymity_not_guaranteed: boolean;
-};
-
-function readStubVideoJobs(): StubVideoJob[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(VIDEO_JOBS_KEY);
-    return raw ? (JSON.parse(raw) as StubVideoJob[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeStubVideoJobs(jobs: StubVideoJob[]): void {
-  window.localStorage.setItem(VIDEO_JOBS_KEY, JSON.stringify(jobs));
-}
-
-function videoJobFromBackend(job: BackendVideoJob): VideoPrivacyJob {
-  return {
-    jobId: job.job_id,
-    caseId: job.case_id,
-    label: job.label,
-    profile: job.profile,
-    profileLabel: job.profile_label,
-    profileDescription: job.profile_description,
-    status: job.status,
-    currentStage: job.current_stage,
-    stages: job.stages,
-    qualityFlags: job.quality_flags,
-    outputUsable: job.output_usable,
-    requiresAcknowledgement: job.requires_acknowledgement,
-    acknowledged: job.acknowledged,
-    previewAvailable: job.preview_available,
-    previewUrl: job.preview_url ? `${API_BASE_URL}${job.preview_url}` : null,
-    downloadAvailable: job.download_available,
-    downloadUrl: job.download_url ? `${API_BASE_URL}${job.download_url}` : null,
-    retentionExpiresAt: job.retention_expires_at,
-    durationSeconds: job.duration_seconds,
-    fps: job.fps,
-    width: job.width,
-    height: job.height,
-    poseEvidence: job.pose_evidence
-      ? {
-          model: job.pose_evidence.model,
-          detectedFrames: job.pose_evidence.detected_frames,
-          sampledFrames: job.pose_evidence.sampled_frames,
-          trackingStopped: job.pose_evidence.tracking_stopped,
-          status: job.pose_evidence.status,
-          actionUnits: job.pose_evidence.action_units,
-        }
-      : null,
-    createdAt: job.created_at,
-    completedAt: job.completed_at,
-    error: job.error,
-    researchOnly: job.research_only,
-    anonymityNotGuaranteed: job.anonymity_not_guaranteed,
-  };
-}
-
-function advanceStubVideoJob(stored: StubVideoJob): StubVideoJob {
-  const elapsed = Date.now() - new Date(stored.submittedAt).getTime();
-  const job = stored.job;
-  if (job.status === "failed" || job.status === "expired") return stored;
-  if (elapsed >= 2600) {
-    const ready = {
-      ...job,
-      status: "ready" as const,
-      currentStage: "cleanup",
-      stages: job.stages.map((stage) => ({
-        ...stage,
-        status: "complete" as const,
-      })),
-      previewAvailable: true,
-      downloadAvailable: true,
-      downloadUrl: "data:video/mp4;base64,c3R1Yg==",
-      completedAt: job.completedAt ?? new Date().toISOString(),
-    };
-    return { ...stored, job: ready };
-  }
-  if (elapsed >= 900) {
-    const processing = {
-      ...job,
-      status: "processing" as const,
-      currentStage: "privacy-transform",
-      stages: job.stages.map((stage, index) => ({
-        ...stage,
-        status:
-          index === 0
-            ? ("complete" as const)
-            : index === 1
-              ? ("active" as const)
-              : ("pending" as const),
-      })),
-    };
-    return { ...stored, job: processing };
-  }
-  return stored;
-}
-
-function stubVideoJob(profile: VideoPrivacyProfile): VideoPrivacyJob {
-  const now = new Date().toISOString();
-  return {
-    jobId: `VID-${Date.now().toString(36).toUpperCase()}`,
-    caseId: null,
-    label: "Video upload 01",
-    profile,
-    profileLabel:
-      profile === "face-redacted-pose-preview"
-        ? "Face blur + body-keypoint preview"
-        : profile === "face-redacted"
-          ? "Face blur with full-frame fallback"
-          : "Legacy pose-only",
-    profileDescription:
-      profile === "face-redacted-pose-preview"
-        ? "This preview-only utility blurs the face before OpenPose and produces no VSViG score. If face detection is uncertain, it blurs the full frame."
-        : "A detected face is blurred. If detection is missing or ambiguous, the full frame is blurred.",
-    status: "queued",
-    currentStage: "preflight",
-    stages: [
-      "preflight",
-      "privacy-transform",
-      "output-validation",
-      "cleanup",
-    ].map((id) => ({
-      id: id as VideoPrivacyStage["id"],
-      status: "pending" as const,
-    })),
-    qualityFlags: [],
-    outputUsable: true,
-    requiresAcknowledgement: false,
-    acknowledged: false,
-    previewAvailable: false,
-    previewUrl: null,
-    downloadAvailable: false,
-    downloadUrl: null,
-    retentionExpiresAt: new Date(
-      Date.now() + 24 * 60 * 60 * 1000,
-    ).toISOString(),
-    durationSeconds: 42,
-    fps: 30,
-    width: 1280,
-    height: 720,
-    poseEvidence: null,
-    createdAt: now,
-    completedAt: null,
-    error: null,
-    researchOnly: true,
-    anonymityNotGuaranteed: true,
-  };
 }
 
 function readStubJobs(): StubJob[] {
@@ -1254,130 +1057,6 @@ export async function deletePatientProfile(caseId: string): Promise<void> {
   );
 }
 
-/** Return the backend asset URL for a protected video response. */
-export function videoPrivacyAssetUrl(path: string | null): string | null {
-  return path
-    ? path.startsWith("http")
-      ? path
-      : `${API_BASE_URL}${path}`
-    : null;
-}
-
-/** Create one standalone video privacy job. */
-export async function submitVideoPrivacy(
-  file: File,
-  onProgress: (progress: number) => void,
-  signal?: AbortSignal,
-  options: {
-    profile?: VideoPrivacyProfile;
-    caseId?: string;
-    idempotencyKey?: string;
-  } = {},
-): Promise<VideoPrivacyJob> {
-  if (USE_STUB) {
-    for (const progress of [22, 56, 100]) {
-      await wait(120);
-      if (signal?.aborted)
-        throw new DOMException("Upload aborted.", "AbortError");
-      onProgress(progress);
-    }
-    const job = stubVideoJob(options.profile ?? "face-redacted");
-    writeStubVideoJobs([
-      { job, submittedAt: job.createdAt },
-      ...readStubVideoJobs(),
-    ]);
-    return job;
-  }
-  const safeName = prepareVideoUploadFile(file);
-  const extension = safeName.name.split(".").pop() ?? "";
-  const response = await uploadBinary<{ job: BackendVideoJob }>(
-    "/api/video-privacy/jobs",
-    safeName,
-    onProgress,
-    signal,
-    {
-      "X-Video-Format": extension,
-      "X-Video-Profile": options.profile ?? "face-redacted",
-      ...(options.caseId ? { "X-Case-ID": options.caseId } : {}),
-      ...(options.idempotencyKey
-        ? { "Idempotency-Key": options.idempotencyKey }
-        : {}),
-    },
-  );
-  return videoJobFromBackend(response.job);
-}
-
-/** List privacy previews attached to one owner-scoped case. */
-export async function getVideoPrivacyJobs(
-  caseId: string,
-  signal?: AbortSignal,
-): Promise<VideoPrivacyJob[]> {
-  if (USE_STUB) {
-    const jobs = readStubVideoJobs().map(advanceStubVideoJob);
-    writeStubVideoJobs(jobs);
-    return jobs.map((item) => item.job).filter((job) => job.caseId === caseId);
-  }
-  const response = await getJson<{ jobs: BackendVideoJob[] }>(
-    `/api/video-privacy/jobs?case_id=${encodeURIComponent(caseId)}`,
-    signal,
-  );
-  return response.jobs.map(videoJobFromBackend);
-}
-
-/** Read one video privacy job and advance the local stub when enabled. */
-export async function getVideoPrivacyJob(
-  jobId: string,
-  signal?: AbortSignal,
-): Promise<VideoPrivacyJob> {
-  if (USE_STUB) {
-    await wait(120);
-    if (signal?.aborted)
-      throw new DOMException("Request aborted.", "AbortError");
-    const jobs = readStubVideoJobs().map(advanceStubVideoJob);
-    writeStubVideoJobs(jobs);
-    const match = jobs.find((item) => item.job.jobId === jobId)?.job;
-    if (!match)
-      throw new ApiError("This video privacy job could not be found.", 404);
-    return match;
-  }
-  const response = await getJson<{ job: BackendVideoJob }>(
-    `/api/video-privacy/jobs/${encodeURIComponent(jobId)}`,
-    signal,
-  );
-  return videoJobFromBackend(response.job);
-}
-
-/** Acknowledge a usable quality caveat before downloading the output. */
-export async function acknowledgeVideoPrivacyJob(
-  jobId: string,
-  signal?: AbortSignal,
-): Promise<VideoPrivacyJob> {
-  if (USE_STUB) {
-    const jobs = readStubVideoJobs();
-    const match = jobs.find((item) => item.job.jobId === jobId);
-    if (!match)
-      throw new ApiError("This video privacy job could not be found.", 404);
-    if (match.job.status !== "needs_review" || !match.job.outputUsable)
-      throw new ApiError("This output does not require acknowledgement.", 409);
-    const job = {
-      ...match.job,
-      acknowledged: true,
-      requiresAcknowledgement: false,
-      downloadAvailable: true,
-    };
-    writeStubVideoJobs(
-      jobs.map((item) => (item.job.jobId === jobId ? { ...item, job } : item)),
-    );
-    return job;
-  }
-  const response = await postFormJson<{ job: BackendVideoJob }>(
-    `/api/video-privacy/jobs/${encodeURIComponent(jobId)}/acknowledge`,
-    new FormData(),
-    signal,
-  );
-  return videoJobFromBackend(response.job);
-}
-
 export async function getSession(
   sessionId: string,
   signal?: AbortSignal,
@@ -1475,31 +1154,6 @@ export async function stageUpload(
   };
 }
 
-export async function getUploadDraft(
-  draftId: string,
-  signal?: AbortSignal,
-): Promise<UploadDraft> {
-  if (USE_STUB) {
-    await wait(100);
-    const draft = readStubDrafts().find((item) => item.draftId === draftId);
-    if (!draft || new Date(draft.expiresAt).getTime() <= Date.now())
-      throw new ApiError("This upload draft has expired.", 404);
-    return draft;
-  }
-  const response = await getJson<{
-    draft_id: string;
-    status: "staged";
-    created_at: string;
-    expires_at: string;
-  }>(`/api/uploads/drafts/${encodeURIComponent(draftId)}`, signal);
-  return {
-    draftId: response.draft_id,
-    status: response.status,
-    createdAt: response.created_at,
-    expiresAt: response.expires_at,
-  };
-}
-
 export async function finalizeUploadDraft(
   draftId: string,
   privacySelection: string | string[],
@@ -1562,17 +1216,6 @@ export async function deleteUploadDraft(
     "DELETE",
     signal,
   );
-}
-
-/** Backwards-compatible one-call upload for existing callers. */
-export async function submitAnalysis(
-  file: File,
-  privacyMethodId: string | string[],
-  onProgress: (progress: number) => void,
-  signal?: AbortSignal,
-): Promise<{ sessionId: string }> {
-  const draft = await stageUpload(file, onProgress, signal);
-  return finalizeUploadDraft(draft.draftId, privacyMethodId, undefined, signal);
 }
 
 export async function getResult(
@@ -1869,20 +1512,6 @@ export async function getJson<T>(
   return (await response.json()) as T;
 }
 
-export async function getBlob(
-  path: string,
-  signal?: AbortSignal,
-): Promise<Blob> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    signal,
-    headers: { Accept: "video/mp4" },
-    credentials: REQUEST_CREDENTIALS,
-    cache: "no-store",
-  });
-  if (!response.ok) throw await readError(response);
-  return response.blob();
-}
-
 async function requestWithoutBody(
   path: string,
   method: string,
@@ -2011,15 +1640,6 @@ function uploadErrorMessage(
   if (status >= 500)
     return "The service could not complete this upload. Check local service health and retry.";
   return `Upload failed with status ${status}.`;
-}
-
-export function uploadJson<T>(
-  path: string,
-  body: FormData,
-  onProgress: (progress: number) => void,
-  signal?: AbortSignal,
-): Promise<T> {
-  return uploadRequest(path, body, onProgress, signal);
 }
 
 export function uploadBinary<T>(

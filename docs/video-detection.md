@@ -6,43 +6,73 @@ For the basic explanation, see [inference walkthrough](inference-walkthrough.md)
 
 ## How it works
 
-In a combined VEEG case, every uploaded video is retained encrypted with the
-source archive. Generated local setup sets
-`MDS01_CLINICAL_VIDEO_REVIEW_ENABLED=true`, so the owner can open unblurred,
-audio-free reference playback. A backend with no explicit value defaults to
-`false`; that setting controls access only and does not invoke OpenPose or
-VSViG. The reference copy is created independently of pose readiness, model
-assets, and VSViG admission. The separate **Video** workflow submits a clip
-for VSViG analysis independently of clinical reference playback.
+In a combined VEEG case, each uploaded video is encrypted and retained with the
+case. Generated local setup sets `MDS01_CLINICAL_VIDEO_REVIEW_ENABLED=true`,
+so the owner can open unblurred reference playback. A backend with no explicit
+value defaults to `false`; that setting controls access only. The upload
+request encrypts and saves the original, then returns without decrypting it,
+probing metadata, converting it, or invoking OpenPose/VSViG. A restart-safe
+background worker later decrypts to a private temporary file to check duration,
+frame count/rate, dimensions, container, codec, and audio presence; it deletes
+that plaintext and refreshes synchronization matching. `metadata_pending` and
+`metadata_checking` describe that separate work. The separate **Video**
+workflow submits a clip for VSViG analysis independently of clinical reference
+playback.
 
-Reference preparation is a separate serialized media task: it removes audio,
-converts sources that need it to browser-playable H.264, validates the
-encrypted review copy, and retains the encrypted original. It never runs pose
-readiness or VSViG. The worker validates the review copy's indexed frame count
-and stream metadata against the source container estimate, avoiding a second
-full decode solely to count frames after FFmpeg has completed the conversion.
-Non-browser-playable formats such as AVI still require a full conversion
-before they can play in the browser.
+Browser-compatible H.264/yuv420p MP4 originals with no audio or one AAC track
+play from authenticated, owner-checked byte ranges over the encrypted original.
+New media is encrypted as independently authenticated AES-256-GCM chunks, so a
+range request decrypts only the chunks covering those bytes. Responses are
+private/no-store and recheck ownership on every request. After encrypted upload,
+the background metadata worker checks clock and browser compatibility. If a
+clip is unsupported, it automatically queues an audio-free H.264 review copy
+and encrypts that copy while retaining the original. An H.264/yuv420p source
+that only needs a container or audio change is remuxed without re-encoding;
+other codecs require a full conversion. This work is format preparation only:
+it never runs pose readiness or VSViG. One background worker prewarms clips
+after upload; opening a clip promotes it ahead of queued background work, with
+one additional bounded worker for the selected clip. The popup polls status and
+becomes playable as soon as preparation completes. The owner-protected
+preparation endpoint remains available for retry/recovery. The
+job exposes `metadata_pending`, `metadata_checking`, `direct`,
+`conversion_required`, `processing`, `ready`, `failed`, or `unavailable`
+playback state separately from the standalone model job status. A repeated
+request reuses the running or completed conversion. Historical monolithic
+encrypted videos use a private plaintext cache as a compatibility fallback;
+idle cleanup removes it after ten minutes.
 
 ```text
-combined video → encrypted original → metadata-only sync metadata
-    → owner review access → unblurred audio-free H.264 → encrypted
+combined video → encrypt and retain original → upload acknowledged
+    → metadata/sync probe → direct range stream OR background H.264 copy → encrypt
+    → owner opens popup → authenticated range stream
 standalone analysis → encrypted original → OpenPose readiness → queue → normalization
   → OpenPose keypoints + 15 RGB patches → VSViG window scores
   → unblurred audio-free H.264 review copy
 ```
 
-Audio is not model input and is not kept in the review video. The encrypted
-original, review copy, and predictions are encrypted in private file storage
-outside PostgreSQL and retained until explicit case deletion. New standalone
-jobs have no expiry. Migration `035_video_until_deletion` removes deadlines
+For new standalone jobs, the encrypted database result replaces a second
+prediction-file artifact. `predictions_path` remains for backward-compatible
+reads of older jobs.
+
+Audio is not model input and is not kept in the review video. Encrypted
+original and review-video binaries stay in private file storage outside
+PostgreSQL and remain until case deletion. New standalone jobs have no expiry.
+Migration `035_video_until_deletion` removes deadlines
 from existing jobs that have not already expired; it does not restore files
 removed by an earlier expiry. In the local demo, original download and
 unblurred streaming are enabled for the signed-in owner. A reference-only job
 always skips pose and VSViG inference. Standalone video analysis retains its
 encrypted original, unblurred review copy, and research results until case
-deletion. VSViG receives pose coordinates and unblurred 32×32 RGB patches; it never
-receives a full video frame. Keypoints, extracted patches, and normalized
+deletion. New VSViG result payloads, including window scores and Grad-CAM
+evidence, are compressed and AES-256-GCM encrypted in PostgreSQL. Their nonce
+and ciphertext are bound to the owner and job ID. The owner-protected result
+route decrypts them for the response; older jobs with an encrypted predictions
+file remain readable. Case deletion removes the result fields with the job row
+and removes retained files. The ten-minute idle timeout applies only to a
+temporary plaintext cache for historical video formats; it does not expire
+the retained video or its VSViG result. VSViG receives pose coordinates and
+unblurred 32×32 RGB patches; it never receives a full video frame. Keypoints,
+extracted patches, and normalized
 frames are temporary. EEG and video
 jobs run independently. The combined view links them only when the uploaded
 clip group, VEEG clock anchors, frame counts, and frame rate produce a unique
@@ -77,15 +107,16 @@ and `eeg_coverage_seconds` reports only the part of video time that overlaps
 recorded EEG. Video before the first or after the last EEG source segment is
 omitted from the aligned timeline.
 
-EEG navigation and the video element use one owner-controlled playback state
-for source time, play/pause, rate, and explicit seek requests. Video position
-updates the shared EEG time; the current clip auto-switches at verified
-half-open mapping boundaries. During a video gap, video pauses and shows an
-unavailable state while the EEG timeline may continue. Starting, seeking, and
-crossing EEG pages do not create a second independent playback clock. Selecting
-a model flag or source annotation seeks the same shared time when video
-coverage is available. These links align review; they do not make source
-markers ground truth or combine EEG and VSViG scores.
+EEG source time is the authoritative playback clock for time, play/pause,
+rate, and explicit seek requests. Video follows that clock through validated
+clip mappings; routine video `timeupdate` events never reset EEG time. A manual
+seek in the video controls maps back to EEG time. The popup is opt-in and
+seeking EEG never opens it. When it is open, the shared clock holds while the
+mapped video buffers, and the selected clip changes at verified half-open
+mapping boundaries. During a genuine video or EEG acquisition gap, video
+pauses and the UI reports that no synchronized frame is available; EEG source
+time and waveform gaps remain intact. These links align review; they do not
+make source markers ground truth or combine EEG and VSViG scores.
 
 Safe sync diagnostics include `incomplete_folder`, `missing_reference`,
 `clock_mismatch`, `frame_mismatch`, `ambiguous`, and `unmatched`. They identify
@@ -203,20 +234,48 @@ absent in 22 of 30 sampled frames, chiefly knees and ankles, so no VSViG score
 was produced. Adaptation is now disabled by default. A separate two-person test
 detected two tracks, but neither had a complete supported window. The tracker
 keeps tracks separate and does not choose the patient. These are bounded
-observations, not results for every HUKM clip. The earlier reported 26-video
-set and its 17/9 match count were not reproduced in this verification; the
-exact supplied selection remains unverified.
+observations, not results for every HUKM clip.
 
-The local HUKM VEEG case was then verified separately for clinical playback:
-all 10 uploaded clips reached `ready`, had a unique EEG mapping, and returned
-owner-protected encrypted original and review artifacts with no expiry. A real
-browser opened a mapped clip; its protected media request returned HTTP 206 for
-a byte range, and EEG play/pause advanced the shared source clock with the
-video. None of these reference-only jobs had VSViG predictions. One source
-advertised 330 frames but yielded 329 decodable frames. Review-copy validation
-now uses the decodable count, preserves those frames, and exposes a warning;
-the EEG mapping continues to use the original clock anchors. The exact 26-clip
-selection remains unverified.
+For playback validation, metadata probing found 27 local AVI clips, all
+MPEG-4 at 640×480 and approximately 25 fps; their durations ranged from about
+11 seconds to 15 minutes. None qualifies for direct browser playback. In the
+current Docker prototype, a 899.9-second MPEG-4 AVI took about 33 seconds from
+the first preparation request until status polling ended. Its H.264 copy was
+151.9 MB from a 97.4 MB encrypted source. Each full conversion still takes
+time, but an opened clip is promoted ahead of background prewarming and can run
+in the separate priority lane; no browser-side request can cancel an active
+encode. The frontend avoids queueing clips that are left during rapid
+selection. A
+13.19-second damaged AVI reproduced the decoder warning `Error at MB: 359` and
+produced 329 output frames from 330 indexed source frames. Playback now accepts
+at most a one-frame difference when the output duration and other media checks
+still pass, and exposes the discrepancy as a review warning. Larger differences
+remain unavailable. Timings are local-runtime observations, not performance
+guarantees; they exclude browser decode and network transfer.
+
+A separate set of 806 demonstration MP4s had H.264 1920×1080 video streams
+with audio. A sample AAC track qualified for direct playback. These demo files
+were not used to infer any EEG/video synchronization. An offline diagnostic of
+the supplied AVI files and four Nicolet `.e` files found possible unique
+metadata candidates for 5 clips, multiple recording candidates for 19, and no
+candidate for 3 before upload-group finalization. This is not a completed
+owner-case match; no ambiguous clip was forced into sync.
+
+The browser synchronization test remains fixture-backed: it verifies popup
+opt-in, status polling and retry/recovery for a conversion-required clip,
+EEG-led seek/play/pause, buffering holds, clip mapping boundaries, and the
+internal source-clock gap. It does not prove clock accuracy for a completed
+real HUKM case. Backend tests verify automatic queueing after metadata probing,
+direct MP4 range streaming, AVI conversion,
+conversion reuse, cross-owner denial, encrypted retention, cache cleanup, and
+case deletion. Reference-only jobs do not run VSViG.
+
+This playback change does not optimize EEG waveform page retrieval. The source
+signal endpoint still materializes and decrypts the retained source before
+reading each requested interval, then removes its plaintext. That can add
+latency when navigating long recordings; improving it needs an encrypted
+random-access waveform representation or equivalent approach that preserves
+the plaintext-cleanup boundary.
 
 ## Review output and failures
 
@@ -241,10 +300,13 @@ setup enables original download, unblurred range streaming, and reference-only
 intake for the signed-in owner; a backend with no explicit value keeps the
 access switch off. New jobs retain encrypted media and results until case deletion. The
 browser offers slow motion, frame stepping, timestamped bookmarks, and
-source-clock alignment when the VEEG metadata has one unique match. Unmatched
-clips remain selectable and playable with their alignment status shown. The
-short-lived private range cache expires after ten idle minutes. Historical
-face-blurred videos and their labels remain unchanged. The separate
+source-clock alignment when the VEEG metadata has one unique match. Upload
+acknowledgement does not wait for background probing; the review page refreshes
+pending metadata and sync state. Unmatched clips remain selectable and playable
+with their alignment status shown. New chunk-encrypted uploads do not create a
+whole-file plaintext cache for streaming; the ten-minute private cache remains
+only as a compatibility path for historical monolithic encrypted videos.
+Historical face-blurred videos and their labels remain unchanged. The separate
 `/api/video-privacy/` utility keeps its own documented face-local/full-frame
 fallback policy and does not run VSViG.
 

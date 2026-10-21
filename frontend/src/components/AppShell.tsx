@@ -20,8 +20,12 @@ function WorkspaceNavigation({ onNavigate }: { onNavigate?: () => void }) {
           Workspace
         </p>
         <NavLink href="/dashboard" onNavigate={onNavigate}>
+          <Icon name="list" className="size-5" />
+          Dashboard
+        </NavLink>
+        <NavLink href="/cases" onNavigate={onNavigate}>
           <Icon name="activity" className="size-5" />
-          Patient cases
+          Cases
         </NavLink>
         <NavLink href="/upload" exact onNavigate={onNavigate}>
           <Icon name="upload" className="size-5" />

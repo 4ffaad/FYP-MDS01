@@ -89,13 +89,21 @@ them in Git or the Docker image. See [setup](setup.md) for the runtime choice.
 
 ## Storage, ownership, and cleanup
 
-PostgreSQL stores accounts, job/session state, safe metadata, and predictions.
-Encrypted EEG/video bytes remain in private filesystem-backed storage. Do not
+PostgreSQL stores accounts, job/session state, safe metadata, EEG score rows,
+and the standalone VSViG result payload. New VSViG result payloads, including
+Grad-CAM evidence, are AES-GCM encrypted in PostgreSQL and bound to the owner
+and job identifier. Legacy file-only results remain readable. Encrypted
+EEG/video bytes remain in private filesystem-backed storage. Do not
 store patient binaries in PostgreSQL or expose private paths in API responses.
 Patient profiles, source reports, EEG archives, original recordings, and video
 review copies are encrypted and owner-scoped until case deletion. Combined
-video intake can create an unblurred, audio-free browser review copy
-independently of pose/VSViG admission when
+video upload encrypts the original and acknowledges it without probing,
+conversion, or pose/VSViG work. A restart-recoverable worker checks bounded
+metadata after acknowledgement. New VEEG media uses independently authenticated
+AES-256-GCM chunks, allowing the owner-authorized range route to decrypt only
+requested bytes. Compatible H.264 MP4 with optional AAC audio streams directly;
+unsupported formats get an unblurred, audio-free browser
+review copy on demand when
 `MDS01_CLINICAL_VIDEO_REVIEW_ENABLED=true`. The backend fallback is false
 when no value is set; generated local setup enables it. When disabled it
 blocks reference-only intake, unblurred playback, and original-video download;
@@ -155,6 +163,22 @@ Use Swagger for the current complete route schemas. Main route groups:
 - /api/cases/ — owner-scoped cases and reviewed profiles;
 - /api/video-detection/ — separate VSViG jobs and review playback;
 - /api/video-privacy/ — separate protected-video transform.
+
+Combined VEEG upload encrypts the source and returns before metadata probing,
+video conversion, or inference. A durable `metadata_pending` row is claimed by
+the background worker; startup and retention sweeps re-enqueue pending checks.
+The worker removes its private temporary plaintext after probing, refreshes the
+encrypted sync mapping, and automatically queues a browser-format copy when
+needed. This is format conversion only and never runs OpenPose or VSViG. `POST
+/api/video-detection/jobs/{job_id}/playback` is owner-scoped and idempotent; it
+promotes the opened clip ahead of queued background conversions and returns
+its `processing` state immediately. One background conversion and one
+owner-priority conversion may run concurrently. `GET
+/api/video-detection/jobs/{job_id}/playback` serves a protected byte-range
+stream from either a browser-compatible original or its encrypted review copy.
+Each new media chunk is authenticated before it is sent. Old monolithic
+encrypted artifacts use a private, idle-cleaned playback cache as a compatibility
+fallback. Conversion state is exposed separately from the VSViG job state.
 
 `DELETE /api/cases/{case_id}` removes the owner's linked EEG and video jobs,
 encrypted retained media, patient profile, and source report. It returns `409`

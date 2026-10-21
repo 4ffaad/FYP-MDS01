@@ -251,18 +251,27 @@ export function VideoUploadStatus({
 
 export function VideoProcessingStatus({ job }: { job: DetectionJob }) {
   if (job.reference_only) {
-    const complete = job.status === "ready" && job.video_available;
+    const complete =
+      job.status === "ready" &&
+      job.video_available &&
+      (job.playback_status === "direct" || job.playback_status === "ready");
     const terminal =
       job.status === "failed" ||
       job.status === "expired" ||
-      (job.status === "ready" && !job.video_available);
+      job.playback_status === "failed" ||
+      job.playback_status === "unavailable" ||
+      job.video_access_status === "review_disabled";
+    const conversionQueued = job.playback_status === "conversion_required";
+    const preparingInBackground = job.playback_status === "processing";
     const statusLabel = complete
       ? "Ready"
       : terminal
         ? "Unavailable"
-        : job.status === "queued"
-          ? "Queued"
-          : "Preparing";
+        : preparingInBackground
+          ? "Preparing for playback"
+          : conversionQueued
+            ? "Queued for playback preparation"
+            : "Stored";
 
     return (
       <MotionConfig reducedMotion="user">
@@ -284,16 +293,25 @@ export function VideoProcessingStatus({ job }: { job: DetectionJob }) {
                   ? "Reference video ready"
                   : terminal
                     ? "Reference video unavailable"
-                    : "Preparing reference video"}
+                    : preparingInBackground
+                      ? "Preparing video for playback"
+                      : conversionQueued
+                        ? "Playback preparation queued"
+                        : "Reference video stored"}
               </h2>
               <p className="mt-2 text-sm leading-6 text-ink-muted">
                 {complete
-                  ? "Owner-only playback is ready. This path does not run OpenPose or VSViG."
+                  ? "Owner-only playback is ready. Compatible originals play directly; no OpenPose or VSViG runs."
                   : terminal
                     ? job.video_access_status === "review_disabled"
                       ? "Playback is disabled by the current review-access setting. No video-model inference was attempted."
-                      : "The reference copy is unavailable; no video-model inference was attempted."
-                    : "Preparing owner-only playback from the encrypted source. No video-model inference runs on this path."}
+                      : (job.playback_error ??
+                        "The encrypted source is retained, but a safe playback stream is unavailable.")
+                    : preparingInBackground
+                      ? "A browser-compatible copy is being prepared in the background. The encrypted original remains retained; no video-model inference runs."
+                      : conversionQueued
+                        ? "The encrypted original is retained. A browser-compatible copy is queued automatically; no video-model inference runs."
+                        : "The encrypted original is stored for owner-only review. The background checks its clock and format; if needed, a browser copy is prepared without OpenPose or VSViG."}
               </p>
             </div>
             <StatusMark

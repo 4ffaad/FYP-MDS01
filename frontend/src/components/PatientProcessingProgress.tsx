@@ -265,9 +265,10 @@ export function PatientProcessingProgress({
               </span>
             </div>
             <p className="mt-3 text-xs leading-5 text-ink-muted">
-              Reference videos are submitted with the patient case and prepared
-              independently from EEG. Combined review never runs OpenPose or
-              VSViG. The service prepares one clip at a time.
+              Reference videos are encrypted and saved independently of EEG.
+              Clock and format checks run in the background; combined review
+              never runs OpenPose or VSViG. Unsupported clips convert only when
+              opened.
             </p>
             {activeVideo && (
               <div

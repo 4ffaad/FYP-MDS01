@@ -9,11 +9,12 @@ import logging
 import math
 import os
 from pathlib import Path
+import re
 import stat
 import time
 
 from fastapi import UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from backend.app.core.config import MAX_VIDEO_UPLOAD_BYTES, SESSION_STORAGE_DIR
 from backend.app.services.storage_service import SessionStorage, StorageError
@@ -75,7 +76,7 @@ class VideoStorage:
     async def save_upload(self, job_id: str, upload: UploadFile) -> Path:
         """Encrypt the incoming media before it reaches the processor."""
 
-        return await self._storage.save_upload(
+        return await self._storage.save_chunked_upload(
             self._validate_job_id(job_id),
             upload,
             max_bytes=MAX_VIDEO_UPLOAD_BYTES,
@@ -108,6 +109,11 @@ class VideoStorage:
 
         return self._artifact_path(job_id, "video.visualization.mp4.enc")
 
+    def playback_path(self, job_id: str) -> Path:
+        """Return the encrypted VEEG browser-playback copy path."""
+
+        return self._artifact_path(job_id, "video.playback.mp4.enc")
+
     def work_path(self, job_id: str, name: str) -> Path:
         """Return a safe private plaintext work path."""
 
@@ -118,6 +124,10 @@ class VideoStorage:
     def store_artifact(self, job_id: str, source_path: Path, name: str) -> Path:
         """Encrypt a transformed artifact and remove its plaintext."""
 
+        if name == "video.playback.mp4":
+            return self._storage.store_chunked_artifact(
+                self._validate_job_id(job_id), source_path, name
+            )
         return self._storage.store_encrypted_artifact(self._validate_job_id(job_id), source_path, name)
 
     def materialize_artifact(self, job_id: str, encrypted_path: Path, name: str) -> Path:
@@ -125,6 +135,7 @@ class VideoStorage:
 
         expected_paths = {
             self.visualization_path(job_id),
+            self.playback_path(job_id),
             self._artifact_path(job_id, "predictions.json.enc"),
             self._artifact_path(job_id, "video.output.mp4.enc"),
             self._artifact_path(job_id, "video.preview.jpg.enc"),
@@ -176,6 +187,173 @@ class VideoStorage:
             },
         )
 
+    def source_playback_response(
+        self, job_id: str, encrypted_path: Path, range_header: str | None = None
+    ):
+        """Serve the encrypted original through a private range-capable cache."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        expected = self._artifact_path(safe_job_id, "video.input.enc", "original")
+        self._require_canonical_path(encrypted_path, expected)
+        if self._storage.is_chunked_envelope(expected):
+            return self._chunked_playback_response(safe_job_id, expected, range_header)
+        lease = self._storage.read_lease(safe_job_id)
+        lease.__enter__()
+        try:
+            path = self._materialize_playback_cache(
+                safe_job_id, expected, "source-playback.mp4"
+            )
+        except BaseException:
+            lease.__exit__(None, None, None)
+            raise
+        return CleanupFileResponse(
+            path,
+            cleanup=lambda: lease.__exit__(None, None, None),
+            media_type="video/mp4",
+            headers={
+                "Cache-Control": "private, no-store, max-age=0",
+                "X-Content-Type-Options": "nosniff",
+                "Accept-Ranges": "bytes",
+            },
+        )
+
+    def reference_playback_response(
+        self, job_id: str, encrypted_path: Path, range_header: str | None = None
+    ):
+        """Serve an encrypted converted VEEG copy through an owner-only cache."""
+
+        safe_job_id = self._validate_job_id(job_id)
+        allowed_paths = {self.playback_path(safe_job_id), self.visualization_path(safe_job_id)}
+        if encrypted_path not in allowed_paths:
+            raise StorageError("Stored playback path is not canonical.")
+        if self._storage.is_chunked_envelope(encrypted_path):
+            return self._chunked_playback_response(safe_job_id, encrypted_path, range_header)
+        lease = self._storage.read_lease(safe_job_id)
+        lease.__enter__()
+        try:
+            path = self._materialize_playback_cache(
+                safe_job_id, encrypted_path, "reference-playback-cache.mp4"
+            )
+        except BaseException:
+            lease.__exit__(None, None, None)
+            raise
+        return CleanupFileResponse(
+            path,
+            cleanup=lambda: lease.__exit__(None, None, None),
+            media_type="video/mp4",
+            headers={
+                "Cache-Control": "private, no-store, max-age=0",
+                "X-Content-Type-Options": "nosniff",
+                "Accept-Ranges": "bytes",
+            },
+        )
+
+    def _chunked_playback_response(
+        self, job_id: str, encrypted_path: Path, range_header: str | None
+    ):
+        """Authenticate and stream only the requested encrypted video chunks."""
+
+        lease = self._storage.read_lease(job_id)
+        lease.__enter__()
+        try:
+            total = self._storage.chunked_plaintext_size(encrypted_path)
+            status_code = 200
+            start, end = 0, total - 1
+            if range_header is not None:
+                match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+                if match is None or not any(match.groups()):
+                    lease.__exit__(None, None, None)
+                    return Response(
+                        status_code=416,
+                        headers={
+                            "Content-Range": f"bytes */{total}",
+                            "Cache-Control": "private, no-store, max-age=0",
+                            "X-Content-Type-Options": "nosniff",
+                        },
+                    )
+                first, last = match.groups()
+                if first:
+                    start = int(first)
+                    end = min(int(last), total - 1) if last else total - 1
+                else:
+                    suffix_length = int(last)
+                    if suffix_length <= 0:
+                        lease.__exit__(None, None, None)
+                        return Response(
+                            status_code=416,
+                            headers={
+                                "Content-Range": f"bytes */{total}",
+                                "Cache-Control": "private, no-store, max-age=0",
+                                "X-Content-Type-Options": "nosniff",
+                            },
+                        )
+                    start = max(0, total - suffix_length)
+                    end = total - 1
+                if start >= total or end < start:
+                    lease.__exit__(None, None, None)
+                    return Response(
+                        status_code=416,
+                        headers={
+                            "Content-Range": f"bytes */{total}",
+                            "Cache-Control": "private, no-store, max-age=0",
+                            "X-Content-Type-Options": "nosniff",
+                        },
+                    )
+                status_code = 206
+
+            headers = {
+                "Cache-Control": "private, no-store, max-age=0",
+                "X-Content-Type-Options": "nosniff",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(end - start + 1),
+            }
+            if status_code == 206:
+                headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+
+            def body() -> Iterator[bytes]:
+                try:
+                    yield from self._storage.iter_decrypted_range(
+                        encrypted_path, start, end
+                    )
+                finally:
+                    lease.__exit__(None, None, None)
+
+            return StreamingResponse(
+                body(), status_code=status_code, media_type="video/mp4", headers=headers
+            )
+        except BaseException:
+            lease.__exit__(None, None, None)
+            raise
+
+    def _materialize_playback_cache(
+        self, job_id: str, encrypted_path: Path, cache_name: str
+    ) -> Path:
+        """Decrypt an approved artifact once for repeated browser range reads."""
+
+        path = self.work_path(job_id, cache_name)
+        marker = self.work_path(job_id, f"{cache_name}.ready")
+        with self._playback_lock(job_id):
+            if path.is_symlink() or marker.is_symlink():
+                raise StorageError("Video playback cache is invalid.")
+            if path.exists() and marker.is_file():
+                if not path.is_file():
+                    raise StorageError("Video playback cache is invalid.")
+                os.utime(path, None)
+                os.utime(marker, None)
+                return path
+            path.unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+            decrypted = self._storage.materialize_retained_artifact(
+                job_id, encrypted_path, cache_name
+            )
+            descriptor = os.open(
+                marker,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            os.close(descriptor)
+            return decrypted
+
     def materialize_visualization_for_playback(
         self, job_id: str, encrypted_path: Path
     ) -> Path:
@@ -217,19 +395,23 @@ class VideoStorage:
         work_dir = self.root / safe_job_id / "work"
         if work_dir.is_symlink() or not work_dir.is_dir():
             return
-        path = work_dir / "visualization-playback.mp4"
-        marker = work_dir / "visualization-playback.ready"
-        if not path.exists() and not marker.exists():
-            return
+        caches = (
+            ("visualization-playback.mp4", "visualization-playback.ready"),
+            ("source-playback.mp4", "source-playback.mp4.ready"),
+            ("reference-playback-cache.mp4", "reference-playback-cache.mp4.ready"),
+        )
         current_time = time.time() if now is None else float(now)
         cutoff = current_time - PLAYBACK_CACHE_IDLE_SECONDS
         with self._playback_lock(safe_job_id):
-            for candidate in (path, marker):
-                if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
-                    raise StorageError("Video playback cache is invalid.")
-            if not path.exists() or path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
-                marker.unlink(missing_ok=True)
+            for cache_name, marker_name in caches:
+                path = work_dir / cache_name
+                marker = work_dir / marker_name
+                for candidate in (path, marker):
+                    if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+                        raise StorageError("Video playback cache is invalid.")
+                if (not path.exists()) or path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+                    marker.unlink(missing_ok=True)
 
     def _artifact_path(self, job_id: str, filename: str, area: str = "retained") -> Path:
         return self.root / self._validate_job_id(job_id) / area / filename
@@ -262,7 +444,14 @@ class VideoStorage:
         """Remove original and transient plaintext while retaining ciphertext."""
 
         preserve = (
-            {"visualization-playback.mp4", "visualization-playback.ready"}
+            {
+                "visualization-playback.mp4",
+                "visualization-playback.ready",
+                "source-playback.mp4",
+                "source-playback.mp4.ready",
+                "reference-playback-cache.mp4",
+                "reference-playback-cache.mp4.ready",
+            }
             if preserve_playback
             else None
         )

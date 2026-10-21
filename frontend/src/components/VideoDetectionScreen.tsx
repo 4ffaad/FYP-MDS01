@@ -246,8 +246,14 @@ export function VideoDetectionJobScreen({
         }
         setError(null);
 
-        if (!["failed", "expired"].includes(nextJob.status)) {
-          timer = setTimeout(poll, nextJob.status === "ready" ? 15_000 : 1_500);
+        // Reference-only VEEG clips have their own playback-status polling in
+        // the synchronized review. VSViG jobs need polling only until inference
+        // reaches a terminal state; once ready, their result is immutable.
+        if (
+          !nextJob.reference_only &&
+          ["queued", "processing"].includes(nextJob.status)
+        ) {
+          timer = setTimeout(poll, 1_500);
         }
       } catch (error) {
         if (!abort.signal.aborted && shouldRetryRequest(error)) {
@@ -348,26 +354,27 @@ export function VideoDetectionJobScreen({
                 deletion.
               </p>
             )}
-            {job.reference_only && job.video_available && (
-              <SyncedVideoReview
-                clips={[job]}
-                selectedJobId={jobId}
-                onSelectedJobIdChange={() => {}}
-                selectedEegTime={null}
-                onEegTimeSelect={() => {}}
-                onPlaybackEegTime={() => {}}
-                recordingDurationSeconds={0}
-                seekRequest={
-                  typeof initialVideoTimeSeconds === "number"
-                    ? {
-                        jobId,
-                        videoSeconds: initialVideoTimeSeconds,
-                        requestId: 0,
-                      }
-                    : null
-                }
-              />
-            )}
+            {job.reference_only &&
+              job.source_available &&
+              job.video_access_status !== "review_disabled" && (
+                <SyncedVideoReview
+                  clips={[job]}
+                  selectedJobId={jobId}
+                  onSelectedJobIdChange={() => {}}
+                  selectedEegTime={null}
+                  onEegTimeSelect={() => {}}
+                  recordingDurationSeconds={0}
+                  seekRequest={
+                    typeof initialVideoTimeSeconds === "number"
+                      ? {
+                          jobId,
+                          videoSeconds: initialVideoTimeSeconds,
+                          requestId: 0,
+                        }
+                      : null
+                  }
+                />
+              )}
 
             {job.blur_strength_percent > 0 && (
               <p className="mt-3 text-sm text-ink-muted">

@@ -454,37 +454,41 @@ async def create(
     try:
         if not reference_only and os.environ.get("VIDEO_DETECTION_ENABLED", "false").lower() != "true":
             raise HTTPException(503, "Enable the local video detection runtime using the setup guide.")
-        async with service.UPLOAD_LOCK:
-            if repository.count_active_jobs(db) >= VIDEO_DETECTION_MAX_QUEUED_JOBS:
-                raise HTTPException(
-                    429,
-                    "The local video queue is full. Wait for a queued clip to finish, then retry this clip.",
-                )
-            job = (
-                await service.create_job(
+        if reference_only:
+            # VEEG reference clips are stored and metadata-probed independently
+            # of the standalone inference queue and its model-capacity limit.
+            job = await service.create_job(
+                db,
+                VideoStorage(),
+                video,
+                current_user.id,
+                case_id,
+                blur_strength_percent,
+                source_video_name,
+                source_group_id,
+                reference_only=True,
+            )
+        else:
+            async with service.UPLOAD_LOCK:
+                if repository.count_active_jobs(db) >= VIDEO_DETECTION_MAX_QUEUED_JOBS:
+                    raise HTTPException(
+                        429,
+                        "The local video queue is full. Wait for a queued clip to finish, then retry this clip.",
+                    )
+                job = await service.create_job(
                     db,
                     VideoStorage(),
                     video,
                     current_user.id,
-                    case_id,
-                    blur_strength_percent,
-                    source_video_name,
-                    source_group_id,
-                    reference_only=reference_only,
-                )
-                if case_id
-                else await service.create_job(
-                    db,
-                    VideoStorage(),
-                    video,
-                    current_user.id,
+                    case_id=case_id,
                     blur_strength_percent=blur_strength_percent,
                     source_video_name=source_video_name,
                     source_group_id=source_group_id,
-                    reference_only=reference_only,
+                    reference_only=False,
                 )
-            )
-        if job.status == "queued":
+        if job.reference_only and job.playback_status == "metadata_pending":
+            service.enqueue_reference_metadata(job.job_id)
+        elif job.status == "queued":
             background_tasks.add_task(service.process_job, job.job_id)
         elif job.current_stage == "privacy-review":
             background_tasks.add_task(service.process_rejected_review_job, job.job_id)
@@ -658,7 +662,7 @@ def detail(job_id: str, current_user: User = Depends(account), db: Session = Dep
 def predictions(job_id: str, current_user: User = Depends(account), db: Session = Depends(get_session)):
     storage = VideoStorage()
     job = owned(job_id, scoped_owner(current_user), db, storage)
-    if job.status != "ready" or not job.predictions_path:
+    if job.status != "ready" or not (job.result_ciphertext or job.predictions_path):
         raise HTTPException(409, "Detection results are not available.")
     if job.id is not None:
         record_clinical_access(
@@ -669,13 +673,125 @@ def predictions(job_id: str, current_user: User = Depends(account), db: Session 
         )
     path = None
     try:
-        path = storage.materialize_artifact(job_id, Path(job.predictions_path), f"scores-{secrets.token_hex(16)}.json")
-        return _public_detection_result(json.loads(path.read_text()))
+        result = service.read_encrypted_video_result(job)
+        if result is None:
+            path = storage.materialize_artifact(job_id, Path(job.predictions_path), f"scores-{secrets.token_hex(16)}.json")
+            result = json.loads(path.read_text())
+        return _public_detection_result(result)
     except Exception as exc:
         raise HTTPException(409, "Detection results are unavailable.") from exc
     finally:
         if path:
             storage.delete_work_file(path)
+
+
+@router.post("/jobs/{job_id}/playback", status_code=202)
+def prepare_reference_playback(
+    job_id: str,
+    current_user: User = Depends(account),
+    db: Session = Depends(get_session),
+):
+    storage = VideoStorage()
+    job = owned(job_id, scoped_owner(current_user), db, storage)
+    if not service.clinical_review_video_allowed(job):
+        raise HTTPException(
+            403,
+            "Reference video review is disabled by the current runtime setting.",
+        )
+    if not job.reference_only:
+        raise HTTPException(409, "On-demand playback preparation is for VEEG reference clips only.")
+    expected_original = storage.root / job.job_id / "original" / "video.input.enc"
+    original_exists = bool(
+        job.original_path == str(expected_original)
+        and expected_original.is_file()
+        and not expected_original.is_symlink()
+    )
+    if not original_exists:
+        raise HTTPException(404, "The encrypted source video is unavailable.")
+    if job.playback_status == "direct":
+        return {"job": service.public_job(db, job, storage)}
+    if job.playback_status == "ready":
+        expected_playback = storage.playback_path(job_id)
+        expected_legacy = storage.visualization_path(job_id)
+        stored = Path(job.playback_path) if job.playback_path else None
+        if (
+            stored in {expected_playback, expected_legacy}
+            and stored.is_file()
+            and not stored.is_symlink()
+        ):
+            return {"job": service.public_job(db, job, storage)}
+        # Recover a missing derived copy from the retained encrypted original
+        # when the owner next opens the clip.
+        job.playback_status = "conversion_required"
+        job.playback_path = None
+        job.current_stage = "reference-available"
+        db.add(job)
+        db.commit()
+    if job.playback_status == "unavailable":
+        raise HTTPException(409, "This source video could not be validated for playback.")
+    if job.playback_status == "processing":
+        # A background prewarm may be queued behind other clips. The owner has
+        # opened this one, so promote it without duplicating active work.
+        service.prioritize_reference_playback(job_id)
+    job, claimed = service.request_reference_playback(db, job_id, current_user.id)
+    if claimed:
+        service.prioritize_reference_playback(job_id)
+    if job.id is not None:
+        record_clinical_access(
+            db,
+            actor_user_id=current_user.id,
+            video_job_db_id=job.id,
+            action="video_playback_prepare",
+        )
+    return {"job": service.public_job(db, job, storage)}
+
+
+@router.get("/jobs/{job_id}/playback")
+def reference_playback(
+    job_id: str,
+    request: Request,
+    current_user: User = Depends(account),
+    db: Session = Depends(get_session),
+):
+    storage = VideoStorage()
+    job = owned(job_id, scoped_owner(current_user), db, storage)
+    if not service.clinical_review_video_allowed(job):
+        raise HTTPException(
+            403,
+            "Reference video review is disabled by the current runtime setting.",
+        )
+    if not job.reference_only:
+        raise HTTPException(409, "This playback endpoint is for VEEG reference clips only.")
+    if job.id is not None:
+        record_clinical_access(
+            db,
+            actor_user_id=current_user.id,
+            video_job_db_id=job.id,
+            action="video_stream",
+        )
+    try:
+        if job.playback_status == "direct":
+            expected = storage.root / job.job_id / "original" / "video.input.enc"
+            if (
+                job.original_path != str(expected)
+                or not expected.is_file()
+                or expected.is_symlink()
+            ):
+                raise StorageError("Stored source path is invalid.")
+            return storage.source_playback_response(
+                job_id, Path(job.original_path), request.headers.get("range")
+            )
+        if job.playback_status == "ready" and job.playback_path:
+            expected_playback = storage.playback_path(job_id)
+            expected_legacy = storage.visualization_path(job_id)
+            if Path(job.playback_path) not in {expected_playback, expected_legacy}:
+                raise StorageError("Stored playback path is invalid.")
+            return storage.reference_playback_response(
+                job_id, Path(job.playback_path), request.headers.get("range")
+            )
+    except Exception as exc:
+        raise HTTPException(409, "The protected playback video is unavailable.") from exc
+    raise HTTPException(409, "Open this clip in the review popup to prepare playback.")
 
 
 @router.get("/jobs/{job_id}/visualization")

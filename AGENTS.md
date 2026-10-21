@@ -6,18 +6,21 @@ the API privacy boundaries described below.
 
 ## Architecture
 
-The backend flow is:
+The main backend flows are:
 
 ```text
 EEG ZIP upload → FastAPI → PostgreSQL session → FastAPI BackgroundTasks
   → encrypted source retention → validation → model-input de-identification
   → preprocessing → inference adapter → explanation artifact → PostgreSQL results
 
-video upload → encrypted original → owner reference copy (independent of model)
-  separate VSViG analysis → first-window OpenPose readiness → queue → normalization
-  ├→ transient normalized frames → OpenPose keypoints + 15 RGB patches
-  │                                  → VSViG → predictions
-  └→ source video → audio-free H.264 review copy → encrypted storage
+combined VEEG video upload → encrypt original → acknowledge upload
+  → background clock/format probe + encrypted sync references
+  → owner opens popup → authenticated chunk-range stream OR on-demand
+  audio-free H.264 copy → encrypted copy → temporary plaintext cleanup
+
+standalone VSViG upload → encrypted original → pose-readiness gate → queue
+  → transient normalized frames → OpenPose tracks + 15 RGB patches
+  → VSViG predictions + encrypted review artifacts
 ```
 
 FastAPI routes must remain thin. Business logic belongs in services,
@@ -50,9 +53,8 @@ BackgroundTasks.
   EEG model; video detection uses the separately verified external VSViG bundle.
 - Native mode uses SQLite and local encrypted storage. `scripts/start-native.mjs`
   applies Alembic before starting FastAPI. `docker-compose.local-research.yml`
-  opts into the local H5 profile. The video-detection Compose file is an empty
-  compatibility overlay; the main Compose file owns that service. The security
-  Compose file is a separate disposable test stack.
+  opts into the local H5 profile. The security Compose file is a separate
+  disposable test stack.
 - From the repository root, `node scripts/demo.mjs` selects the real local H5
   research profile and requires its ignored model and reviewed contract;
   `node scripts/demo.mjs --development-stub` selects synthetic scores for
@@ -87,18 +89,25 @@ BackgroundTasks.
 - The dashboard offers combined, EEG-only, and video-only intake. Combined EEG
   and video work shares one patient case; EEG-only intake allows an optional
   report and never submits selected video files.
-- Combined uploads retain encrypted original video for owner-only reference
-  playback. This path makes an audio-free H.264 browser copy without requiring
-  OpenPose readiness or VSViG admission. Unmatched clips remain playable and
-  show their alignment status. Separate VSViG analysis still requires the pinned
+- Combined uploads encrypt and retain original video for owner-only reference
+  playback, then acknowledge without probing or converting it. A restart-safe
+  background worker checks clock/format metadata and refreshes sync mappings;
+  it does not run OpenPose or VSViG. Compatible originals stream through
+  authenticated AES-GCM byte ranges; unsupported formats get an audio-free
+  H.264 copy only when the owner opens playback. Unmatched clips remain
+  playable and show their alignment status.
+  Separate VSViG analysis still requires the pinned
   model's pose and input gates, uses unblurred RGB patches, and preserves its
-  exact model contract. New analysis and reference videos are unblurred; labels
+  exact model contract. New VSViG scores and Grad-CAM output are encrypted in
+  PostgreSQL; video binaries remain encrypted outside the database. New
+  analysis and reference videos are unblurred; labels
   remain accurate for historical blurred outputs. Delete normalized frames,
   extracted patches, and temporary plaintext after processing. Retain encrypted
   originals, review videos, and results until case deletion. Every media, result,
   waveform, report, and download request is owner-scoped and private/no-store.
-  The ten-minute decrypted video range cache remains private and is cleaned up
-  when idle. The separate video-privacy utility keeps its documented policy.
+  New chunk-encrypted VEEG media is decrypted per requested byte range; legacy
+  monolithic encrypted media may use a private ten-minute plaintext cache. The
+  separate video-privacy utility keeps its documented policy.
 - For combined legacy Nicolet `.e` and AVI folder uploads, keep only a
   case-scoped HMAC of each referenced basename and an opaque camera-folder
   group ID. Encrypt VEEG frame/clock anchors and resolved offsets at rest.

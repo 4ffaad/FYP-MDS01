@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useRef, useState, type PointerEvent } from "react";
+import { useMemo, useState } from "react";
 import { formatSubmittedAt } from "@/lib/format";
 import { apiMediaUrl, toDisplayStatus } from "@/lib/api";
 import type { Recording, Session } from "@/lib/types";
@@ -29,13 +29,6 @@ const ACTIVE_SESSION_STATUSES = new Set([
   "inference",
   "explaining",
 ]);
-
-function isAnalysisReady(session: Session): boolean {
-  return (
-    !ACTIVE_SESSION_STATUSES.has(session.status) &&
-    session.progress.finishedRecordings >= session.progress.totalRecordings
-  );
-}
 
 /** Render the recordings in one session without exposing submitted filenames. */
 export function SessionRecordings({ session }: { session: Session }) {
@@ -282,160 +275,6 @@ function formatDuration(seconds: number): string {
   return `${minutes}m ${String(remainingSeconds).padStart(2, "0")}s`;
 }
 
-/** Render one dashboard session card that opens the full session detail page. */
-export function SessionGroup({
-  session,
-  onDelete,
-}: {
-  session: Session;
-  onDelete?: (sessionId: string) => Promise<void>;
-}) {
-  const [swiped, setSwiped] = useState(false);
-  const pointerStart = useRef<number | null>(null);
-  const analysisReady = isAnalysisReady(session);
-  const completedRecordings = session.recordings.filter(
-    (recording) => recording.status === "inferred",
-  );
-  const alertCount = completedRecordings.filter(
-    (recording) => recording.modelAlertWindowCount > 0,
-  ).length;
-  const development = completedRecordings.some(
-    (recording) => recording.scoreType === "development_score",
-  );
-  const calibrated = completedRecordings.some(
-    (recording) => recording.scoreType === "calibrated_probability",
-  );
-  const alertLabel = development
-    ? "development flag"
-    : calibrated
-      ? "model alert"
-      : "research flag";
-  const alertToneClass =
-    development || !calibrated
-      ? "font-semibold text-amber"
-      : "font-semibold text-red";
-  const modelSummary = analysisReady
-    ? alertCount === 0
-      ? `No ${alertLabel}s detected`
-      : `${alertCount} recording${alertCount === 1 ? "" : "s"} with ${alertLabel}s`
-    : "Results pending";
-  const alertSummary = sessionAlertSummary(session);
-  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.pointerType === "touch") pointerStart.current = event.clientX;
-  };
-  const handlePointerUp = (event: PointerEvent<HTMLDivElement>) => {
-    if (pointerStart.current === null) return;
-    setSwiped(pointerStart.current - event.clientX > 48);
-    pointerStart.current = null;
-  };
-
-  return (
-    <div
-      className="relative touch-pan-y overflow-hidden rounded-xl"
-      onPointerDown={handlePointerDown}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={() => {
-        pointerStart.current = null;
-      }}
-    >
-      {onDelete && (
-        <div className="absolute inset-y-0 right-0 flex w-24 items-center justify-center bg-red-soft">
-          <DeleteSessionButton
-            session={session}
-            onDelete={onDelete}
-            variant="swipe"
-          />
-        </div>
-      )}
-      <section
-        className={`panel relative overflow-hidden transition-transform duration-200 ${swiped ? "-translate-x-24" : ""}`}
-        aria-labelledby={`session-${session.sessionId}`}
-      >
-        <Link
-          className="group block bg-surface-soft px-4 py-5 transition-colors hover:bg-surface sm:px-5 sm:py-6"
-          href={`/sessions/${encodeURIComponent(session.sessionId)}`}
-          aria-label={`Open session ${session.sessionId}`}
-        >
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-[0.1em] text-ink-muted">
-                Analysis session
-              </p>
-              <h2
-                id={`session-${session.sessionId}`}
-                className="mt-2 truncate font-mono text-sm font-bold text-ink"
-              >
-                {session.sessionId}
-              </h2>
-              <p className="mt-2 text-xs text-ink-muted">
-                Submitted {formatSubmittedAt(session.createdAt)}{" "}
-                <span className="mx-1 text-rule-strong">·</span>{" "}
-                {session.progress.finishedRecordings}/
-                {session.progress.totalRecordings || "—"} processed
-              </p>
-            </div>
-            <div className="flex items-center gap-3 sm:pt-1">
-              <span className="text-xs text-ink-muted">
-                {session.privacyMethod.label}
-              </span>
-              <StatusBadge status={toDisplayStatus(session.status)} />
-              <Icon
-                name="chevron"
-                className="size-4 text-ink-muted transition-transform group-hover:translate-x-0.5"
-              />
-            </div>
-          </div>
-          <div className="mt-5 grid gap-4 border-t border-rule pt-4 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,0.8fr)] sm:gap-8">
-            <div>
-              <div className="flex items-center justify-between gap-3 text-xs">
-                <span className="font-semibold text-ink">
-                  Processing progress
-                </span>
-                <span className="font-mono text-ink-muted">
-                  {session.progress.percent}%
-                </span>
-              </div>
-              <Progress
-                value={session.progress.percent}
-                className="mt-2 h-2 bg-surface-muted [&_[data-slot=progress-indicator]]:rounded-full [&_[data-slot=progress-indicator]]:bg-teal"
-                aria-label={`Processing progress for ${session.sessionId}`}
-              />
-              <p className="mt-2 text-xs text-ink-muted">
-                {session.progress.finishedRecordings} of{" "}
-                {session.progress.totalRecordings || "—"} recordings processed
-              </p>
-            </div>
-            <div className="text-xs leading-5 sm:border-l sm:border-rule sm:pl-6">
-              <p className="font-semibold text-ink">Analysis summary</p>
-              <p
-                className={`mt-1 ${analysisReady && alertCount > 0 ? alertToneClass : "text-ink-muted"}`}
-              >
-                {modelSummary}
-              </p>
-              {analysisReady && alertCount > 0 && (
-                <p className="mt-2 text-xs text-ink-muted">
-                  Flagged times: {alertSummary.values.join(", ")}
-                  {alertSummary.remaining > 0
-                    ? ` +${alertSummary.remaining} more intervals`
-                    : ""}
-                </p>
-              )}
-            </div>
-          </div>
-        </Link>
-        {onDelete && (
-          <div className="flex items-center justify-between gap-4 border-t border-rule px-4 py-2.5 sm:px-5">
-            <span className="text-xs text-ink-muted">
-              Open the session to review its recordings.
-            </span>
-            <DeleteSessionButton session={session} onDelete={onDelete} />
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
 /** Show only the persisted model result, never a dataset reference label. */
 function ModelLabel({ recording }: { recording: Recording }) {
   const development = recording.scoreType === "development_score";
@@ -482,30 +321,6 @@ function ModelLabel({ recording }: { recording: Recording }) {
         )}
     </>
   );
-}
-
-/** Return compact model-alert times and a count of omitted intervals. */
-function sessionAlertSummary(session: Session): {
-  values: string[];
-  remaining: number;
-} {
-  const values = session.recordings
-    .filter(
-      (recording) =>
-        recording.status === "inferred" && recording.modelAlertWindowCount > 0,
-    )
-    .flatMap((recording) => {
-      const interval = recording.alertIntervals[0];
-      return interval
-        ? [
-            `Recording ${String(recording.sequenceIndex).padStart(2, "0")} · ${formatInterval(interval.startSeconds, interval.endSeconds)}`,
-          ]
-        : [];
-    });
-  return {
-    values: values.slice(0, 3),
-    remaining: Math.max(0, values.length - 3),
-  };
 }
 
 /** Format a model-alert interval as a recording-relative time range. */

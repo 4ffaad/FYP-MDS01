@@ -957,7 +957,7 @@ export function PatientFolderScreen({
             <p className="mt-4 max-w-2xl text-[0.98rem] leading-7 text-ink-muted">
               {eegOnly
                 ? "Analyze EEG recordings on their own. A report is optional; video files in the selected folder are ignored."
-                : "Keep one patient&apos;s EEG recordings and related video clips together in one review. A report is optional."}
+                : "Keep one patient's EEG recordings and related video clips together in one review. A report is optional."}
             </p>
             {eegOnly && (
               <ModalityWorkspaceTabs modality="eeg" active="upload" />

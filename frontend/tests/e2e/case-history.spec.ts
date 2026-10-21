@@ -645,23 +645,34 @@ test("navigation exposes workspace, EEG, and video tools", async ({ page }) => {
   await expect(primaryNavigation.locator('[aria-current="page"]')).toHaveCount(
     1,
   );
-  await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
+  await expect(primaryNavigation.getByRole("link")).toHaveCount(5);
   await expect(
     primaryNavigation.getByRole("link", { name: "New patient review" }),
   ).toHaveAttribute("aria-current", "page");
   await expect(
-    primaryNavigation.getByRole("link", { name: "Patient cases" }),
+    primaryNavigation.getByRole("link", { name: "Dashboard" }),
+  ).not.toHaveAttribute("aria-current", "page");
+  await expect(
+    primaryNavigation.getByRole("link", { name: "Cases" }),
   ).not.toHaveAttribute("aria-current", "page");
 
   await page.goto("/dashboard");
   primaryNavigation = await openPrimaryNavigation();
   await expect(
-    primaryNavigation.getByRole("link", { name: "Patient cases" }),
+    primaryNavigation.getByRole("link", { name: "Dashboard" }),
   ).toHaveAttribute("aria-current", "page");
   await expect(
     primaryNavigation.getByRole("link", { name: "New patient review" }),
   ).not.toHaveAttribute("aria-current", "page");
-  await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
+  await expect(primaryNavigation.getByRole("link")).toHaveCount(5);
+  await page.goto("/cases");
+  primaryNavigation = await openPrimaryNavigation();
+  await expect(
+    primaryNavigation.getByRole("link", { name: "Cases" }),
+  ).toHaveAttribute("aria-current", "page");
+  await expect(
+    primaryNavigation.getByRole("link", { name: "Dashboard" }),
+  ).not.toHaveAttribute("aria-current", "page");
   await expect(
     primaryNavigation.getByRole("link", { name: "EEG workspace" }),
   ).toBeVisible();
