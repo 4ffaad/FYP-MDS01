@@ -10,7 +10,7 @@ for the detailed technical design.
 | Understand goals and scope                                                          | [Project goal](project-goal.md)                                                    |
 | Run and test the local app                                                          | [Setup](setup.md)                                                                  |
 | Inspect the component and VEEG flow                                                 | [Architecture](architecture.md)                                                    |
-| Follow backend code and security step by step                                       | [Interactive flow map](backend-flow.html) · [source](backend-flow.json)             |
+| Follow login, encryption, model processing, and authorized review                   | [Security sequence diagrams](architecture.md)                                      |
 | Trace EEG parsing, processing, and storage                                          | [Backend guide](backend.md)                                                        |
 | Start from zero and follow backend security and request flows                       | [Backend handover](backend-handover.md) · [backend file map](backend-file-map.md)  |
 | Understand browser screens and behavior                                             | [Frontend guide](frontend.md), then [frontend instructions](../frontend/AGENTS.md) |

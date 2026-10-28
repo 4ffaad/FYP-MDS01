@@ -64,9 +64,9 @@ without starting the app.
 
 ## How a request moves through FastAPI
 
-Open the [interactive backend flow map](backend-flow.html) in your browser.
-Choose EEG, VEEG playback, or standalone video, then play or step through the
-flow. Each step shows the source files and where security applies.
+The [backend security sequence diagrams](architecture.md) show login, EEG
+processing, standalone video, and owner-authorized review. They mark where
+encryption and decryption happen and link to the responsible source files.
 
 Routes in `backend/app/api/` receive HTTP requests and return safe responses.
 They use security dependencies, then hand work to services in
@@ -120,11 +120,11 @@ in PostgreSQL. They are experimental model output, not a clinical diagnosis.
 
 | Boundary | What the code does |
 | --- | --- |
-| Sign-in | Local passwords are stored as scrypt hashes. Server-side login tokens are stored as hashes in PostgreSQL and sent in an HTTP-only session cookie. Cloudflare Access assertion validation is also implemented for a protected deployment. |
+| Sign-in | Local passwords are stored as scrypt hashes. Only session-token hashes are persisted in PostgreSQL; the raw token goes in an HttpOnly cookie. Cloudflare Access assertion validation is also implemented for a protected deployment. |
 | Request access | Protected routers require authentication. Data lookups include the owner account, so another account cannot read a recording by guessing its ID. State-changing browser requests also check the configured origin. |
 | Upload size | ASGI middleware rejects oversized request bodies early; the upload and parser layers apply additional byte, archive, format, and model-input limits. |
-| Files | EEG archives and video files are encrypted with AES-256-GCM before retained private-file writes. The encrypted bytes live in filesystem-backed storage, outside PostgreSQL. New video files use independently authenticated chunks so a range request need not decrypt the entire clip. |
-| Database fields | Patient profiles, source reports, clinical observations, synchronization anchors, and new VSViG result payloads have application-level authenticated encryption. Ordinary job/session metadata and EEG window scores are database fields; PostgreSQL is not encrypted wholesale by this application. |
+| Files | EEG archives, source reports, and video files are encrypted with AES-256-GCM before retained private-file writes. The encrypted bytes live in filesystem-backed storage, outside PostgreSQL. New video files use independently authenticated chunks so a range request need not decrypt the entire clip. |
+| Database fields | Patient profiles, clinical observations, synchronization anchors, and new VSViG result payloads have application-level authenticated encryption. Ordinary job/session metadata and EEG window scores are database fields; PostgreSQL is not encrypted wholesale by this application. |
 | Processing | Services briefly decrypt files into private work directories when parsers or models need plaintext. Cleanup removes these work files after use. This is temporary filesystem plaintext, not a claim that processing happens only in memory. |
 | Playback and downloads | Every protected read checks the owner again. Media supports byte ranges, responses use `private, no-store`, and encrypted chunks are authenticated before release. Private paths are not returned by API serializers. |
 | Deletion and audit | Case deletion removes linked rows and encrypted files. A minimal access-event table records selected review actions without patient labels or request bodies. |
@@ -159,12 +159,3 @@ history: Compose applies them before Uvicorn starts. Backend tests are not
 needed to launch the web app, but they are kept to protect privacy, storage,
 model-contract, and synchronization behavior. See the [file map](backend-file-map.md)
 for each file's role.
-
-## Maintaining the flow map
-
-The map is a self-contained HTML handover tool; it does not need a running
-backend. Its [JSON source](backend-flow.json) contains source-file references,
-and the HTML embeds the selected code excerpts. Regenerate it when those lines
-change using the [Flow Map skill](https://github.com/benjoox/code-viz/tree/main/skills/flow-map).
-The skill is development tooling, not an application dependency. Keep real
-configuration values and patient data out of the map.

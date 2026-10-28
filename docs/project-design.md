@@ -35,9 +35,9 @@ with EEG just because both modalities exist in one case.
 | EEG runtime    | Keras H5 adapter                                | Loads only the external model artifact and reviewed contract                             |
 | Video runtime  | Pinned VSViG and Lightweight OpenPose bundle    | Separate experimental pose and video inference                                           |
 
-The [interactive backend/security map](backend-flow.html) shows the
-components, storage boundaries, and independent EEG, VEEG, and video-analysis
-paths. Its [JSON source](backend-flow.json) records the code references.
+The [backend security sequence diagrams](architecture.md) show login, storage
+encryption, model processing, and authorized decryption, with links to the
+source files responsible for each protection.
 
 Routes validate requests and build responses. Service modules own workflows;
 repositories own database queries. EEG and video binaries stay outside the
