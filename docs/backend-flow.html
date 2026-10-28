@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MDS01 backend flow</title>
+<style>
+/* Layout: flow canvas on the left, the files and findings of the current step on the right. */
+:root {
+  --bg: #f2f3f7; --surface: #ffffff; --ink: #1a1e29; --muted: #5b6275; --line: #d3d8e3; --band: #e9ecf2;
+  --accent: #3b5bdb; --ok: #2b8047; --bug: #c0352e; --risk: #b25e00; --smell: #6d56c9; --question: #0b7a84;
+  --c-user: #b26400; --c-ui: #2f6fd6; --c-api: #6546d4; --c-service: #37415a; --c-data: #0b7a84;
+  --c-queue: #8a4fb0; --c-external: #6b7280; --c-auth: #a4343a; --c-job: #7a6a1f; --c-state: #c2338a; --c-ai: #9b3fd1;
+  --f-code: #2f6fd6; --f-doc: #6546d4; --f-data: #b26400; --f-media: #c2338a; --f-slides: #d9480f; --f-config: #37415a; --f-folder: #7a6a1f;
+  --body: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #10131a; --surface: #181c26; --ink: #e7e9f0; --muted: #9ba2b5; --line: #2b3140; --band: #151923;
+    --accent: #7c9bff; --ok: #62cb85; --bug: #ff6d62; --risk: #f0a23a; --smell: #a68dff; --question: #3fc3cd;
+    --c-user: #f0a23a; --c-ui: #6ea4ff; --c-api: #a68dff; --c-service: #c3cad9; --c-data: #3fc3cd;
+    --c-queue: #d18cf5; --c-external: #9ca3af; --c-auth: #ff8a8f; --c-job: #d9c45a; --c-state: #ff7fc0; --c-ai: #d59cff;
+    --f-code: #6ea4ff; --f-doc: #a68dff; --f-data: #f0a23a; --f-media: #ff7fc0; --f-slides: #ff8c5a; --f-config: #c3cad9; --f-folder: #d9c45a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #10131a; --surface: #181c26; --ink: #e7e9f0; --muted: #9ba2b5; --line: #2b3140; --band: #151923;
+  --accent: #7c9bff; --ok: #62cb85; --bug: #ff6d62; --risk: #f0a23a; --smell: #a68dff; --question: #3fc3cd;
+  --c-user: #f0a23a; --c-ui: #6ea4ff; --c-api: #a68dff; --c-service: #c3cad9; --c-data: #3fc3cd;
+  --c-queue: #d18cf5; --c-external: #9ca3af; --c-auth: #ff8a8f; --c-job: #d9c45a; --c-state: #ff7fc0; --c-ai: #d59cff;
+  --f-code: #6ea4ff; --f-doc: #a68dff; --f-data: #f0a23a; --f-media: #ff7fc0; --f-slides: #ff8c5a; --f-config: #c3cad9; --f-folder: #d9c45a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--body); padding-inline: 16px; padding-block: 24px 48px; }
+.wrap { max-width: 1560px; margin: 0 auto; display: grid; gap: 16px; }
+h1 { font-size: clamp(1.5rem, 3vw, 2.2rem); line-height: 1.15; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); max-width: 80ch; margin: 4px 0 0; }
+.mono { font-family: var(--mono); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.eyebrow { font: 600 0.7rem/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+button, select { font: 500 0.86rem var(--body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.icon { display: inline-grid; place-items: center; width: 34px; height: 32px; padding: 0; }
+button.icon svg { width: 17px; height: 17px; }
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.8rem; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend svg { width: 15px; height: 15px; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.badge { display: inline-flex; align-items: center; gap: 5px; font: 600 0.74rem var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid currentColor; background: var(--surface); }
+.badge svg { width: 13px; height: 13px; }
+.badge.off { opacity: 0.4; }
+.sev-bug { color: var(--bug); } .sev-risk { color: var(--risk); } .sev-smell { color: var(--smell); } .sev-question { color: var(--question); }
+
+.stage { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.stage.pane-hidden { grid-template-columns: minmax(0, 1fr); }
+.stage.pane-hidden .right { display: none; }
+@media (max-width: 1100px) { .stage { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0; }
+.left { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 10px); }
+@media (max-width: 1100px) { .left { position: static; } }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 0.85rem; }
+.crumbs button { padding: 3px 8px; font-size: 0.8rem; }
+.crumbs .sep { color: var(--muted); }
+.count { font: 600 0.8rem var(--mono); color: var(--muted); min-width: 4.5em; text-align: center; }
+.caption { margin: 10px 0 6px; min-height: 3em; font-size: 0.95rem; }
+.progress { height: 3px; background: var(--band); border-radius: 2px; overflow: hidden; }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); }
+.canvas-wrap { overflow: hidden; border-radius: 8px; margin-top: 8px; background: var(--bg); touch-action: none; }
+#canvas { display: block; width: 100%; height: auto; cursor: grab; user-select: none; }
+#canvas.panning { cursor: grabbing; }
+#canvas text { font-family: var(--body); fill: var(--ink); }
+#canvas .band { fill: var(--band); }
+#canvas .band-label { font: 600 10.5px var(--mono); letter-spacing: 0.12em; fill: var(--muted); }
+#canvas .edge path.wire { fill: none; stroke: var(--line); stroke-width: 2; transition: stroke .2s, opacity .2s; }
+#canvas .edge .elabel rect { fill: var(--surface); }
+#canvas .edge .elabel text { font: 10px var(--mono); fill: var(--muted); text-anchor: middle; dominant-baseline: central; }
+#canvas .edge.on path.wire { stroke: var(--accent); stroke-width: 2.6; }
+#canvas .edge.on .elabel text { fill: var(--ink); font-weight: 600; }
+#canvas.dim .edge:not(.on) { opacity: 0.35; }
+#canvas .node { cursor: pointer; transition: opacity .2s; }
+#canvas.dim .node:not(.on):not(.sel) { opacity: 0.42; }
+#canvas .node .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; transition: stroke .2s, fill .2s; }
+#canvas .node.on .box { stroke: var(--k); stroke-width: 2.5; fill: color-mix(in srgb, var(--k) 12%, var(--surface)); }
+#canvas .node.sel .box { stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 5 3; }
+#canvas .node .disc { fill: color-mix(in srgb, var(--k) 16%, var(--surface)); }
+#canvas .node use.ic { color: var(--k); }
+#canvas .node .lbl { font-size: 12.5px; font-weight: 600; }
+#canvas .node .sub { font: 10px var(--mono); fill: var(--muted); }
+#canvas .drill { cursor: zoom-in; }
+#canvas .drill rect { fill: var(--surface); stroke: var(--accent); stroke-width: 1.5; }
+#canvas .drill use { color: var(--accent); }
+#canvas .mark circle { stroke: var(--surface); stroke-width: 2; }
+#canvas .mark text { font: 700 10px var(--mono); fill: #fff; text-anchor: middle; dominant-baseline: central; }
+#canvas .packet { fill: var(--accent); }
+
+.right { display: grid; gap: 10px; }
+details.sec { border-top: 1px solid var(--line); padding-top: 8px; }
+details.sec:first-of-type { border-top: 0; padding-top: 0; }
+details > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "▸"; font-size: 0.8em; color: var(--muted); transition: transform .15s; }
+details[open] > summary::before { transform: rotate(90deg); }
+.sec > summary { margin-bottom: 8px; }
+.sec .n { font: 600 0.7rem var(--mono); color: var(--muted); margin-left: auto; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: 0.74rem var(--mono); padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.chip b { font-weight: 600; }
+.chip.changed { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.files { display: grid; gap: 8px; }
+.file { border: 1px solid var(--line); border-radius: 7px; background: var(--bg); min-width: 0; }
+.file > summary { padding: 6px 9px; font: 600 0.74rem var(--mono); }
+.file[open] > summary { border-bottom: 1px solid var(--line); }
+.file > summary svg { width: 15px; height: 15px; flex: none; color: var(--ft); }
+.file > summary .p { overflow-wrap: anywhere; min-width: 0; }
+.role { margin-left: auto; font: 600 0.64rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); flex: none; }
+.role.writes { color: var(--bug); border-color: currentColor; }
+.role.reads { color: var(--ok); border-color: currentColor; }
+.role.calls { color: var(--accent); border-color: currentColor; }
+.file .note { font-size: 0.8rem; color: var(--muted); padding: 6px 9px 0; }
+.code { margin: 0; padding: 6px 0; font: 0.7rem/1.55 var(--mono); overflow-x: auto; }
+.code .l { display: grid; grid-template-columns: 3.6em minmax(0, 1fr); white-space: pre; }
+.code .l i { font-style: normal; color: var(--muted); text-align: right; padding-right: 10px; user-select: none; }
+.code .l.hl { background: color-mix(in srgb, var(--bug) 14%, transparent); }
+.issue { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); cursor: pointer; text-align: left; width: 100%; }
+.issue svg { width: 18px; height: 18px; }
+.issue .t { font-weight: 600; font-size: 0.86rem; }
+.issue .m { font: 0.72rem var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.issue .d { font-size: 0.82rem; margin-top: 2px; }
+.issue .fx { font-size: 0.82rem; margin-top: 2px; color: var(--ok); }
+.issues { display: grid; gap: 6px; }
+.steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; counter-reset: s; }
+.steps button { width: 100%; text-align: left; display: grid; grid-template-columns: 2em minmax(0, 1fr); gap: 6px; font-size: 0.84rem; padding: 6px 8px; }
+.steps button .i { font: 600 0.74rem var(--mono); color: var(--muted); }
+.steps button.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.empty { font-size: 0.84rem; color: var(--muted); }
+.sel-card .t { font-weight: 600; }
+.sel-card p { margin: 4px 0; font-size: 0.86rem; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <!-- Actors and surfaces -->
+  <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></symbol>
+  <symbol id="i-ui" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><circle cx="6" cy="6.5" r=".6" fill="currentColor"/><circle cx="8.5" cy="6.5" r=".6" fill="currentColor"/></symbol>
+  <symbol id="i-component" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></symbol>
+  <symbol id="i-hook" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v10a4 4 0 1 1-4-4"/><circle cx="12" cy="3" r="1"/></symbol>
+
+  <!-- Server side -->
+  <symbol id="i-api" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5 3 12l5 7"/><path d="m16 5 5 7-5 7"/><path d="m14 4-4 16"/></symbol>
+  <symbol id="i-service" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></symbol>
+  <symbol id="i-function" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20 12 4"/><path d="M9 12l6 8"/><path d="M4 4h4"/></symbol>
+  <symbol id="i-job" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2"/><path d="M9 2h6"/></symbol>
+  <symbol id="i-event" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></symbol>
+  <symbol id="i-auth" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15.5" r="1.2" fill="currentColor"/></symbol>
+  <symbol id="i-state" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3 21 12 12 21 3 12z"/><circle cx="12" cy="12" r="2" fill="currentColor"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-8A6 6 0 0 0 6 9a4.5 4.5 0 0 0 1 9z"/></symbol>
+  <symbol id="i-ai" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></symbol>
+
+  <!-- Data stores: one shape per kind so they read apart at a glance -->
+  <symbol id="i-db" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v13c0 1.7 3.6 3 8 3s8-1.3 8-3v-13"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+  <symbol id="i-table" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 9h18M3 14.5h18M9.5 9v11"/></symbol>
+  <symbol id="i-cache" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v13c0 1.7 3.6 3 8 3s8-1.3 8-3v-13"/><path d="m13 9-3 5h4l-2 4" /></symbol>
+  <symbol id="i-bucket" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 6h16l-1.6 14a2 2 0 0 1-2 1.8H7.6a2 2 0 0 1-2-1.8z"/><ellipse cx="12" cy="6" rx="8" ry="2.5"/></symbol>
+  <symbol id="i-queue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="5" width="4" height="14" rx="1"/><rect x="10" y="5" width="4" height="14" rx="1"/><rect x="17" y="5" width="4" height="14" rx="1"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></symbol>
+  <symbol id="i-vector" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="5" cy="6" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="13" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="19" cy="18" r="2"/><path d="m6.7 7.2 3.7 4.4M16.4 6.4l-3 5M10.5 14.3 7.4 17.6M13.6 14l3.8 3"/></symbol>
+
+  <!-- Files, colour applied per type by the page -->
+  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/></symbol>
+  <symbol id="i-file-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/><path d="m10 12-2 2.5 2 2.5M14 12l2 2.5-2 2.5"/></symbol>
+  <symbol id="i-file-doc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/><path d="M8.5 12.5h7M8.5 15.5h7M8.5 18.5h4"/></symbol>
+  <symbol id="i-file-data" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/><path d="M10 12c-1.2 0-1.2 1.2-1.2 1.8S8 15 7.8 15c.2 0 1 .6 1 1.2s0 1.8 1.2 1.8M14 12c1.2 0 1.2 1.2 1.2 1.8s.8 1.2 1 1.2c-.2 0-1 .6-1 1.2s0 1.8-1.2 1.8"/></symbol>
+  <symbol id="i-file-media" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/><path d="m10 12 5 3-5 3z"/></symbol>
+  <symbol id="i-file-slides" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/><rect x="8" y="12" width="8" height="5" rx=".6"/><path d="M12 17v2"/></symbol>
+  <symbol id="i-file-config" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/><circle cx="12" cy="15" r="2"/><path d="M12 11.5v1.3M12 17.2v1.3M8.5 15h1.3M14.2 15h1.3"/></symbol>
+
+  <!-- Review and controls -->
+  <symbol id="i-bug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="7" width="10" height="13" rx="5"/><path d="M12 7v13M9 4l1.5 3M15 4l-1.5 3M3 11h4M17 11h4M3 17h4M17 17h4"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 22 20H2z"/><path d="M12 10v4"/><circle cx="12" cy="17" r=".7" fill="currentColor"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7.5" r=".7" fill="currentColor"/></symbol>
+  <symbol id="i-question" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.7"/><circle cx="12" cy="17" r=".7" fill="currentColor"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 10 12l8 6z" fill="currentColor"/><path d="M6 6v12"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l8 6-8 6z" fill="currentColor"/><path d="M18 6v12"/></symbol>
+  <symbol id="i-zoom-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8M10.5 7.5v6M7.5 10.5h6"/></symbol>
+  <symbol id="i-zoom-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8M7.5 10.5h6"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+  <symbol id="i-drill" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6"/><path d="m9 15 6-6"/></symbol>
+</svg>
+
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">Flow map</span>
+    <h1 id="title"></h1>
+    <p class="sub" id="subtitle"></p>
+  </header>
+  <div class="row" style="justify-content: space-between;">
+    <div class="legend" id="legend"></div>
+    <div class="badges" id="sevbadges"></div>
+  </div>
+
+  <section class="stage" id="stage">
+    <div class="panel left">
+      <div class="toolbar">
+        <nav class="crumbs" id="crumbs" aria-label="View path"></nav>
+        <div class="row">
+          <label class="eyebrow" for="scen">Flow</label>
+          <select id="scen"></select>
+        </div>
+      </div>
+      <div class="toolbar" style="margin-top: 8px;">
+        <div class="row">
+          <button class="icon" id="prev" aria-label="Previous step"><svg><use href="#i-prev"/></svg></button>
+          <button class="icon" id="play" aria-label="Pause"><svg><use href="#i-pause"/></svg></button>
+          <button class="icon" id="next" aria-label="Next step"><svg><use href="#i-next"/></svg></button>
+          <span class="count" id="count"></span>
+          <select id="speed" aria-label="Speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
+        </div>
+        <div class="row">
+          <button class="icon" id="zin" aria-label="Zoom in"><svg><use href="#i-zoom-in"/></svg></button>
+          <button class="icon" id="zout" aria-label="Zoom out"><svg><use href="#i-zoom-out"/></svg></button>
+          <button class="icon" id="zfit" aria-label="Fit"><svg><use href="#i-fit"/></svg></button>
+          <button id="pane" aria-expanded="true" aria-controls="rightpane">Hide details</button>
+        </div>
+      </div>
+      <p class="caption" id="caption" aria-live="polite"></p>
+      <div class="progress"><i id="bar"></i></div>
+      <div class="canvas-wrap"><svg id="canvas" role="img" aria-label="Flow diagram"></svg></div>
+      <p class="empty" style="margin-top: 6px;">Click a node to jump to its step. The corner square opens a node's inner flow. Drag to pan; pinch or Ctrl+scroll to zoom. Space plays, arrow keys step.</p>
+    </div>
+
+    <div class="panel right" id="rightpane">
+      <details class="sec" open><summary class="eyebrow">This step <span class="n" id="stepn"></span></summary>
+        <div class="chips" id="statechips"></div>
+      </details>
+      <details class="sec" open><summary class="eyebrow">Files <span class="n" id="filesn"></span></summary>
+        <div class="row" style="margin-bottom: 8px;"><button id="fexp">Expand all</button><button id="fcol">Collapse all</button></div>
+        <div class="files" id="files"></div>
+      </details>
+      <details class="sec" open><summary class="eyebrow">Issues at this step <span class="n" id="stepissuesn"></span></summary>
+        <div class="issues" id="stepissues"></div>
+      </details>
+      <details class="sec" id="selsec"><summary class="eyebrow">Selected node</summary>
+        <div class="sel-card" id="selcard"><p class="empty">Click a node.</p></div>
+      </details>
+      <details class="sec"><summary class="eyebrow">Steps in this flow</summary>
+        <ol class="steps" id="steplist"></ol>
+      </details>
+      <details class="sec"><summary class="eyebrow">All issues <span class="n" id="allissuesn"></span></summary>
+        <div class="issues" id="allissues"></div>
+      </details>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const DATA = JSON.parse("{\"title\":\"MDS01 backend flow\",\"subtitle\":\"Follow EEG, VEEG playback, or standalone VSViG through the actual source files and security boundaries. Source checked 28 October 2026.\",\"root\":\"main\",\"views\":{\"main\":{\"title\":\"Backend\",\"layers\":[{\"id\":\"user\",\"label\":\"Reviewer\"},{\"id\":\"auth\",\"label\":\"Request security\"},{\"id\":\"api\",\"label\":\"FastAPI routes\"},{\"id\":\"services\",\"label\":\"Services / background work\"},{\"id\":\"models\",\"label\":\"Research models\"},{\"id\":\"data\",\"label\":\"Persistence\"},{\"id\":\"runtime\",\"label\":\"Runtime key\"}],\"nodes\":[{\"id\":\"reviewer\",\"label\":\"Reviewer\",\"kind\":\"user\",\"layer\":\"user\",\"note\":\"Uses the authenticated browser to upload a case or reopen its evidence.\"},{\"id\":\"auth\",\"label\":\"Authentication\",\"kind\":\"auth\",\"layer\":\"auth\",\"file\":\"backend/app/core/security.py\",\"lines\":[49,68],\"note\":\"Local session or configured Cloudflare assertion; writes also check request origin.\",\"excerpt\":[\"    mode, domain, audience = auth_configuration()\",\"    if mode == \\\"local\\\":\",\"        return\",\"    if mode == \\\"local-accounts\\\":\",\"        if request.method in _STATE_CHANGING_METHODS:\",\"            require_request_origin(request)\",\"        user = user_for_session(db, session_token)\",\"        if user is None:\",\"            raise _unauthorized()\",\"        return user\",\"    if request.method in _STATE_CHANGING_METHODS:\",\"        require_request_origin(request)\",\"    if not assertion:\",\"        raise _unauthorized()\",\"\",\"    try:\",\"        claims = verify_cloudflare_assertion(assertion, domain, audience)\",\"        return cloudflare_user(db, claims)\",\"    except (InvalidCredentials, PyJWTError, PyJWKClientError, OSError) as exc:\",\"        raise _unauthorized() from exc\"]},{\"id\":\"eeg_api\",\"label\":\"EEG upload API\",\"kind\":\"route\",\"layer\":\"api\",\"file\":\"backend/app/api/uploads.py\",\"lines\":[82,101],\"excerpt\":[\"    try:\",\"        archive = request_stream_upload(\",\"            request,\",\"            filename=\\\"recordings.zip\\\",\",\"            content_type=\\\"application/zip\\\",\",\"        )\",\"    except UnsupportedRawUpload as exc:\",\"        raise HTTPException(status_code=415, detail=str(exc)) from exc\",\"    storage = SessionStorage()\",\"    expires_at = utc_now() + timedelta(seconds=UPLOAD_DRAFT_TTL_SECONDS)\",\"    try:\",\"        async with DRAFT_UPLOAD_LOCK:\",\"            cleanup_expired_drafts(db, storage)\",\"            draft = await create_upload_draft(\",\"                db, storage, archive, expires_at, current_user.id\",\"            )\",\"    except StorageError as exc:\",\"        raise HTTPException(status_code=503, detail=\\\"Private EEG storage is temporarily unavailable.\\\") from exc\",\"    finally:\",\"        await archive.close()\"]},{\"id\":\"video_api\",\"label\":\"Video upload API\",\"kind\":\"route\",\"layer\":\"api\",\"file\":\"backend/app/api/video_detection.py\",\"lines\":[414,434],\"note\":\"The reference-purpose header selects VEEG playback instead of standalone video inference.\",\"excerpt\":[\"async def create(\",\"    background_tasks: BackgroundTasks,\",\"    request: Request,\",\"    current_user: User = Depends(account),\",\"    db: Session = Depends(get_session),\",\"):\",\"    case_id = request.headers.get(\\\"x-case-id\\\") or None\",\"    reference_only = request.headers.get(\\\"x-video-purpose\\\") == \\\"reference\\\"\",\"    if reference_only and not CLINICAL_VIDEO_REVIEW_ENABLED:\",\"        raise HTTPException(\",\"            403,\",\"            \\\"Reference video review is disabled by the current runtime setting.\\\",\",\"        )\",\"    try:\",\"        blur_strength_percent = int(\",\"            request.headers.get(\\\"x-model-blur-percent\\\", \\\"0\\\")\",\"        )\",\"        if blur_strength_percent != 0:\",\"            raise ValueError(\\\"New analyses use unblurred input.\\\")\",\"    except (ValueError, DetectionError) as exc:\",\"        raise HTTPException(422, service.ERRORS[\\\"invalid_blur_strength\\\"]) from exc\"]},{\"id\":\"review\",\"label\":\"Review APIs\",\"kind\":\"route\",\"layer\":\"api\",\"file\":\"backend/app/api/recordings.py\",\"lines\":[350,372],\"note\":\"Owner-filtered lookups precede waveform, result, download and media reads.\",\"excerpt\":[\"    if not ENABLE_SIGNAL_PREVIEW:\",\"        raise HTTPException(\",\"            status_code=404,\",\"            detail=\\\"Waveform access is disabled by the service configuration.\\\",\",\"        )\",\"    max_duration = FULL_SIGNAL_PREVIEW_MAX_SECONDS if ENABLE_FULL_SIGNAL_PREVIEW else 660.0\",\"    if duration_seconds > max_duration:\",\"        raise HTTPException(status_code=422, detail=\\\"The requested signal range is too large.\\\")\",\"    record = _get_record(db, record_id, owner_id(current_user))\",\"    _audit_record_access(db, current_user, record, \\\"waveform_view\\\")\",\"    session = get_session_by_database_id(db, record.session_db_id, owner_id(current_user))\",\"    if session is None:\",\"        raise HTTPException(status_code=404, detail=\\\"Recording session was not found.\\\")\",\"    try:\",\"        preview = build_signal_preview(\",\"            db,\",\"            session,\",\"            record,\",\"            SessionStorage(),\",\"            start_seconds,\",\"            duration_seconds,\",\"            max_points,\",\"        )\"]},{\"id\":\"eeg\",\"label\":\"EEG processing\",\"kind\":\"job\",\"layer\":\"services\",\"file\":\"backend/app/services/processing_service.py\",\"lines\":[698,728],\"note\":\"Validation, metadata de-identification and model preprocessing use temporary private files.\",\"excerpt\":[\"    _set_session_status(db, session, AnalysisStatus.DEIDENTIFYING, \\\"deidentification\\\")\",\"    deid_attempt = _begin_attempt(db, session, ProcessingStage.DEIDENTIFICATION, record)\",\"    deid_path = storage.directory(session.session_id, \\\"deidentified\\\") / f\\\"{record.record_id}.edf\\\"\",\"    try:\",\"        if extracted_path.suffix.lower() == \\\".edf\\\":\",\"            deidentify_edf(record.extracted_path or \\\"\\\", deid_path, record.record_id)\",\"        else:\",\"            deidentify_eeg(record.extracted_path or \\\"\\\", deid_path, record.record_id)\",\"        record.deidentified_path = str(deid_path)\",\"        record.status = RecordingStatus.DEIDENTIFIED\",\"        db.add(record)\",\"        db.commit()\",\"        _finish_attempt(db, deid_attempt, ProcessingStatus.SUCCEEDED)\",\"    except Exception as exc:\",\"        _fail_attempt(db, deid_attempt, _safe_error(exc))\",\"        raise\",\"\",\"    _set_session_status(db, session, AnalysisStatus.PREPROCESSING, \\\"preprocessing\\\")\",\"    prep_attempt = _begin_attempt(db, session, ProcessingStage.PREPROCESSING, record)\",\"    try:\",\"        if extracted_path.suffix.lower() == \\\".edf\\\":\",\"            windows, starts, _details = preprocess_edf(str(deid_path))\",\"        elif extracted_path.suffix.lower() == \\\".e\\\":\",\"            model_segments = (\",\"                conversion_details.get(\\\"model_segments\\\")\",\"                if isinstance(conversion_details, dict)\",\"                else None\",\"            )\",\"            if not isinstance(model_segments, list) or not model_segments:\",\"                raise ValueError(\\\"Legacy Nicolet segment metadata is unavailable.\\\")\",\"            try:\"]},{\"id\":\"video\",\"label\":\"Video service\",\"kind\":\"service\",\"layer\":\"services\",\"file\":\"backend/app/services/video_detection_service.py\",\"lines\":[1100,1126],\"note\":\"Reference clips return after encrypted retention; standalone clips continue through admission and inference.\",\"excerpt\":[\"    job = VideoDetectionJob(owner_user_id=owner, case_id=case_id or new_case_id(), job_id=f\\\"VID-{secrets.token_hex(16).upper()}\\\",\",\"                            review_privacy_method=\\\"unblurred-owner-source\\\",\",\"                            reference_only=reference_only,\",\"                            source_name_token=[redacted],\",\"                            source_group_id=source_group_id,\",\"                            eeg_sync_status=(\\\"pending\\\" if source_group_id else \\\"unavailable\\\"),\",\"                            blur_strength_percent=blur_strength_percent,\",\"                            retention_expires_at=None)\",\"    db.add(job)\",\"    db.commit()\",\"    db.refresh(job)\",\"    try:\",\"        encrypted = await storage.save_upload(job.job_id, upload)\",\"        job.original_path = str(encrypted)\",\"        if reference_only:\",\"            # A reference upload is acknowledged after encrypted retention. A\",\"            # background metadata pass determines the clock map and browser\",\"            # compatibility without delaying the next selected clip or running\",\"            # any pose/model work.\",\"            job.playback_status = \\\"metadata_pending\\\"\",\"            job.status = \\\"ready\\\"\",\"            job.current_stage = \\\"reference-metadata\\\"\",\"            job.review_privacy_method = \\\"unblurred-owner-source\\\"\",\"            db.add(job)\",\"            db.commit()\",\"            db.refresh(job)\",\"            return job\"]},{\"id\":\"stream\",\"label\":\"Protected stream\",\"kind\":\"service\",\"layer\":\"services\",\"file\":\"backend/app/services/video_storage_service.py\",\"lines\":[304,323],\"note\":\"Authenticated chunks are decrypted for the requested byte range; legacy media may use a temporary private cache.\",\"excerpt\":[\"            headers = {\",\"                \\\"Cache-Control\\\": \\\"private, no-store, max-age=0\\\",\",\"                \\\"X-Content-Type-Options\\\": \\\"nosniff\\\",\",\"                \\\"Accept-Ranges\\\": \\\"bytes\\\",\",\"                \\\"Content-Length\\\": str(end - start + 1),\",\"            }\",\"            if status_code == 206:\",\"                headers[\\\"Content-Range\\\"] = f\\\"bytes {start}-{end}/{total}\\\"\",\"\",\"            def body() -> Iterator[bytes]:\",\"                try:\",\"                    yield from self._storage.iter_decrypted_range(\",\"                        encrypted_path, start, end\",\"                    )\",\"                finally:\",\"                    lease.__exit__(None, None, None)\",\"\",\"            return StreamingResponse(\",\"                body(), status_code=status_code, media_type=\\\"video/mp4\\\", headers=headers\",\"            )\"]},{\"id\":\"h5\",\"label\":\"H5 inference\",\"kind\":\"ai\",\"layer\":\"models\",\"file\":\"backend/app/ml/h5_inference.py\",\"lines\":[124,140],\"note\":\"The configured H5 adapter receives the validated plain tensor, not ciphertext.\",\"excerpt\":[\"    def predict(\",\"        self,\",\"        windows: np.ndarray,\",\"        window_starts: np.ndarray,\",\"        record_id: str,\",\"        privacy_method: str = CANONICAL_BASELINE,\",\"    ) -> list[WindowPrediction]:\",\"        \\\"\\\"\\\"Return thresholded model scores for private model windows.\\\"\\\"\\\"\",\"\",\"        validate_model_windows(windows, window_starts)\",\"        scores = np.asarray(self.model.predict(windows, verbose=0)).reshape(-1)\",\"        if (\",\"            len(scores) != len(window_starts)\",\"            or not np.isfinite(scores).all()\",\"            or np.any((scores \u003c 0) | (scores > 1))\",\"        ):\",\"            raise H5ModelError(\\\"The H5 model did not return one score in its reviewed output range per window.\\\")\"]},{\"id\":\"vsvig\",\"label\":\"VSViG + Grad-CAM\",\"kind\":\"ai\",\"layer\":\"models\",\"file\":\"backend/app/video_detection/runtime.py\",\"lines\":[29,58],\"note\":\"Standalone video only; pose gates and the pinned model contract still apply.\",\"excerpt\":[\"def _vsvig_gradcam(model, patches, coordinates, times, threshold):\",\"    \\\"\\\"\\\"Project graph Grad-CAM relevance onto VSViG's 30 frame × 15 patch nodes.\\\"\\\"\\\"\",\"\",\"    import torch\",\"\",\"    activations, logits = [], []\",\"    # Stage 1 is the last VSViG feature block with 15 sampled temporal positions;\",\"    # its graph axis is the same 15 keypoint patches exposed to the reviewer.\",\"    activation_hook = model.backbone[9].register_forward_hook(\",\"        lambda _module, _inputs, output: activations.append(output)\",\"    )\",\"    logit_hook = model.fc[-1].register_forward_hook(\",\"        lambda _module, _inputs, output: logits.append(output)\",\"    )\",\"    try:\",\"        with torch.inference_mode(False), torch.enable_grad():\",\"            patch_input = patches.detach().clone().requires_grad_(True)\",\"            coordinate_input = coordinates.detach().clone()\",\"            result = model(patch_input, coordinate_input)\",\"            if (\",\"                result.numel() != 1\",\"                or not activations\",\"                or not logits\",\"                or activations[-1].ndim != 5\",\"                or activations[-1].shape[0] != 1\",\"                or activations[-1].shape[1] != 15\",\"                or activations[-1].shape[3] != 15\",\"                or logits[-1].numel() != 1\",\"            ):\",\"                raise DetectionError(\\\"invalid_model_output\\\")\"]},{\"id\":\"files\",\"label\":\"Encrypted files\",\"kind\":\"bucket\",\"layer\":\"data\",\"file\":\"backend/app/services/storage_service.py\",\"lines\":[484,506],\"note\":\"AES-256-GCM retained files live outside PostgreSQL; video originals use authenticated chunks.\",\"excerpt\":[\"    async def _encrypt_upload(self, upload: UploadFile, destination: Path, *, max_bytes: int) -> Path:\",\"        \\\"\\\"\\\"Stream one upload through AES-GCM into an owner-only file.\\\"\\\"\\\"\",\"\",\"        total = 0\",\"        nonce = secrets.token_bytes(_NONCE_BYTES)\",\"        encryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce)).encryptor()\",\"        encryptor.authenticate_additional_data(self._associated_data(destination))\",\"        try:\",\"            with self._open_private_output(destination) as output:\",\"                output.write(_BOUND_ENCRYPTED_MAGIC)\",\"                output.write(nonce)\",\"                while chunk := await upload.read(1024 * 1024):\",\"                    total += len(chunk)\",\"                    if total > max_bytes:\",\"                        raise StorageError(\\\"Uploaded archive exceeds the size limit.\\\")\",\"                    output.write(encryptor.update(chunk))\",\"                output.write(encryptor.finalize())\",\"                output.write(encryptor.tag)\",\"        except Exception:\",\"            destination.unlink(missing_ok=True)\",\"            raise\",\"        os.chmod(destination, 0o600)\",\"        return destination\"]},{\"id\":\"db\",\"label\":\"Database\",\"kind\":\"db\",\"layer\":\"data\",\"file\":\"backend/app/database/video_detection_repository.py\",\"lines\":[8,20],\"note\":\"PostgreSQL in Compose; ordinary state and EEG scores are rows, while selected sensitive fields and new VSViG results are encrypted.\",\"excerpt\":[\"def get_job(db: Session, job_id: str, owner: int | None) -> VideoDetectionJob | None:\",\"    statement = select(VideoDetectionJob).where(VideoDetectionJob.job_id == job_id)\",\"    if owner is not None:\",\"        statement = statement.where(VideoDetectionJob.owner_user_id == owner)\",\"    return db.exec(statement).first()\",\"\",\"\",\"def list_jobs(db: Session, owner: int | None) -> list[VideoDetectionJob]:\",\"    statement = select(VideoDetectionJob)\",\"    if owner is not None:\",\"        statement = statement.where(VideoDetectionJob.owner_user_id == owner)\",\"    created_at = getattr(VideoDetectionJob, \\\"created_at\\\")\",\"    return list(db.exec(statement.order_by(desc(created_at))).all())\"]},{\"id\":\"key\",\"label\":\"Runtime storage key\",\"kind\":\"auth\",\"layer\":\"runtime\",\"file\":\"backend/app/privacy/crypto.py\",\"lines\":[14,26],\"note\":\"MDS01_STORAGE_KEY supplies 32 decoded bytes from the process environment; actual key values are never included in this map.\",\"excerpt\":[\"def read_base64_key(environment_name: str) -> bytes:\",\"    \\\"\\\"\\\"Return a required 32-byte base64 key from the process environment.\\\"\\\"\\\"\",\"\",\"    value = os.getenv(environment_name)\",\"    if not value:\",\"        raise CryptoError(f\\\"{environment_name} must be configured.\\\")\",\"    try:\",\"        key = base64.b64decode(value, validate=True)\",\"    except (binascii.Error, ValueError) as exc:\",\"        raise CryptoError(f\\\"{environment_name} must be valid base64.\\\") from exc\",\"    if len(key) != 32:\",\"        raise CryptoError(f\\\"{environment_name} must decode to exactly 32 bytes.\\\")\",\"    return key\"]}],\"edges\":[{\"id\":\"signin\",\"from\":\"reviewer\",\"to\":\"auth\",\"label\":\"Authenticate\"},{\"id\":\"eeg-upload\",\"from\":\"auth\",\"to\":\"eeg_api\",\"label\":\"EEG ZIP\"},{\"id\":\"video-upload\",\"from\":\"auth\",\"to\":\"video_api\",\"label\":\"Video clip\"},{\"id\":\"review-auth\",\"from\":\"auth\",\"to\":\"review\",\"label\":\"Read own case\"},{\"id\":\"archive-write\",\"from\":\"eeg_api\",\"to\":\"files\",\"label\":\"Encrypt draft\"},{\"id\":\"eeg-queue\",\"from\":\"eeg_api\",\"to\":\"eeg\",\"label\":\"Background task\"},{\"id\":\"source-read\",\"from\":\"files\",\"to\":\"eeg\",\"label\":\"Temporary decrypt\"},{\"id\":\"eeg-model\",\"from\":\"eeg\",\"to\":\"h5\",\"label\":\"Validated tensor\"},{\"id\":\"eeg-results\",\"from\":\"h5\",\"to\":\"db\",\"label\":\"Window scores\"},{\"id\":\"case-query\",\"from\":\"db\",\"to\":\"review\",\"label\":\"Owner lookup\"},{\"id\":\"waveform-read\",\"from\":\"files\",\"to\":\"review\",\"label\":\"Source waveform\"},{\"id\":\"show\",\"from\":\"review\",\"to\":\"reviewer\",\"label\":\"Return evidence\"},{\"id\":\"video-create\",\"from\":\"video_api\",\"to\":\"video\",\"label\":\"Purpose + owner\"},{\"id\":\"video-store\",\"from\":\"video\",\"to\":\"files\",\"label\":\"Encrypt media\"},{\"id\":\"video-read\",\"from\":\"files\",\"to\":\"video\",\"label\":\"Temporary decrypt\"},{\"id\":\"video-state\",\"from\":\"video\",\"to\":\"db\",\"label\":\"Status / protected result\"},{\"id\":\"video-model\",\"from\":\"video\",\"to\":\"vsvig\",\"label\":\"Pose + patches\"},{\"id\":\"video-output\",\"from\":\"vsvig\",\"to\":\"video\",\"label\":\"Model result\"},{\"id\":\"prepare\",\"from\":\"review\",\"to\":\"video\",\"label\":\"Open playback\"},{\"id\":\"stream-request\",\"from\":\"review\",\"to\":\"stream\",\"label\":\"Owner-authorized range\"},{\"id\":\"stream-read\",\"from\":\"files\",\"to\":\"stream\",\"label\":\"Decrypt chunks\"},{\"id\":\"playback\",\"from\":\"stream\",\"to\":\"reviewer\",\"label\":\"Private / no-store\"},{\"id\":\"file-key\",\"from\":\"key\",\"to\":\"files\",\"label\":\"AES-GCM\"},{\"id\":\"result-key\",\"from\":\"key\",\"to\":\"db\",\"label\":\"Selected fields\"}],\"scenarios\":[{\"id\":\"eeg\",\"title\":\"EEG → H5 → waveform review\",\"kind\":\"data\",\"steps\":[{\"say\":\"The backend authenticates the account before accepting its EEG upload.\",\"nodes\":[\"reviewer\",\"auth\",\"eeg_api\"],\"edges\":[\"signin\",\"eeg-upload\"],\"files\":[{\"path\":\"backend/app/core/security.py\",\"lines\":[49,68],\"role\":\"calls\",\"excerpt\":[\"    mode, domain, audience = auth_configuration()\",\"    if mode == \\\"local\\\":\",\"        return\",\"    if mode == \\\"local-accounts\\\":\",\"        if request.method in _STATE_CHANGING_METHODS:\",\"            require_request_origin(request)\",\"        user = user_for_session(db, session_token)\",\"        if user is None:\",\"            raise _unauthorized()\",\"        return user\",\"    if request.method in _STATE_CHANGING_METHODS:\",\"        require_request_origin(request)\",\"    if not assertion:\",\"        raise _unauthorized()\",\"\",\"    try:\",\"        claims = verify_cloudflare_assertion(assertion, domain, audience)\",\"        return cloudflare_user(db, claims)\",\"    except (InvalidCredentials, PyJWTError, PyJWKClientError, OSError) as exc:\",\"        raise _unauthorized() from exc\"]},{\"path\":\"backend/app/api/uploads.py\",\"lines\":[57,67],\"role\":\"calls\",\"excerpt\":[\"async def stage_upload(\",\"    request: Request,\",\"    db: Session = Depends(get_session),\",\"    current_user: User = Depends(require_owner_auth),\",\") -> dict:\",\"    \\\"\\\"\\\"Encrypt a ZIP into a short-lived draft before privacy selection.\",\"\",\"    Parameters\",\"    ----------\",\"    request : starlette.requests.Request\",\"        Raw ZIP request body, streamed directly into encrypted storage.\"]}],\"state\":{\"access\":\"authenticated owner\"}},{\"say\":\"The ZIP is encrypted into private storage as the request body arrives.\",\"nodes\":[\"eeg_api\",\"files\",\"key\"],\"edges\":[\"archive-write\",\"file-key\"],\"files\":[{\"path\":\"backend/app/api/uploads.py\",\"lines\":[82,101],\"role\":\"calls\",\"excerpt\":[\"    try:\",\"        archive = request_stream_upload(\",\"            request,\",\"            filename=\\\"recordings.zip\\\",\",\"            content_type=\\\"application/zip\\\",\",\"        )\",\"    except UnsupportedRawUpload as exc:\",\"        raise HTTPException(status_code=415, detail=str(exc)) from exc\",\"    storage = SessionStorage()\",\"    expires_at = utc_now() + timedelta(seconds=UPLOAD_DRAFT_TTL_SECONDS)\",\"    try:\",\"        async with DRAFT_UPLOAD_LOCK:\",\"            cleanup_expired_drafts(db, storage)\",\"            draft = await create_upload_draft(\",\"                db, storage, archive, expires_at, current_user.id\",\"            )\",\"    except StorageError as exc:\",\"        raise HTTPException(status_code=503, detail=\\\"Private EEG storage is temporarily unavailable.\\\") from exc\",\"    finally:\",\"        await archive.close()\"]},{\"path\":\"backend/app/services/storage_service.py\",\"lines\":[484,506],\"role\":\"writes\",\"excerpt\":[\"    async def _encrypt_upload(self, upload: UploadFile, destination: Path, *, max_bytes: int) -> Path:\",\"        \\\"\\\"\\\"Stream one upload through AES-GCM into an owner-only file.\\\"\\\"\\\"\",\"\",\"        total = 0\",\"        nonce = secrets.token_bytes(_NONCE_BYTES)\",\"        encryptor = Cipher(algorithms.AES(self._key()), modes.GCM(nonce)).encryptor()\",\"        encryptor.authenticate_additional_data(self._associated_data(destination))\",\"        try:\",\"            with self._open_private_output(destination) as output:\",\"                output.write(_BOUND_ENCRYPTED_MAGIC)\",\"                output.write(nonce)\",\"                while chunk := await upload.read(1024 * 1024):\",\"                    total += len(chunk)\",\"                    if total > max_bytes:\",\"                        raise StorageError(\\\"Uploaded archive exceeds the size limit.\\\")\",\"                    output.write(encryptor.update(chunk))\",\"                output.write(encryptor.finalize())\",\"                output.write(encryptor.tag)\",\"        except Exception:\",\"            destination.unlink(missing_ok=True)\",\"            raise\",\"        os.chmod(destination, 0o600)\",\"        return destination\"]},{\"path\":\"backend/app/privacy/crypto.py\",\"lines\":[14,26],\"role\":\"reads\",\"excerpt\":[\"def read_base64_key(environment_name: str) -> bytes:\",\"    \\\"\\\"\\\"Return a required 32-byte base64 key from the process environment.\\\"\\\"\\\"\",\"\",\"    value = os.getenv(environment_name)\",\"    if not value:\",\"        raise CryptoError(f\\\"{environment_name} must be configured.\\\")\",\"    try:\",\"        key = base64.b64decode(value, validate=True)\",\"    except (binascii.Error, ValueError) as exc:\",\"        raise CryptoError(f\\\"{environment_name} must be valid base64.\\\") from exc\",\"    if len(key) != 32:\",\"        raise CryptoError(f\\\"{environment_name} must decode to exactly 32 bytes.\\\")\",\"    return key\"]}],\"state\":{\"stored bytes\":\"AES-GCM ciphertext\"}},{\"say\":\"Finalization creates the session and schedules EEG processing after the response.\",\"nodes\":[\"eeg_api\",\"eeg\",\"db\"],\"edges\":[\"eeg-queue\"],\"files\":[{\"path\":\"backend/app/api/uploads.py\",\"lines\":[185,208],\"role\":\"calls\",\"excerpt\":[\"    handed_off = False\",\"    try:\",\"        storage = SessionStorage()\",\"        cleanup_expired_drafts(db, storage)\",\"        try:\",\"            finalization = finalize_upload_draft(\",\"                db,\",\"                storage,\",\"                draft_id,\",\"                privacy_profile,\",\"                owner_user_id=owner_user_id,\",\"                case_id=case_id,\",\"            )\",\"        except CaseReferenceError as exc:\",\"            raise HTTPException(status_code=400, detail=str(exc)) from exc\",\"        except StorageError as exc:\",\"            raise HTTPException(status_code=503, detail=\\\"Private EEG storage is temporarily unavailable.\\\") from exc\",\"        except ValueError as exc:\",\"            raise HTTPException(status_code=404, detail=str(exc)) from exc\",\"        session = finalization.session\",\"        if finalization.created:\",\"            background_tasks.add_task(processing_capacity.run_reserved, session.session_id)\",\"            handed_off = True\",\"        return {\\\"session_id\\\": session.session_id, \\\"case_id\\\": session.case_id, \\\"status\\\": session.status.value}\"]}],\"state\":{\"processing\":\"FastAPI background task\"}},{\"say\":\"Processing decrypts the archive temporarily and retains encrypted original recording bytes.\",\"nodes\":[\"files\",\"eeg\"],\"edges\":[\"source-read\"],\"files\":[{\"path\":\"backend/app/services/processing_service.py\",\"lines\":[437,448],\"role\":\"reads\",\"excerpt\":[\"        try:\",\"            validation_attempt: ProcessingAttempt | None = None\",\"            try:\",\"                inference = get_inference_service()\",\"                _set_session_status(db, session, AnalysisStatus.VALIDATING, \\\"validation\\\")\",\"                validation_attempt = _begin_attempt(db, session, ProcessingStage.VALIDATION)\",\"                archive_path = storage.materialize_archive(session.session_id, Path(session.original_path))\",\"                reference_annotations = storage.read_reference_annotations(archive_path)\",\"                extracted_paths = storage.extract_edfs(session.session_id, archive_path)\",\"                candidate_events = storage.read_embedded_eeg_events(extracted_paths)\",\"                embedded_events = candidate_events if isinstance(candidate_events, dict) else {}\",\"                _finish_attempt(db, validation_attempt, ProcessingStatus.SUCCEEDED)\"]},{\"path\":\"backend/app/services/processing_service.py\",\"lines\":[665,680],\"role\":\"writes\",\"excerpt\":[\"    extracted_path = Path(record.extracted_path or \\\"\\\")\",\"    if session.retention_policy == \\\"until-deletion\\\" and not record.original_artifact_path:\",\"        # Preserve bytes before validation or inference can fail; plaintext is transient.\",\"        suffix = extracted_path.suffix.lower()\",\"        copy = storage.directory(session.session_id, \\\"work\\\") / f\\\"{record.record_id}.source{suffix}\\\"\",\"        shutil.copyfile(extracted_path, copy)\",\"        if suffix == \\\".data\\\":\",\"            header_copy = copy.with_suffix(\\\".head\\\")\",\"            shutil.copyfile(extracted_path.with_suffix(\\\".head\\\"), header_copy)\",\"            storage.store_encrypted_artifact(session.session_id, header_copy, f\\\"{record.record_id}.source.head\\\")\",\"        record.original_artifact_path = str(storage.store_encrypted_artifact(\",\"            session.session_id, copy, f\\\"{record.record_id}.source{suffix}\\\"\",\"        ))\",\"        db.add(record)\",\"        db.commit()\",\"    technical = validate_edf(extracted_path) if extracted_path.suffix.lower() == \\\".edf\\\" else validate_eeg(extracted_path)\"]}],\"state\":{\"source retention\":\"until case deletion\"}},{\"say\":\"The EEG service de-identifies model metadata and prepares the reviewed model windows.\",\"nodes\":[\"eeg\"],\"edges\":[],\"files\":[{\"path\":\"backend/app/services/processing_service.py\",\"lines\":[698,719],\"role\":\"calls\",\"excerpt\":[\"    _set_session_status(db, session, AnalysisStatus.DEIDENTIFYING, \\\"deidentification\\\")\",\"    deid_attempt = _begin_attempt(db, session, ProcessingStage.DEIDENTIFICATION, record)\",\"    deid_path = storage.directory(session.session_id, \\\"deidentified\\\") / f\\\"{record.record_id}.edf\\\"\",\"    try:\",\"        if extracted_path.suffix.lower() == \\\".edf\\\":\",\"            deidentify_edf(record.extracted_path or \\\"\\\", deid_path, record.record_id)\",\"        else:\",\"            deidentify_eeg(record.extracted_path or \\\"\\\", deid_path, record.record_id)\",\"        record.deidentified_path = str(deid_path)\",\"        record.status = RecordingStatus.DEIDENTIFIED\",\"        db.add(record)\",\"        db.commit()\",\"        _finish_attempt(db, deid_attempt, ProcessingStatus.SUCCEEDED)\",\"    except Exception as exc:\",\"        _fail_attempt(db, deid_attempt, _safe_error(exc))\",\"        raise\",\"\",\"    _set_session_status(db, session, AnalysisStatus.PREPROCESSING, \\\"preprocessing\\\")\",\"    prep_attempt = _begin_attempt(db, session, ProcessingStage.PREPROCESSING, record)\",\"    try:\",\"        if extracted_path.suffix.lower() == \\\".edf\\\":\",\"            windows, starts, _details = preprocess_edf(str(deid_path))\"]},{\"path\":\"backend/app/services/processing_service.py\",\"lines\":[743,753],\"role\":\"calls\",\"excerpt\":[\"            windows, starts, _details = preprocess_eeg(\",\"                str(deid_path),\",\"                segments=segment_layout,\",\"            )\",\"        else:\",\"            windows, starts, _details = preprocess_eeg(str(deid_path))\",\"        record.preprocessed_path = None\",\"        record.status = RecordingStatus.PROCESSED\",\"        db.add(record)\",\"        db.commit()\",\"        _finish_attempt(db, prep_attempt, ProcessingStatus.SUCCEEDED)\"]}],\"state\":{\"H5 input\":\"256 Hz · 18 channels · 4-second windows\"}},{\"say\":\"The H5 adapter validates the normal tensor and predicts one research score per window.\",\"nodes\":[\"eeg\",\"h5\"],\"edges\":[\"eeg-model\"],\"files\":[{\"path\":\"backend/app/services/processing_service.py\",\"lines\":[758,769],\"role\":\"calls\",\"excerpt\":[\"    _set_session_status(db, session, AnalysisStatus.INFERENCE, \\\"inference\\\")\",\"    inference_attempt = _begin_attempt(db, session, ProcessingStage.INFERENCE, record)\",\"    try:\",\"        model_windows = windows\",\"        if SIGNAL_OBFUSCATION in methods_from_profile(session.privacy_method):\",\"            model_windows = obfuscate_signal(windows, read_base64_key(TEMPLATE_KEY_ENV))\",\"        predictions = inference.predict(\",\"            model_windows,\",\"            starts,\",\"            record.record_id,\",\"            privacy_method=session.privacy_method,\",\"        )\"]},{\"path\":\"backend/app/ml/h5_inference.py\",\"lines\":[124,140],\"role\":\"calls\",\"excerpt\":[\"    def predict(\",\"        self,\",\"        windows: np.ndarray,\",\"        window_starts: np.ndarray,\",\"        record_id: str,\",\"        privacy_method: str = CANONICAL_BASELINE,\",\"    ) -> list[WindowPrediction]:\",\"        \\\"\\\"\\\"Return thresholded model scores for private model windows.\\\"\\\"\\\"\",\"\",\"        validate_model_windows(windows, window_starts)\",\"        scores = np.asarray(self.model.predict(windows, verbose=0)).reshape(-1)\",\"        if (\",\"            len(scores) != len(window_starts)\",\"            or not np.isfinite(scores).all()\",\"            or np.any((scores \u003c 0) | (scores > 1))\",\"        ):\",\"            raise H5ModelError(\\\"The H5 model did not return one score in its reviewed output range per window.\\\")\"]}],\"state\":{\"model input\":\"plain float32 tensor in processing memory\"}},{\"say\":\"Window scores are saved to database rows and temporary processing files are cleaned up.\",\"nodes\":[\"h5\",\"db\",\"files\"],\"edges\":[\"eeg-results\"],\"files\":[{\"path\":\"backend/app/services/processing_service.py\",\"lines\":[770,792],\"role\":\"writes\",\"excerpt\":[\"        for prediction in predictions:\",\"            db_prediction = Prediction(\",\"                recording_db_id=record.id,\",\"                window_index=prediction.window_index,\",\"                model_name=inference.model_name,\",\"                model_version=inference.model_version,\",\"                threshold=inference.threshold,\",\"                probability=prediction.probability,\",\"                raw_score=prediction.raw_score,\",\"                calibrated_probability=prediction.calibrated_probability,\",\"                score_type=prediction.score_type,\",\"                calibration_method=prediction.calibration_method,\",\"                calibration_version=prediction.calibration_version,\",\"                calibration_dataset=prediction.calibration_dataset,\",\"                privacy_method=session.privacy_method,\",\"                seizure_detected=prediction.seizure_detected,\",\"                start_seconds=prediction.start_seconds,\",\"                end_seconds=prediction.end_seconds,\",\"            )\",\"            db.add(db_prediction)\",\"        db.add(record)\",\"        db.commit()\",\"        _finish_attempt(db, inference_attempt, ProcessingStatus.SUCCEEDED)\"]},{\"path\":\"backend/app/services/processing_service.py\",\"lines\":[599,620],\"role\":\"calls\",\"excerpt\":[\"        finally:\",\"            # A failed flush leaves SQLAlchemy unusable until rollback. Clear\",\"            # that state before touching private storage or querying records.\",\"            db.rollback()\",\"            cleanup_succeeded = True\",\"            try:\",\"                storage.cleanup_session(session_id, keep_retained=True, keep_original=session.retention_policy == \\\"until-deletion\\\")\",\"            except Exception:\",\"                cleanup_succeeded = False\",\"                LOGGER.warning(\\\"EEG private cleanup unavailable; retrying later.\\\")\",\"            db.rollback()\",\"            current_session = get_session_by_public_id(db, session_id)\",\"            if current_session is None or current_session.id is None:\",\"                return\",\"            if cleanup_succeeded:\",\"                if current_session.retention_policy != \\\"until-deletion\\\":\",\"                    current_session.original_path = \\\"\\\"\",\"                for record in list_recordings_for_session(db, current_session.id):\",\"                    record.extracted_path = None\",\"                    record.preprocessed_path = None\",\"                    record.deidentified_path = None\",\"                    db.add(record)\"]}],\"state\":{\"results\":\"scores and timestamps; retained sources stay encrypted\"}},{\"say\":\"An authorized waveform request reads a bounded source interval and removes its temporary plaintext.\",\"nodes\":[\"auth\",\"review\",\"db\",\"files\",\"reviewer\"],\"edges\":[\"review-auth\",\"case-query\",\"waveform-read\",\"show\"],\"files\":[{\"path\":\"backend/app/api/recordings.py\",\"lines\":[350,372],\"role\":\"calls\",\"excerpt\":[\"    if not ENABLE_SIGNAL_PREVIEW:\",\"        raise HTTPException(\",\"            status_code=404,\",\"            detail=\\\"Waveform access is disabled by the service configuration.\\\",\",\"        )\",\"    max_duration = FULL_SIGNAL_PREVIEW_MAX_SECONDS if ENABLE_FULL_SIGNAL_PREVIEW else 660.0\",\"    if duration_seconds > max_duration:\",\"        raise HTTPException(status_code=422, detail=\\\"The requested signal range is too large.\\\")\",\"    record = _get_record(db, record_id, owner_id(current_user))\",\"    _audit_record_access(db, current_user, record, \\\"waveform_view\\\")\",\"    session = get_session_by_database_id(db, record.session_db_id, owner_id(current_user))\",\"    if session is None:\",\"        raise HTTPException(status_code=404, detail=\\\"Recording session was not found.\\\")\",\"    try:\",\"        preview = build_signal_preview(\",\"            db,\",\"            session,\",\"            record,\",\"            SessionStorage(),\",\"            start_seconds,\",\"            duration_seconds,\",\"            max_points,\",\"        )\"]},{\"path\":\"backend/app/services/signal_service.py\",\"lines\":[397,408],\"role\":\"reads\",\"excerpt\":[\"def _source_preview(session, record, storage, start, duration, max_points):\",\"    \\\"\\\"\\\"Owner source review is independent of model success and flagged windows.\\\"\\\"\\\"\",\"    from backend.app.eeg.legacy_nicolet import LegacyNicoletReader\",\"    artifact = Path(record.original_artifact_path)\",\"    suffix = artifact.name.removesuffix(\\\".enc\\\").split(\\\".\\\")[-1]\",\"    temporary = storage.materialize_retained_artifact(\",\"        session.session_id, artifact, f\\\"{record.record_id}.{secrets.token_hex(16)}.source.{suffix}\\\"\",\"    )\",\"    header_temporary = None\",\"    try:\",\"        if suffix == \\\"e\\\":\",\"            payload = LegacyNicoletReader(temporary).read_source_range(start, start + duration, max_points)\"]},{\"path\":\"backend/app/services/signal_service.py\",\"lines\":[471,476],\"role\":\"calls\",\"excerpt\":[\"        payload.update({\\\"record_id\\\": record.record_id, \\\"representation\\\": \\\"original-source\\\", \\\"flagged_intervals\\\": []})\",\"        return payload\",\"    finally:\",\"        temporary.unlink(missing_ok=True)\",\"        if header_temporary:\",\"            header_temporary.unlink(missing_ok=True)\"]}],\"state\":{\"viewer\":\"source waveform, independent of flagged windows\"}}]},{\"id\":\"veeg\",\"title\":\"VEEG reference video → protected playback\",\"kind\":\"user\",\"steps\":[{\"say\":\"An authenticated upload marks the clip as reference video for the EEG case.\",\"nodes\":[\"reviewer\",\"auth\",\"video_api\"],\"edges\":[\"signin\",\"video-upload\"],\"files\":[{\"path\":\"backend/app/api/video_detection.py\",\"lines\":[414,434],\"role\":\"calls\",\"excerpt\":[\"async def create(\",\"    background_tasks: BackgroundTasks,\",\"    request: Request,\",\"    current_user: User = Depends(account),\",\"    db: Session = Depends(get_session),\",\"):\",\"    case_id = request.headers.get(\\\"x-case-id\\\") or None\",\"    reference_only = request.headers.get(\\\"x-video-purpose\\\") == \\\"reference\\\"\",\"    if reference_only and not CLINICAL_VIDEO_REVIEW_ENABLED:\",\"        raise HTTPException(\",\"            403,\",\"            \\\"Reference video review is disabled by the current runtime setting.\\\",\",\"        )\",\"    try:\",\"        blur_strength_percent = int(\",\"            request.headers.get(\\\"x-model-blur-percent\\\", \\\"0\\\")\",\"        )\",\"        if blur_strength_percent != 0:\",\"            raise ValueError(\\\"New analyses use unblurred input.\\\")\",\"    except (ValueError, DetectionError) as exc:\",\"        raise HTTPException(422, service.ERRORS[\\\"invalid_blur_strength\\\"]) from exc\"]}],\"state\":{\"purpose\":\"reference; no video-model inference\"}},{\"say\":\"The video service encrypts the original in chunks and acknowledges it before metadata probing.\",\"nodes\":[\"video_api\",\"video\",\"files\",\"key\"],\"edges\":[\"video-create\",\"video-store\",\"file-key\"],\"files\":[{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[1100,1126],\"role\":\"calls\",\"excerpt\":[\"    job = VideoDetectionJob(owner_user_id=owner, case_id=case_id or new_case_id(), job_id=f\\\"VID-{secrets.token_hex(16).upper()}\\\",\",\"                            review_privacy_method=\\\"unblurred-owner-source\\\",\",\"                            reference_only=reference_only,\",\"                            source_name_token=[redacted],\",\"                            source_group_id=source_group_id,\",\"                            eeg_sync_status=(\\\"pending\\\" if source_group_id else \\\"unavailable\\\"),\",\"                            blur_strength_percent=blur_strength_percent,\",\"                            retention_expires_at=None)\",\"    db.add(job)\",\"    db.commit()\",\"    db.refresh(job)\",\"    try:\",\"        encrypted = await storage.save_upload(job.job_id, upload)\",\"        job.original_path = str(encrypted)\",\"        if reference_only:\",\"            # A reference upload is acknowledged after encrypted retention. A\",\"            # background metadata pass determines the clock map and browser\",\"            # compatibility without delaying the next selected clip or running\",\"            # any pose/model work.\",\"            job.playback_status = \\\"metadata_pending\\\"\",\"            job.status = \\\"ready\\\"\",\"            job.current_stage = \\\"reference-metadata\\\"\",\"            job.review_privacy_method = \\\"unblurred-owner-source\\\"\",\"            db.add(job)\",\"            db.commit()\",\"            db.refresh(job)\",\"            return job\"]},{\"path\":\"backend/app/services/video_storage_service.py\",\"lines\":[76,84],\"role\":\"writes\",\"excerpt\":[\"    async def save_upload(self, job_id: str, upload: UploadFile) -> Path:\",\"        \\\"\\\"\\\"Encrypt the incoming media before it reaches the processor.\\\"\\\"\\\"\",\"\",\"        return await self._storage.save_chunked_upload(\",\"            self._validate_job_id(job_id),\",\"            upload,\",\"            max_bytes=MAX_VIDEO_UPLOAD_BYTES,\",\"            filename=\\\"video.input.enc\\\",\",\"        )\"]},{\"path\":\"backend/app/services/storage_service.py\",\"lines\":[263,280],\"role\":\"writes\",\"excerpt\":[\"        aes = AESGCM(self._key())\",\"        path_aad = self._associated_data(destination)\",\"        total = 0\",\"        chunk_count = 0\",\"        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, \\\"O_NOFOLLOW\\\", 0)\",\"        try:\",\"            descriptor = os.open(destination, flags, 0o600)\",\"            with os.fdopen(descriptor, \\\"w+b\\\") as output:\",\"                output.write(b\\\"\\\\0\\\" * _CHUNKED_HEADER_BYTES)\",\"                while chunk := await upload.read(chunk_bytes):\",\"                    total += len(chunk)\",\"                    if total > max_bytes:\",\"                        raise StorageError(\\\"Uploaded video exceeds the size limit.\\\")\",\"                    nonce = secrets.token_bytes(_NONCE_BYTES)\",\"                    aad = self._chunk_aad(path_aad, chunk_count, len(chunk))\",\"                    output.write(nonce)\",\"                    output.write(aes.encrypt(nonce, chunk, aad))\",\"                    chunk_count += 1\"]}],\"state\":{\"playback\":\"metadata_pending\"}},{\"say\":\"Background work probes clock and format metadata, sets playback status, and removes the probe plaintext.\",\"nodes\":[\"video\",\"db\",\"files\"],\"edges\":[\"video-read\",\"video-state\"],\"files\":[{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[1493,1526],\"role\":\"calls\",\"excerpt\":[\"            storage = VideoStorage()\",\"            source: Path | None = None\",\"            try:\",\"                with storage._storage.read_lease(job.job_id):\",\"                    source = storage.materialize_original(\",\"                        job.job_id, Path(job.original_path)\",\"                    )\",\"                    info = _probe_reference_video_path(source)\",\"                job.fps = float(info[\\\"fps\\\"])\",\"                job.source_frame_count = int(info[\\\"frame_count\\\"])\",\"                job.source_width = int(info[\\\"width\\\"])\",\"                job.source_height = int(info[\\\"height\\\"])\",\"                job.duration_seconds = job.source_frame_count / job.fps\",\"                job.playback_status = (\",\"                    \\\"direct\\\"\",\"                    if info.get(\\\"browser_compatible\\\") is True\",\"                    else \\\"conversion_required\\\"\",\"                )\",\"                job.current_stage = \\\"reference-available\\\"\",\"                job.error_code = None\",\"            except Exception as exc:\",\"                job.playback_status = \\\"unavailable\\\"\",\"                job.current_stage = \\\"reference-unavailable\\\"\",\"                job.error_code = \\\"video_incompatible\\\"\",\"                LOGGER.warning(\",\"                    \\\"Reference video metadata unavailable (exception_type=%s).\\\",\",\"                    type(exc).__name__,\",\"                )\",\"            finally:\",\"                if source is not None:\",\"                    try:\",\"                        storage.delete_work_file(source)\",\"                    except Exception:\",\"                        LOGGER.warning(\\\"Reference video metadata cleanup is pending.\\\")\"]},{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[1527,1533],\"role\":\"calls\",\"excerpt\":[\"            db.add(job)\",\"            db.commit()\",\"            if job.case_id and job.source_group_id:\",\"                try:\",\"                    from backend.app.services.video_sync_service import resolve_case_video_sync\",\"\",\"                    resolve_case_video_sync(db, job.owner_user_id, job.case_id)\"]}],\"state\":{\"playback\":\"direct or conversion_required; sync mapping remains conservative\"}},{\"say\":\"Opening an unsupported clip claims one conversion for that owner, reusing an existing request.\",\"nodes\":[\"auth\",\"review\",\"video\",\"db\"],\"edges\":[\"review-auth\",\"prepare\",\"video-state\"],\"files\":[{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[1435,1459],\"role\":\"calls\",\"excerpt\":[\"def request_reference_playback(\",\"    db: Session, job_id: str, owner_user_id: int\",\") -> tuple[VideoDetectionJob, bool]:\",\"    \\\"\\\"\\\"Atomically claim one owner-requested reference conversion.\\\"\\\"\\\"\",\"\",\"    result = db.exec(\",\"        update(VideoDetectionJob)\",\"        .where(\",\"            VideoDetectionJob.job_id == job_id,\",\"            VideoDetectionJob.owner_user_id == owner_user_id,\",\"            VideoDetectionJob.reference_only.is_(True),\",\"            VideoDetectionJob.playback_status.in_((\\\"conversion_required\\\", \\\"failed\\\")),\",\"        )\",\"        .values(\",\"            playback_status=\\\"processing\\\",\",\"            playback_path=None,\",\"            current_stage=\\\"reference-playback\\\",\",\"        )\",\"    )\",\"    claimed = result.rowcount == 1\",\"    db.commit()\",\"    job = repository.get_job(db, job_id, owner_user_id)\",\"    if job is None:\",\"        raise DetectionError(\\\"video_incompatible\\\")\",\"    return job, claimed\"]}],\"state\":{\"conversion trigger\":\"owner opens playback\"}},{\"say\":\"When needed, playback preparation creates and encrypts a compatible copy while retaining the original.\",\"nodes\":[\"video\",\"files\"],\"edges\":[\"video-read\",\"video-store\"],\"files\":[{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[1570,1597],\"role\":\"calls\",\"excerpt\":[\"                copy_h264_video = (\",\"                    info.get(\\\"codec_name\\\") == \\\"h264\\\"\",\"                    and info.get(\\\"pix_fmt\\\") == \\\"yuv420p\\\"\",\"                )\",\"\",\"                def finalize_and_validate(*, copy_video: bool) -> int:\",\"                    finalize_protected_video(\",\"                        source,\",\"                        source,\",\"                        output,\",\"                        copy_h264_video=copy_video,\",\"                    )\",\"                    return validate_visualization_artifact(\",\"                        output,\",\"                        expected_fps=job.fps,\",\"                        expected_width=job.source_width,\",\"                        expected_height=job.source_height,\",\"                        expected_duration=job.duration_seconds,\",\"                        count_frames=False,\",\"                    )\",\"\",\"                if copy_h264_video:\",\"                    try:\",\"                        output_frames = finalize_and_validate(copy_video=True)\",\"                    except (VideoProcessorError, DetectionError):\",\"                        output_frames = finalize_and_validate(copy_video=False)\",\"                else:\",\"                    output_frames = finalize_and_validate(copy_video=False)\"]},{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[1605,1614],\"role\":\"writes\",\"excerpt\":[\"                encrypted_output = storage.store_artifact(\",\"                    job.job_id, output, \\\"video.playback.mp4\\\"\",\"                )\",\"                output = None  # store_artifact encrypts and removes plaintext.\",\"                job.playback_path = str(encrypted_output)\",\"                job.playback_status = \\\"ready\\\"\",\"                job.current_stage = \\\"reference-playback-ready\\\"\",\"                job.review_privacy_method = \\\"unblurred-owner-source\\\"\",\"                db.add(job)\",\"                db.commit()\"]}],\"state\":{\"models\":\"OpenPose and VSViG are not called\"}},{\"say\":\"Each media request repeats the owner lookup before choosing the original or prepared copy.\",\"nodes\":[\"auth\",\"review\",\"db\",\"stream\"],\"edges\":[\"review-auth\",\"case-query\",\"stream-request\"],\"files\":[{\"path\":\"backend/app/api/video_detection.py\",\"lines\":[750,771],\"role\":\"calls\",\"excerpt\":[\"def reference_playback(\",\"    job_id: str,\",\"    request: Request,\",\"    current_user: User = Depends(account),\",\"    db: Session = Depends(get_session),\",\"):\",\"    storage = VideoStorage()\",\"    job = owned(job_id, scoped_owner(current_user), db, storage)\",\"    if not service.clinical_review_video_allowed(job):\",\"        raise HTTPException(\",\"            403,\",\"            \\\"Reference video review is disabled by the current runtime setting.\\\",\",\"        )\",\"    if not job.reference_only:\",\"        raise HTTPException(409, \\\"This playback endpoint is for VEEG reference clips only.\\\")\",\"    if job.id is not None:\",\"        record_clinical_access(\",\"            db,\",\"            actor_user_id=current_user.id,\",\"            video_job_db_id=job.id,\",\"            action=\\\"video_stream\\\",\",\"        )\"]},{\"path\":\"backend/app/api/video_detection.py\",\"lines\":[773,794],\"role\":\"calls\",\"excerpt\":[\"        if job.playback_status == \\\"direct\\\":\",\"            expected = storage.root / job.job_id / \\\"original\\\" / \\\"video.input.enc\\\"\",\"            if (\",\"                job.original_path != str(expected)\",\"                or not expected.is_file()\",\"                or expected.is_symlink()\",\"            ):\",\"                raise StorageError(\\\"Stored source path is invalid.\\\")\",\"            return storage.source_playback_response(\",\"                job_id, Path(job.original_path), request.headers.get(\\\"range\\\")\",\"            )\",\"        if job.playback_status == \\\"ready\\\" and job.playback_path:\",\"            expected_playback = storage.playback_path(job_id)\",\"            expected_legacy = storage.visualization_path(job_id)\",\"            if Path(job.playback_path) not in {expected_playback, expected_legacy}:\",\"                raise StorageError(\\\"Stored playback path is invalid.\\\")\",\"            return storage.reference_playback_response(\",\"                job_id, Path(job.playback_path), request.headers.get(\\\"range\\\")\",\"            )\",\"    except Exception as exc:\",\"        raise HTTPException(409, \\\"The protected playback video is unavailable.\\\") from exc\",\"    raise HTTPException(409, \\\"Open this clip in the review popup to prepare playback.\\\")\"]},{\"path\":\"backend/app/database/video_detection_repository.py\",\"lines\":[8,12],\"role\":\"reads\",\"excerpt\":[\"def get_job(db: Session, job_id: str, owner: int | None) -> VideoDetectionJob | None:\",\"    statement = select(VideoDetectionJob).where(VideoDetectionJob.job_id == job_id)\",\"    if owner is not None:\",\"        statement = statement.where(VideoDetectionJob.owner_user_id == owner)\",\"    return db.exec(statement).first()\"]}],\"state\":{\"access\":\"owner checked for every range request\"}},{\"say\":\"The stream decrypts authenticated chunks for the requested range and returns private, no-store video.\",\"nodes\":[\"files\",\"stream\",\"reviewer\"],\"edges\":[\"stream-read\",\"playback\"],\"files\":[{\"path\":\"backend/app/services/video_storage_service.py\",\"lines\":[304,323],\"role\":\"calls\",\"excerpt\":[\"            headers = {\",\"                \\\"Cache-Control\\\": \\\"private, no-store, max-age=0\\\",\",\"                \\\"X-Content-Type-Options\\\": \\\"nosniff\\\",\",\"                \\\"Accept-Ranges\\\": \\\"bytes\\\",\",\"                \\\"Content-Length\\\": str(end - start + 1),\",\"            }\",\"            if status_code == 206:\",\"                headers[\\\"Content-Range\\\"] = f\\\"bytes {start}-{end}/{total}\\\"\",\"\",\"            def body() -> Iterator[bytes]:\",\"                try:\",\"                    yield from self._storage.iter_decrypted_range(\",\"                        encrypted_path, start, end\",\"                    )\",\"                finally:\",\"                    lease.__exit__(None, None, None)\",\"\",\"            return StreamingResponse(\",\"                body(), status_code=status_code, media_type=\\\"video/mp4\\\", headers=headers\",\"            )\"]}],\"state\":{\"retained media\":\"encrypted until case deletion\"}}]},{\"id\":\"video\",\"title\":\"Standalone video → VSViG → protected results\",\"kind\":\"data\",\"steps\":[{\"say\":\"An authenticated standalone video upload enters the model workflow instead of reference playback.\",\"nodes\":[\"reviewer\",\"auth\",\"video_api\",\"video\"],\"edges\":[\"signin\",\"video-upload\",\"video-create\"],\"files\":[{\"path\":\"backend/app/api/video_detection.py\",\"lines\":[414,434],\"role\":\"calls\",\"excerpt\":[\"async def create(\",\"    background_tasks: BackgroundTasks,\",\"    request: Request,\",\"    current_user: User = Depends(account),\",\"    db: Session = Depends(get_session),\",\"):\",\"    case_id = request.headers.get(\\\"x-case-id\\\") or None\",\"    reference_only = request.headers.get(\\\"x-video-purpose\\\") == \\\"reference\\\"\",\"    if reference_only and not CLINICAL_VIDEO_REVIEW_ENABLED:\",\"        raise HTTPException(\",\"            403,\",\"            \\\"Reference video review is disabled by the current runtime setting.\\\",\",\"        )\",\"    try:\",\"        blur_strength_percent = int(\",\"            request.headers.get(\\\"x-model-blur-percent\\\", \\\"0\\\")\",\"        )\",\"        if blur_strength_percent != 0:\",\"            raise ValueError(\\\"New analyses use unblurred input.\\\")\",\"    except (ValueError, DetectionError) as exc:\",\"        raise HTTPException(422, service.ERRORS[\\\"invalid_blur_strength\\\"]) from exc\"]},{\"path\":\"backend/app/api/video_detection.py\",\"lines\":[489,495],\"role\":\"calls\",\"excerpt\":[\"        if job.reference_only and job.playback_status == \\\"metadata_pending\\\":\",\"            service.enqueue_reference_metadata(job.job_id)\",\"        elif job.status == \\\"queued\\\":\",\"            background_tasks.add_task(service.process_job, job.job_id)\",\"        elif job.current_stage == \\\"privacy-review\\\":\",\"            background_tasks.add_task(service.process_rejected_review_job, job.job_id)\",\"        return {\\\"job\\\": service.public_job(db, job, VideoStorage())}\"]}],\"state\":{\"purpose\":\"standalone video inference\"}},{\"say\":\"The original is encrypted before the standalone admission checks read it.\",\"nodes\":[\"video\",\"files\",\"key\"],\"edges\":[\"video-store\",\"file-key\"],\"files\":[{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[1111,1118],\"role\":\"calls\",\"excerpt\":[\"    try:\",\"        encrypted = await storage.save_upload(job.job_id, upload)\",\"        job.original_path = str(encrypted)\",\"        if reference_only:\",\"            # A reference upload is acknowledged after encrypted retention. A\",\"            # background metadata pass determines the clock map and browser\",\"            # compatibility without delaying the next selected clip or running\",\"            # any pose/model work.\"]},{\"path\":\"backend/app/services/video_storage_service.py\",\"lines\":[76,84],\"role\":\"writes\",\"excerpt\":[\"    async def save_upload(self, job_id: str, upload: UploadFile) -> Path:\",\"        \\\"\\\"\\\"Encrypt the incoming media before it reaches the processor.\\\"\\\"\\\"\",\"\",\"        return await self._storage.save_chunked_upload(\",\"            self._validate_job_id(job_id),\",\"            upload,\",\"            max_bytes=MAX_VIDEO_UPLOAD_BYTES,\",\"            filename=\\\"video.input.enc\\\",\",\"        )\"]}],\"state\":{\"stored original\":\"chunk-encrypted AES-GCM\"}},{\"say\":\"Metadata and pose readiness must pass before inference can be queued.\",\"nodes\":[\"video\"],\"edges\":[],\"files\":[{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[1128,1141],\"role\":\"calls\",\"excerpt\":[\"        try:\",\"            info = await asyncio.to_thread(_preflight_uploaded_video, storage, job.job_id, encrypted)\",\"        except VideoProcessorError:\",\"            return _record_admission_failure(db, storage, job, \\\"video_incompatible\\\")\",\"        admission = _video_admission(info)\",\"        if not reference_only and not admission[\\\"accepted\\\"]:\",\"            metadata_admission = _video_metadata_admission(info)\",\"            if metadata_admission[\\\"accepted\\\"]:\",\"                error_code = _pose_readiness_error_code(info.get(\\\"pose_readiness\\\"))\",\"            elif (\",\"                info.get(\\\"width\\\") is not None\",\"                and info.get(\\\"height\\\") is not None\",\"                and (int(info[\\\"width\\\"]), int(info[\\\"height\\\"])) != (1920, 1080)\",\"                and not VSVIG_ALLOW_LETTERBOX_ADAPTATION\"]}],\"state\":{\"gate\":\"incompatible input or missing required joints can block a score\"}},{\"say\":\"The worker decrypts a private working copy and prepares the pinned model input.\",\"nodes\":[\"files\",\"video\"],\"edges\":[\"video-read\"],\"files\":[{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[1205,1235],\"role\":\"reads\",\"excerpt\":[\"        source: Path | None = None\",\"        try:\",\"            job.status, job.current_stage = \\\"processing\\\", \\\"normalization\\\"\",\"            db.add(job)\",\"            db.commit()\",\"            source = storage.materialize_original(job_id, Path(job.original_path))\",\"            source_metadata = VideoPrivacyProcessor.preflight(source)\",\"            source_width = int(source_metadata[\\\"width\\\"])\",\"            source_height = int(source_metadata[\\\"height\\\"])\",\"            if (source_width, source_height) == (\",\"                DEFAULT_PREPROCESSING[\\\"width\\\"],\",\"                DEFAULT_PREPROCESSING[\\\"height\\\"],\",\"            ):\",\"                model_input = source\",\"                normalization = {\",\"                    **source_metadata,\",\"                    \\\"source_width\\\": source_width,\",\"                    \\\"source_height\\\": source_height,\",\"                    \\\"adaptation\\\": \\\"none\\\",\",\"                    \\\"source_timestamp_offset_seconds\\\": 0.0,\",\"                    \\\"pad_x\\\": 0,\",\"                    \\\"pad_y\\\": 0,\",\"                    \\\"padding_ltrb\\\": [0, 0, 0, 0],\",\"                }\",\"            else:\",\"                model_input = storage.work_path(job_id, \\\"normalized-input.mp4\\\")\",\"                normalization = VideoPrivacyProcessor.normalize_for_vsvig(\",\"                    source,\",\"                    model_input,\",\"                    allow_letterbox_adaptation=VSVIG_ALLOW_LETTERBOX_ADAPTATION,\",\"                )\"]}],\"state\":{\"work files\":\"temporary; optional adaptation remains explicitly gated\"}},{\"say\":\"The standalone worker runs the pinned pose and VSViG runtime in its own subprocess.\",\"nodes\":[\"video\",\"vsvig\"],\"edges\":[\"video-model\"],\"files\":[{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[1242,1266],\"role\":\"calls\",\"excerpt\":[\"            job.current_stage = \\\"pose-and-inference\\\"\",\"            db.add(job)\",\"            db.commit()\",\"            output = storage.work_path(job_id, \\\"predictions.json\\\")\",\"            visualization = storage.work_path(job_id, \\\"privacy-safe-review.mp4\\\")\",\"            expires_at = job.retention_expires_at or (utc_now() + timedelta(seconds=3600))\",\"            normalized_expiry = (\",\"                expires_at.astimezone(timezone.utc)\",\"                if expires_at.tzinfo is not None\",\"                else expires_at.replace(tzinfo=timezone.utc)\",\"            )\",\"            remaining = lambda: min(3600, (normalized_expiry - utc_now()).total_seconds())\",\"            execute(\",\"                [\",\"                    sys.executable,\",\"                    \\\"-m\\\",\",\"                    \\\"backend.app.video_detection.runtime\\\",\",\"                    str(model_input),\",\"                    str(output),\",\"                    str(visualization),\",\"                    str(model_input),\",\"                    str(job.blur_strength_percent),\",\"                ],\",\"                remaining(),\",\"            )\"]}],\"state\":{\"model\":\"single-track windows remain separate across people\"}},{\"say\":\"Grad-CAM produces graph-node contribution evidence for the model window.\",\"nodes\":[\"vsvig\",\"video\"],\"edges\":[\"video-output\"],\"files\":[{\"path\":\"backend/app/video_detection/runtime.py\",\"lines\":[29,58],\"role\":\"calls\",\"excerpt\":[\"def _vsvig_gradcam(model, patches, coordinates, times, threshold):\",\"    \\\"\\\"\\\"Project graph Grad-CAM relevance onto VSViG's 30 frame × 15 patch nodes.\\\"\\\"\\\"\",\"\",\"    import torch\",\"\",\"    activations, logits = [], []\",\"    # Stage 1 is the last VSViG feature block with 15 sampled temporal positions;\",\"    # its graph axis is the same 15 keypoint patches exposed to the reviewer.\",\"    activation_hook = model.backbone[9].register_forward_hook(\",\"        lambda _module, _inputs, output: activations.append(output)\",\"    )\",\"    logit_hook = model.fc[-1].register_forward_hook(\",\"        lambda _module, _inputs, output: logits.append(output)\",\"    )\",\"    try:\",\"        with torch.inference_mode(False), torch.enable_grad():\",\"            patch_input = patches.detach().clone().requires_grad_(True)\",\"            coordinate_input = coordinates.detach().clone()\",\"            result = model(patch_input, coordinate_input)\",\"            if (\",\"                result.numel() != 1\",\"                or not activations\",\"                or not logits\",\"                or activations[-1].ndim != 5\",\"                or activations[-1].shape[0] != 1\",\"                or activations[-1].shape[1] != 15\",\"                or activations[-1].shape[3] != 15\",\"                or logits[-1].numel() != 1\",\"            ):\",\"                raise DetectionError(\\\"invalid_model_output\\\")\"]}],\"state\":{\"evidence\":\"relative contribution; not seizure-origin localization\"}},{\"say\":\"The service encrypts VSViG results in the database, encrypts the review artifact, and removes temporary files.\",\"nodes\":[\"video\",\"db\",\"files\",\"key\"],\"edges\":[\"video-state\",\"video-store\",\"result-key\"],\"files\":[{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[147,161],\"role\":\"writes\",\"excerpt\":[\"def encrypt_video_result(job: VideoDetectionJob, result: dict) -> tuple[bytes, bytes]:\",\"    \\\"\\\"\\\"Encrypt one validated VSViG result for storage in PostgreSQL.\\\"\\\"\\\"\",\"\",\"    plaintext = json.dumps(\",\"        result, sort_keys=True, separators=(\\\",\\\", \\\":\\\"), allow_nan=False\",\"    ).encode(\\\"utf-8\\\")\",\"    if len(plaintext) > _VIDEO_RESULT_MAX_BYTES:\",\"        raise DetectionError(\\\"invalid_model_output\\\")\",\"    nonce = os.urandom(12)\",\"    ciphertext = AESGCM(read_base64_key(STORAGE_KEY_ENV)).encrypt(\",\"        nonce,\",\"        zlib.compress(plaintext),\",\"        _video_result_associated_data(job),\",\"    )\",\"    return nonce, ciphertext\"]},{\"path\":\"backend/app/services/video_detection_service.py\",\"lines\":[1355,1369],\"role\":\"writes\",\"excerpt\":[\"            output.write_text(json.dumps(result, allow_nan=False))\",\"            if expired(job):\",\"                expire_job(db, job, storage, force=True)\",\"                return\",\"            job.result_nonce, job.result_ciphertext = encrypt_video_result(job, result)\",\"            job.predictions_path = None\",\"            job.review_privacy_method = visualization_meta[\\\"privacy_method\\\"].removesuffix(\\\"-and-skeleton-overlay\\\")\",\"            job.visualization_path = str(\",\"                storage.store_artifact(job_id, visualization, \\\"video.visualization.mp4\\\")\",\"            )\",\"            storage.cleanup(job_id, keep_retained=True, keep_original=job.retention_expires_at is None)\",\"            if job.retention_expires_at is not None:\",\"                job.original_path = None\",\"            job.video_path = None\",\"            job.status, job.current_stage = \\\"ready\\\", \\\"complete\\\"\"]}],\"state\":{\"result\":\"AES-GCM ciphertext; media stays outside PostgreSQL\"}},{\"say\":\"The owner reopens the result through an authorized endpoint that decrypts and filters the response.\",\"nodes\":[\"auth\",\"review\",\"db\",\"reviewer\"],\"edges\":[\"review-auth\",\"case-query\",\"show\"],\"files\":[{\"path\":\"backend/app/api/video_detection.py\",\"lines\":[662,685],\"role\":\"calls\",\"excerpt\":[\"def predictions(job_id: str, current_user: User = Depends(account), db: Session = Depends(get_session)):\",\"    storage = VideoStorage()\",\"    job = owned(job_id, scoped_owner(current_user), db, storage)\",\"    if job.status != \\\"ready\\\" or not (job.result_ciphertext or job.predictions_path):\",\"        raise HTTPException(409, \\\"Detection results are not available.\\\")\",\"    if job.id is not None:\",\"        record_clinical_access(\",\"            db,\",\"            actor_user_id=current_user.id,\",\"            video_job_db_id=job.id,\",\"            action=\\\"video_result_view\\\",\",\"        )\",\"    path = None\",\"    try:\",\"        result = service.read_encrypted_video_result(job)\",\"        if result is None:\",\"            path = storage.materialize_artifact(job_id, Path(job.predictions_path), f\\\"scores-{secrets.token_hex(16)}.json\\\")\",\"            result = json.loads(path.read_text())\",\"        return _public_detection_result(result)\",\"    except Exception as exc:\",\"        raise HTTPException(409, \\\"Detection results are unavailable.\\\") from exc\",\"    finally:\",\"        if path:\",\"            storage.delete_work_file(path)\"]}],\"state\":{\"output\":\"research scores and Grad-CAM evidence\"}}]}]}},\"issues\":[]}");
+  const NS = 'http://www.w3.org/2000/svg';
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const $ = id => document.getElementById(id);
+  const KIND = {
+    user: ['i-user', 'user'], ui: ['i-ui', 'ui'], page: ['i-ui', 'ui'], component: ['i-component', 'ui'], hook: ['i-hook', 'ui'],
+    api: ['i-api', 'api'], route: ['i-api', 'api'], service: ['i-service', 'service'], function: ['i-function', 'service'],
+    job: ['i-job', 'job'], event: ['i-event', 'queue'], auth: ['i-auth', 'auth'], state: ['i-state', 'state'],
+    external: ['i-external', 'external'], ai: ['i-ai', 'ai'],
+    db: ['i-db', 'data'], table: ['i-table', 'data'], cache: ['i-cache', 'data'], bucket: ['i-bucket', 'data'],
+    queue: ['i-queue', 'queue'], search: ['i-search', 'data'], vector: ['i-vector', 'data'],
+    file: ['i-file', 'external'], doc: ['i-file-doc', 'doc'], folder: ['i-folder', 'job'],
+  };
+  const SEV = { bug: 'i-bug', risk: 'i-alert', smell: 'i-info', question: 'i-question' };
+  const SEV_ORDER = ['bug', 'risk', 'smell', 'question'];
+  function fileType(path) {
+    if (path.endsWith('/')) return ['i-folder', 'folder'];
+    const ext = (path.split('.').pop() || '').toLowerCase();
+    if (['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'go', 'rs', 'rb', 'java', 'kt', 'swift', 'css', 'html', 'sh'].includes(ext)) return ['i-file-code', 'code'];
+    if (['md', 'mdx', 'txt', 'rst'].includes(ext)) return ['i-file-doc', 'doc'];
+    if (['json', 'jsonl', 'jsonld', 'yaml', 'yml', 'csv', 'sql', 'prisma', 'graphql'].includes(ext)) return ['i-file-data', 'data'];
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'mov', 'webm', 'mp3', 'wav'].includes(ext)) return ['i-file-media', 'media'];
+    if (['pptx', 'key', 'pdf', 'odp'].includes(ext)) return ['i-file-slides', 'slides'];
+    if (['toml', 'ini', 'env', 'lock', 'config'].includes(ext) || /(^|\/)(package\.json|tsconfig[^/]*|\.[a-z]+rc)$/.test(path)) return ['i-file-config', 'config'];
+    return ['i-file', 'config'];
+  }
+  const el = (tag, attrs = {}, parent, text) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (text !== undefined) n.textContent = text;
+    if (parent) parent.appendChild(n);
+    return n;
+  };
+  const h = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+  const icon = (id, cls) => { const s = el('svg', cls ? { class: cls } : {}); el('use', { href: `#${id}` }, s); return s; };
+
+  const S = { view: DATA.root, trail: [DATA.root], scen: 0, step: 0, playing: !reduce, speed: 1, sel: null, sevOff: new Set(), vb: null, full: null };
+  const svg = $('canvas');
+  let geo = null, stepStart = performance.now(), elapsed = 0;
+
+  const view = () => DATA.views[S.view];
+  const scenario = () => view().scenarios[S.scen];
+  const stepData = () => scenario().steps[S.step];
+  const visibleIssues = () => DATA.issues.filter(i => !S.sevOff.has(i.severity));
+  const issuesFor = (v, nodeId, edgeId) => visibleIssues().filter(i => i.view === v && ((nodeId && i.node === nodeId) || (edgeId && i.edge === edgeId)));
+
+  // ---------- header ----------
+  $('title').textContent = DATA.title;
+  $('subtitle').textContent = DATA.subtitle || '';
+  document.title = DATA.title;
+  function renderLegend() {
+    const used = new Set(Object.values(DATA.views).flatMap(v => v.nodes.map(n => n.kind)));
+    const lg = $('legend'); lg.innerHTML = '';
+    for (const k of used) {
+      const [ic, col] = KIND[k] || KIND.service;
+      const s = h('span'); const i = icon(ic); i.style.color = `var(--c-${col})`; s.append(i, document.createTextNode(k)); lg.appendChild(s);
+    }
+    const sb = $('sevbadges'); sb.innerHTML = '';
+    for (const sev of SEV_ORDER) {
+      const n = DATA.issues.filter(i => i.severity === sev).length;
+      if (!n) continue;
+      const b = h('button', `badge sev-${sev}${S.sevOff.has(sev) ? ' off' : ''}`);
+      b.setAttribute('aria-pressed', String(!S.sevOff.has(sev)));
+      b.append(icon(SEV[sev]), document.createTextNode(`${n} ${sev}`));
+      b.title = 'Show or hide these issues';
+      b.addEventListener('click', () => { S.sevOff.has(sev) ? S.sevOff.delete(sev) : S.sevOff.add(sev); renderLegend(); draw(); apply(); renderAllIssues(); });
+      sb.appendChild(b);
+    }
+  }
+
+  // ---------- layout ----------
+  const NW = 168, NH = 56, BAND = 136, TOP = 16;
+  function layout(v) {
+    const perLayer = v.layers.map(L => v.nodes.filter(n => n.layer === L.id));
+    const W = Math.max(1000, Math.max(...perLayer.map(ns => ns.length)) * (NW + 36) + 150);
+    const pos = {};
+    perLayer.forEach((ns, li) => ns.forEach((n, k) => {
+      const x = 120 + (W - 140) * (k + 1) / (ns.length + 1);
+      pos[n.id] = { x, y: TOP + li * BAND + BAND / 2 };
+    }));
+    return { pos, W, H: TOP + v.layers.length * BAND + 16 };
+  }
+  /** off shifts parallel edges between the same two nodes apart. */
+  function edgePath(a, b, off = 0) {
+    if (Math.abs(a.y - b.y) < 1) {
+      const dir = b.x > a.x ? 1 : -1;
+      const x1 = a.x + dir * NW / 2, x2 = b.x - dir * NW / 2, lift = 46 + off;
+      return `M${x1} ${a.y} C${x1 + dir * 30} ${a.y - lift}, ${x2 - dir * 30} ${b.y - lift}, ${x2} ${b.y}`;
+    }
+    const down = b.y > a.y ? 1 : -1;
+    const y1 = a.y + down * NH / 2, y2 = b.y - down * NH / 2, my = (y1 + y2) / 2;
+    const ax = a.x + off, bx = b.x + off;
+    return `M${ax} ${y1} C${ax} ${my}, ${bx} ${my}, ${bx} ${y2}`;
+  }
+  const trunc = (t, n) => t.length > n ? `${t.slice(0, n - 1)}…` : t;
+
+  function draw() {
+    const v = view();
+    geo = layout(v);
+    svg.innerHTML = '';
+    const defs = el('defs', {}, svg);
+    const mk = el('marker', { id: 'arrow', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
+    el('path', { d: 'M0 0 10 5 0 10z', fill: 'var(--muted)' }, mk);
+    const mkOn = el('marker', { id: 'arrow-on', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
+    el('path', { d: 'M0 0 10 5 0 10z', fill: 'var(--accent)' }, mkOn);
+
+    v.layers.forEach((L, li) => {
+      const y = TOP + li * BAND;
+      el('rect', { class: 'band', x: 0, y: y + 4, width: geo.W, height: BAND - 8, rx: 10, opacity: li % 2 ? 0.55 : 1 }, svg);
+      el('text', { class: 'band-label', x: 14, y: y + 24 }, svg, L.label.toUpperCase());
+    });
+    const edgesG = el('g', {}, svg);
+    geo.edgeEls = {};
+    const pairKey = e => [e.from, e.to].sort().join('|');
+    const pairs = {};
+    v.edges.forEach(e => { (pairs[pairKey(e)] ??= []).push(e.id); });
+    for (const e of v.edges) {
+      const sib = pairs[pairKey(e)], off = (sib.indexOf(e.id) - (sib.length - 1) / 2) * 34;
+      const g = el('g', { class: 'edge', 'data-id': e.id }, edgesG);
+      const p = el('path', { class: 'wire', d: edgePath(geo.pos[e.from], geo.pos[e.to], off), 'marker-end': 'url(#arrow)' }, g);
+      geo.edgeEls[e.id] = { g, p };
+      const txt = [e.label, e.data].filter(Boolean).join(' · ');
+      if (txt) {
+        const len = p.getTotalLength(), m = p.getPointAtLength(len / 2);
+        const lg = el('g', { class: 'elabel' }, g);
+        const t = el('text', { x: m.x, y: m.y }, lg, trunc(txt, 34));
+        const w = trunc(txt, 34).length * 6.1 + 10;
+        lg.insertBefore(el('rect', { x: m.x - w / 2, y: m.y - 8, width: w, height: 16, rx: 4 }), t);
+      }
+      const n = issuesFor(S.view, null, e.id);
+      if (n.length) {
+        const len = p.getTotalLength(), m = p.getPointAtLength(len * 0.3);
+        mark(g, m.x, m.y, n);
+      }
+    }
+    const nodesG = el('g', {}, svg);
+    geo.nodeEls = {};
+    for (const n of v.nodes) {
+      const [ic, col] = KIND[n.kind] || KIND.service;
+      const { x, y } = geo.pos[n.id];
+      const g = el('g', { class: 'node', 'data-id': n.id, transform: `translate(${x - NW / 2} ${y - NH / 2})`, tabindex: 0, role: 'button', 'aria-label': `${n.label}${n.drill ? ', has an inner flow' : ''}` }, nodesG);
+      g.style.setProperty('--k', `var(--c-${col})`);
+      el('rect', { class: 'box', width: NW, height: NH, rx: 11 }, g);
+      el('circle', { class: 'disc', cx: 26, cy: NH / 2, r: 17 }, g);
+      el('use', { class: 'ic', href: `#${ic}`, x: 15, y: NH / 2 - 11, width: 22, height: 22 }, g);
+      el('text', { class: 'lbl', x: 50, y: n.sub || n.file ? 23 : NH / 2 + 4 }, g, trunc(n.label, 17));
+      const sub = n.sub || (n.file ? n.file.split('/').pop() : '');
+      if (sub) el('text', { class: 'sub', x: 50, y: 40 }, g, trunc(sub, 20));
+      el('title', {}, g, [n.label, n.sub, n.file].filter(Boolean).join('\n'));
+      if (n.drill) {
+        const d = el('g', { class: 'drill', transform: `translate(${NW - 20} -8)` }, g);
+        el('rect', { width: 26, height: 22, rx: 6 }, d);
+        el('use', { href: '#i-drill', x: 5, y: 3, width: 16, height: 16 }, d);
+        el('title', {}, d, `Open ${DATA.views[n.drill].title}`);
+        d.addEventListener('click', ev => { ev.stopPropagation(); drillInto(n.drill); });
+      }
+      const iss = issuesFor(S.view, n.id, null);
+      if (iss.length) mark(g, 2, 2, iss);
+      g.addEventListener('click', () => selectNode(n.id, true));
+      g.addEventListener('dblclick', () => { if (n.drill) drillInto(n.drill); });
+      g.addEventListener('keydown', ev => { if (ev.key === 'Enter') selectNode(n.id, true); });
+      geo.nodeEls[n.id] = g;
+    }
+    geo.packets = el('g', {}, svg);
+    S.full = { x: 0, y: 0, w: geo.W, h: geo.H };
+    if (!S.vb) S.vb = { ...S.full };
+    setVB();
+    renderCrumbs();
+    renderScenarios();
+  }
+  function mark(parent, x, y, iss) {
+    const top = SEV_ORDER.find(s => iss.some(i => i.severity === s));
+    const g = el('g', { class: 'mark' }, parent);
+    el('circle', { cx: x, cy: y, r: 10, fill: `var(--${top})` }, g);
+    el('text', { x, y }, g, iss.length > 1 ? String(iss.length) : '!');
+    el('title', {}, g, iss.map(i => `${i.severity}: ${i.title}`).join('\n'));
+  }
+
+  // ---------- zoom and pan ----------
+  function setVB() { const b = S.vb; svg.setAttribute('viewBox', `${b.x} ${b.y} ${b.w} ${b.h}`); }
+  function zoom(f, cx, cy) {
+    const b = S.vb, nw = Math.min(S.full.w * 2, Math.max(S.full.w / 5, b.w * f)), k = nw / b.w;
+    const px = cx ?? b.x + b.w / 2, py = cy ?? b.y + b.h / 2;
+    S.vb = { x: px - (px - b.x) * k, y: py - (py - b.y) * k, w: nw, h: b.h * k };
+    setVB();
+  }
+  function toSvg(ev) { const r = svg.getBoundingClientRect(); return { x: S.vb.x + (ev.clientX - r.left) / r.width * S.vb.w, y: S.vb.y + (ev.clientY - r.top) / r.height * S.vb.h }; }
+  $('zin').addEventListener('click', () => zoom(0.8));
+  $('zout').addEventListener('click', () => zoom(1.25));
+  $('zfit').addEventListener('click', () => { S.vb = { ...S.full }; setVB(); });
+  svg.addEventListener('wheel', ev => { if (!ev.ctrlKey && !ev.metaKey) return; ev.preventDefault(); const p = toSvg(ev); zoom(ev.deltaY > 0 ? 1.1 : 0.9, p.x, p.y); }, { passive: false });
+  let pan = null;
+  svg.addEventListener('pointerdown', ev => { if (ev.target.closest('.node')) return; pan = { x: ev.clientX, y: ev.clientY, vb: { ...S.vb } }; svg.classList.add('panning'); svg.setPointerCapture(ev.pointerId); });
+  svg.addEventListener('pointermove', ev => {
+    if (!pan) return;
+    const r = svg.getBoundingClientRect();
+    S.vb = { ...pan.vb, x: pan.vb.x - (ev.clientX - pan.x) / r.width * pan.vb.w, y: pan.vb.y - (ev.clientY - pan.y) / r.height * pan.vb.h };
+    setVB();
+  });
+  const endPan = () => { pan = null; svg.classList.remove('panning'); };
+  svg.addEventListener('pointerup', endPan); svg.addEventListener('pointercancel', endPan);
+
+  // ---------- views ----------
+  function drillInto(id) { S.trail.push(id); openView(id); }
+  function openView(id) { S.view = id; S.scen = 0; S.step = 0; S.sel = null; S.vb = null; draw(); restartStep(); }
+  function renderCrumbs() {
+    const c = $('crumbs'); c.innerHTML = '';
+    S.trail.forEach((id, i) => {
+      if (i) c.appendChild(h('span', 'sep', '›'));
+      const b = h('button', '', DATA.views[id].title);
+      if (i === S.trail.length - 1) b.setAttribute('aria-current', 'page');
+      b.addEventListener('click', () => { S.trail = S.trail.slice(0, i + 1); openView(id); });
+      c.appendChild(b);
+    });
+  }
+  function renderScenarios() {
+    const sel = $('scen'); sel.innerHTML = '';
+    view().scenarios.forEach((sc, i) => { const o = h('option', '', `${sc.title}${sc.kind ? ` (${sc.kind})` : ''}`); o.value = i; sel.appendChild(o); });
+    sel.value = S.scen;
+  }
+  $('scen').addEventListener('change', e => { S.scen = Number(e.target.value); S.step = 0; restartStep(); });
+
+  // ---------- steps ----------
+  let prevState = {};
+  function apply() {
+    const st = stepData(), sc = scenario();
+    svg.classList.add('dim');
+    for (const [id, g] of Object.entries(geo.nodeEls)) { g.classList.toggle('on', st.nodes.includes(id)); g.classList.toggle('sel', S.sel === id); }
+    for (const [id, { g, p }] of Object.entries(geo.edgeEls)) { const on = (st.edges || []).includes(id); g.classList.toggle('on', on); p.setAttribute('marker-end', on ? 'url(#arrow-on)' : 'url(#arrow)'); }
+    geo.packets.innerHTML = '';
+    geo.active = (st.edges || []).map(id => ({ p: geo.edgeEls[id].p, c: el('circle', { class: 'packet', r: 6 }, geo.packets) }));
+    $('caption').textContent = st.say;
+    $('count').textContent = `${S.step + 1} / ${sc.steps.length}`;
+    $('stepn').textContent = `${S.step + 1} of ${sc.steps.length}`;
+    // state
+    const chips = $('statechips'); chips.innerHTML = '';
+    const stt = st.state || {};
+    const keys = Object.keys(stt);
+    if (!keys.length) chips.appendChild(h('span', 'empty', 'No state change recorded at this step.'));
+    for (const k of keys) {
+      const c = h('span', `chip${prevState[k] !== undefined && prevState[k] !== stt[k] ? ' changed' : ''}`);
+      c.append(h('b', '', `${k}: `), document.createTextNode(String(stt[k])));
+      chips.appendChild(c);
+    }
+    prevState = { ...prevState, ...stt };
+    // files
+    const files = $('files'); files.innerHTML = '';
+    const fl = st.files || [];
+    $('filesn').textContent = fl.length ? String(fl.length) : '';
+    if (!fl.length) files.appendChild(h('p', 'empty', 'No files at this step.'));
+    fl.forEach(f => files.appendChild(fileCard(f, true)));
+    // issues
+    const si = $('stepissues'); si.innerHTML = '';
+    const here = visibleIssues().filter(i => i.view === S.view && (st.nodes.includes(i.node) || (st.edges || []).includes(i.edge)));
+    $('stepissuesn').textContent = here.length ? String(here.length) : '';
+    if (!here.length) si.appendChild(h('p', 'empty', 'Nothing flagged at this step.'));
+    here.forEach(i => si.appendChild(issueCard(i)));
+    // step list
+    const sl = $('steplist'); sl.innerHTML = '';
+    sc.steps.forEach((s, i) => {
+      const li = h('li'); const b = h('button', i === S.step ? 'on' : '');
+      b.append(h('span', 'i', String(i + 1)), h('span', '', s.say));
+      b.addEventListener('click', () => { S.step = i; restartStep(); });
+      li.appendChild(b); sl.appendChild(li);
+    });
+  }
+  function codeBlock(lines, start, hl) {
+    const pre = h('pre', 'code');
+    lines.forEach((t, k) => { const row = h('span', `l${hl === start + k ? ' hl' : ''}`); row.append(h('i', '', String(start + k)), document.createTextNode(t)); pre.appendChild(row); });
+    return pre;
+  }
+  const collapsed = new Set();
+  function fileCard(f, remember) {
+    const [ic, col] = fileType(f.path);
+    const d = h('details', 'file');
+    const key = `${f.path}:${f.lines?.[0]}`;
+    d.open = !collapsed.has(key);
+    d.style.setProperty('--ft', `var(--f-${col})`);
+    const s = h('summary');
+    s.append(icon(ic), h('span', 'p', `${f.path}${f.lines ? `:${f.lines[0]}-${f.lines[1]}` : ''}`));
+    if (f.role) s.appendChild(h('span', `role ${f.role}`, f.role));
+    d.appendChild(s);
+    if (f.note) d.appendChild(h('p', 'note', f.note));
+    if (f.excerpt) d.appendChild(codeBlock(f.excerpt, f.lines[0], f.hl));
+    if (remember) d.addEventListener('toggle', () => { d.open ? collapsed.delete(key) : collapsed.add(key); });
+    return d;
+  }
+  function issueCard(i) {
+    const b = h('button', `issue sev-${i.severity}`);
+    b.appendChild(icon(SEV[i.severity]));
+    const body = h('span');
+    body.append(h('div', 't', i.title), h('div', 'm', `${i.severity} · ${i.file}:${i.line}`));
+    if (i.detail) body.appendChild(h('div', 'd', i.detail));
+    if (i.fix) body.appendChild(h('div', 'fx', `Fix: ${i.fix}`));
+    if (i.excerpt) body.appendChild(codeBlock(i.excerpt, i.from, i.line));
+    b.appendChild(body);
+    b.addEventListener('click', () => goToIssue(i));
+    return b;
+  }
+  function renderAllIssues() {
+    const a = $('allissues'); a.innerHTML = '';
+    const list = [...visibleIssues()].sort((x, y) => SEV_ORDER.indexOf(x.severity) - SEV_ORDER.indexOf(y.severity));
+    $('allissuesn').textContent = list.length ? String(list.length) : '';
+    if (!list.length) a.appendChild(h('p', 'empty', 'No issues recorded.'));
+    list.forEach(i => a.appendChild(issueCard(i)));
+  }
+  function goToIssue(i) {
+    if (S.view !== i.view) { S.trail = trailTo(i.view); openView(i.view); }
+    if (i.node) selectNode(i.node, true);
+    else if (i.edge) jumpTo(st => (st.edges || []).includes(i.edge));
+  }
+  function trailTo(target) {
+    const walk = (id, path) => {
+      if (id === target) return path;
+      for (const n of DATA.views[id].nodes) if (n.drill && !path.includes(n.drill)) { const r = walk(n.drill, [...path, n.drill]); if (r) return r; }
+      return null;
+    };
+    return walk(DATA.root, [DATA.root]) || [DATA.root, target];
+  }
+  function jumpTo(pred) {
+    const scs = view().scenarios;
+    const order = [S.scen, ...scs.map((_, i) => i).filter(i => i !== S.scen)];
+    for (const si of order) {
+      const k = scs[si].steps.findIndex(pred);
+      if (k >= 0) { S.scen = si; $('scen').value = si; S.step = k; restartStep(); return true; }
+    }
+    return false;
+  }
+  function selectNode(id, jump) {
+    S.sel = id;
+    const n = view().nodes.find(x => x.id === id);
+    const card = $('selcard'); card.innerHTML = '';
+    card.appendChild(h('div', 't', `${n.label} (${n.kind})`));
+    if (n.note) card.appendChild(h('p', '', n.note));
+    if (n.drill) { const b = h('button', '', `Open ${DATA.views[n.drill].title}`); b.addEventListener('click', () => drillInto(n.drill)); card.appendChild(b); }
+    if (n.file) card.appendChild(fileCard({ path: n.file, lines: n.lines, excerpt: n.excerpt }, false));
+    issuesFor(S.view, id, null).forEach(i => card.appendChild(issueCard(i)));
+    $('selsec').open = true;
+    if (!(jump && jumpTo(st => st.nodes.includes(id)))) apply();
+  }
+  function restartStep() { elapsed = 0; stepStart = performance.now(); apply(); }
+  const stepMs = () => (2200 + 350 * ((stepData().files || []).length)) / S.speed;
+  function go(d) { const n = scenario().steps.length; S.step = (S.step + d + n) % n; restartStep(); }
+  function setPlaying(p) { S.playing = p; $('play').querySelector('use').setAttribute('href', p ? '#i-pause' : '#i-play'); $('play').setAttribute('aria-label', p ? 'Pause' : 'Play'); }
+  $('play').addEventListener('click', () => setPlaying(!S.playing));
+  $('prev').addEventListener('click', () => go(-1));
+  $('next').addEventListener('click', () => go(1));
+  $('speed').addEventListener('change', e => { S.speed = Number(e.target.value); });
+  $('pane').addEventListener('click', () => {
+    const hidden = $('stage').classList.toggle('pane-hidden');
+    $('pane').textContent = hidden ? 'Show details' : 'Hide details';
+    $('pane').setAttribute('aria-expanded', String(!hidden));
+  });
+  const fold = open => { document.querySelectorAll('#files details').forEach(d => { d.open = open; }); };
+  $('fexp').addEventListener('click', () => fold(true));
+  $('fcol').addEventListener('click', () => fold(false));
+  document.addEventListener('keydown', ev => {
+    if (ev.target.closest('select, input, textarea')) return;
+    if (ev.key === ' ') { ev.preventDefault(); setPlaying(!S.playing); }
+    if (ev.key === 'ArrowRight') go(1);
+    if (ev.key === 'ArrowLeft') go(-1);
+  });
+
+  let last = performance.now();
+  function tick(now) {
+    const dt = now - last; last = now;
+    if (S.playing) elapsed += dt;
+    const dur = stepMs();
+    $('bar').style.width = `${Math.min(100, elapsed / dur * 100)}%`;
+    if (geo && geo.active && !reduce) {
+      const k = ((now - stepStart) / (1400 / S.speed)) % 1;
+      for (const { p, c } of geo.active) { const pt = p.getPointAtLength(p.getTotalLength() * k); c.setAttribute('cx', pt.x); c.setAttribute('cy', pt.y); }
+    } else if (geo && geo.active) {
+      for (const { p, c } of geo.active) { const pt = p.getPointAtLength(p.getTotalLength() / 2); c.setAttribute('cx', pt.x); c.setAttribute('cy', pt.y); }
+    }
+    if (S.playing && elapsed >= dur) go(1);
+    requestAnimationFrame(tick);
+  }
+
+  renderLegend();
+  setPlaying(S.playing);
+  draw();
+  restartStep();
+  renderAllIssues();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
+
+<!--
+Flow Map engine: https://github.com/benjoox/code-viz
+Reviewed source commit: 854f9803fbb23b140a7ccdbba072fa6710d92641
+MIT License
+
+Copyright (c) 2026 benjoox
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-->

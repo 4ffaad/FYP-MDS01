@@ -1,9 +1,9 @@
 # MDS01 project design
 
-**Last reviewed: 2026-10-27**
+**Last reviewed: 2026-10-28**
 
 This document describes the system that exists in the repository. It is the
-technical design record for the next project-design write-up; it does not
+technical design record for maintenance and integration; it does not
 claim that the research models are clinically validated or that the prototype
 is ready for hospital deployment.
 
@@ -35,10 +35,9 @@ with EEG just because both modalities exist in one case.
 | EEG runtime    | Keras H5 adapter                                | Loads only the external model artifact and reviewed contract                             |
 | Video runtime  | Pinned VSViG and Lightweight OpenPose bundle    | Separate experimental pose and video inference                                           |
 
-The visual architecture is maintained in the [editable Draw.io source](diagrams/system-architecture.drawio)
-with a [static preview](diagrams/system-architecture-preview.svg). The separate
-[VEEG review workflow](diagrams/veeg-review-flow.drawio) shows how clinical
-playback and standalone video inference remain independent.
+The [interactive backend/security map](backend-flow.html) shows the
+components, storage boundaries, and independent EEG, VEEG, and video-analysis
+paths. Its [JSON source](backend-flow.json) records the code references.
 
 Routes validate requests and build responses. Service modules own workflows;
 repositories own database queries. EEG and video binaries stay outside the

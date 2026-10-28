@@ -4,30 +4,16 @@ MDS01 is a local research prototype with a Next.js browser, a FastAPI backend,
 relational metadata storage, and private encrypted file storage. The combined
 EEG/VEEG review path and standalone VSViG experiment are separate workflows.
 
-The system overview is laid out as a 16:9 presentation slide. It highlights the
-main platforms, review paths, and protected storage; detailed processing and
-security boundaries remain in the linked runbooks.
-
-![MDS01 system architecture](diagrams/system-architecture-preview.svg)
-
-Edit the [system architecture in Draw.io](diagrams/system-architecture.drawio)
-or inspect its [JSON source](diagrams/system-architecture.json). The
-[EEG/H5 pipeline](diagrams/eeg-h5-processing.drawio),
-[VEEG review workflow](diagrams/veeg-review-flow.drawio), and
-[standalone VSViG/Grad-CAM workflow](diagrams/vsvig-gradcam.drawio) are also
-editable. The four detailed diagrams and static previews are collected in the
-[diagram index](diagrams/README.md).
-
-For presentation use, the [focused EEG + Video AI architecture](diagrams/presentation-architecture.drawio)
-shows the EEG/H5 and standalone Video/VSViG pipelines, their security steps,
-and the outputs returned to the browser. Combined VEEG reference playback is
-separate from video inference and is intentionally omitted from that slide.
+The [interactive backend flow map](backend-flow.html) shows request
+authorization, the three processing paths, encrypted storage, and temporary
+decryption. It links each step to selected source-code excerpts. The
+[backend handover](backend-handover.md) explains how to start the app and follow
+these paths; the map's editable data is in [backend-flow.json](backend-flow.json).
 
 ## VEEG workflow
 
-The editable VEEG workflow separates combined clinical reference playback from
-the standalone video-analysis path. Combined reference playback never requires
-pose readiness or VSViG inference.
+Combined clinical reference playback is separate from standalone video
+analysis. It never requires pose readiness or VSViG inference.
 Generated local setup enables MDS01_CLINICAL_VIDEO_REVIEW_ENABLED for owner-only
 review; a backend with no explicit value defaults to disabled. The review popup
 opens only when the user asks for it. Combined uploads encrypt and retain the

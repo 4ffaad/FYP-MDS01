@@ -19,6 +19,7 @@ frontend/playwright-report/
 frontend/test-results/
 *.tsbuildinfo
 .DS_Store
+~$*
 .cache/
 .keras/
 .pytest_cache/

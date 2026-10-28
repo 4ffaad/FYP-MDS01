@@ -44,6 +44,7 @@ loopback app to a network.
 
 ## Understand the project
 
+- [Start here: backend handover and security walkthrough](docs/backend-handover.md)
 - [Project design: platforms, algorithms, models, APIs, and runtime](docs/project-design.md)
 - [Project goal and success criteria](docs/project-goal.md)
 - [Plain-language EEG/video inference guide](docs/inference-walkthrough.md)

@@ -64,7 +64,9 @@ without starting the app.
 
 ## How a request moves through FastAPI
 
-![Backend components and security flow](diagrams/backend-security-flow.svg)
+Open the [interactive backend flow map](backend-flow.html) in your browser.
+Choose EEG, VEEG playback, or standalone video, then play or step through the
+flow. Each step shows the source files and where security applies.
 
 Routes in `backend/app/api/` receive HTTP requests and return safe responses.
 They use security dependencies, then hand work to services in
@@ -157,3 +159,12 @@ history: Compose applies them before Uvicorn starts. Backend tests are not
 needed to launch the web app, but they are kept to protect privacy, storage,
 model-contract, and synchronization behavior. See the [file map](backend-file-map.md)
 for each file's role.
+
+## Maintaining the flow map
+
+The map is a self-contained HTML handover tool; it does not need a running
+backend. Its [JSON source](backend-flow.json) contains source-file references,
+and the HTML embeds the selected code excerpts. Regenerate it when those lines
+change using the [Flow Map skill](https://github.com/benjoox/code-viz/tree/main/skills/flow-map).
+The skill is development tooling, not an application dependency. Keep real
+configuration values and patient data out of the map.
