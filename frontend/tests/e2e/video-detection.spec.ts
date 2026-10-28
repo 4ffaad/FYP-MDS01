@@ -334,6 +334,9 @@ test("uploads and reviews window supports without confidence percentages", async
   await expect(page.getByRole("button", { name: "Event 1" })).toBeVisible();
   await page.getByRole("button", { name: "Event 1" }).click();
   await expect(page.getByTestId("video-vsvig-gradcam")).toBeVisible();
+  await page.locator("main").screenshot({
+    path: test.info().outputPath("vsvig-gradcam-review.png"),
+  });
   await expect
     .poll(() =>
       page

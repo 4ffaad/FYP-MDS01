@@ -1,0 +1,89 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="app.diagrams.net" agent="Codex drawio-mxgraph skill" version="24.7.17" type="device" compressed="false">
+  <diagram id="page-1" name="Standalone VSViG Video Analysis and Grad-CAM Evidence">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="980" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="VIDEO-ONLY  |  VSViG preprocessing, inference, and Grad-CAM review" style="text;html=1;align=left;verticalAlign=middle;fontSize=25;fontStyle=1;fontColor=#10243A;" vertex="1" parent="1">
+          <mxGeometry x="35" y="20" width="1710" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="upload" value="1  Separate video upload&#10;Not a combined VEEG clip" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#8B5CF6;strokeWidth=2;fontColor=#4C1D95;fontSize=15;spacing=10;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="30" y="42" width="210" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="encrypt" value="2  Encrypt + retain original&#10;Private file storage&#10;Until case deletion" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#16A34A;strokeWidth=2;fontColor=#14532D;fontSize=14;spacing=10;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="290" y="42" width="225" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="workspace" value="3  Temporary inference workspace&#10;Decrypt for bounded processing&#10;Clean plaintext after use" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#D97706;strokeWidth=2;fontColor=#78350F;fontSize=14;spacing=10;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="565" y="42" width="235" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="sample" value="4  Normalize + sample&#10;6 frames/second&#10;Pinned input geometry" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#8B5CF6;strokeWidth=2;fontColor=#4C1D95;fontSize=14;spacing=10;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="850" y="42" width="215" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="openpose" value="5  Lightweight OpenPose&#10;Detect multiple people&#10;Track streams separately" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#8B5CF6;strokeWidth=2;fontColor=#4C1D95;fontSize=14;spacing=10;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="1115" y="42" width="220" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="pose-gate" value="6  Per-track input gate&#10;15 selected joints present&#10;Missing joints → no score&#10;No fabricated landmarks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#FB923C;strokeWidth=2;fontColor=#7C2D12;fontSize=14;spacing=10;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="1385" y="22" width="235" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="patches" value="7  Build model tensors&#10;15 RGB patches / frame&#10;32×32 patches from 128×128 crops&#10;30 samples / 5-second window" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#8B5CF6;strokeWidth=2;fontColor=#4C1D95;fontSize=13;spacing=9;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="1385" y="242" width="235" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="vsvig" value="8  Pinned VSViG model&#10;Window stride: 3 samples&#10;Each detected track scored separately" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EDE9FE;strokeColor=#7C3AED;strokeWidth=2;fontColor=#4C1D95;fontSize=14;spacing=10;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="1115" y="267" width="220" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="scores" value="9  Research result&#10;One uncalibrated score / window&#10;Configured threshold: 0.5" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7ED;strokeColor=#FB923C;strokeWidth=2;fontColor=#7C2D12;fontSize=14;spacing=10;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="850" y="267" width="215" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="gradcam" value="10  Graph Grad-CAM&#10;Relative contribution across&#10;30 time samples × 15 patch nodes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;strokeWidth=2;fontColor=#1E3A8A;fontSize=14;spacing=10;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="565" y="267" width="235" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="store-result" value="11  Protect result&#10;Encrypt result payload in database&#10;Source video stays encrypted on disk" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0FDF4;strokeColor=#16A34A;strokeWidth=2;fontColor=#14532D;fontSize=13;spacing=9;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="290" y="267" width="225" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="ui" value="12  Owner review UI&#10;Score timeline + flagged windows&#10;Pose overlay + Grad-CAM patches" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;strokeWidth=2;fontColor=#1E3A8A;fontSize=13;spacing=9;" vertex="1" parent="vsvig-pipeline">
+          <mxGeometry x="30" y="267" width="210" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="limitation" value="Track IDs do not identify the patient. Grad-CAM shows model-relative graph evidence; it is not pixel localization, seizure diagnosis, or brain-side inference." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8FAFC;strokeColor=#CBD5E1;fontColor=#475569;fontSize=13;spacing=9;" vertex="1" parent="1">
+          <mxGeometry x="310" y="800" width="1280" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="vsvig-pipeline" value="STANDALONE VIDEO WORKFLOW  |  PINNED RESEARCH MODEL" style="swimlane;html=1;startSize=36;rounded=1;collapsible=0;fillColor=#FFFFFF;swimlaneFillColor=#F5F3FF;strokeColor=#C4B5FD;fontColor=#5B21B6;fontStyle=1;fontSize=15;" vertex="1" parent="1">
+          <mxGeometry x="10" y="275" width="1650" height="450" as="geometry" />
+        </mxCell>
+        <mxCell id="upload-encrypt" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=block;endFill=1;fontColor=#334155;fontSize=10;labelBackgroundColor=#FFFFFF;labelBorderColor=#E2E8F0;spacing=4;" edge="1" parent="1" source="upload" target="encrypt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="encrypt-work" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=block;endFill=1;fontColor=#334155;fontSize=10;labelBackgroundColor=#FFFFFF;labelBorderColor=#E2E8F0;spacing=4;" edge="1" parent="1" source="encrypt" target="workspace">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="work-sample" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=block;endFill=1;fontColor=#334155;fontSize=10;labelBackgroundColor=#FFFFFF;labelBorderColor=#E2E8F0;spacing=4;" edge="1" parent="1" source="workspace" target="sample">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="sample-pose" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=block;endFill=1;fontColor=#334155;fontSize=10;labelBackgroundColor=#FFFFFF;labelBorderColor=#E2E8F0;spacing=4;" edge="1" parent="1" source="sample" target="openpose">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-openpose-gate" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=block;endFill=1;fontColor=#334155;fontSize=10;labelBackgroundColor=#FFFFFF;labelBorderColor=#E2E8F0;spacing=4;" edge="1" parent="1" source="openpose" target="pose-gate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gate-patches" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=block;endFill=1;fontColor=#334155;fontSize=10;labelBackgroundColor=#FFFFFF;labelBorderColor=#E2E8F0;spacing=4;" edge="1" parent="1" source="pose-gate" target="patches">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="patches-model" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=block;endFill=1;fontColor=#334155;fontSize=10;labelBackgroundColor=#FFFFFF;labelBorderColor=#E2E8F0;spacing=4;" edge="1" parent="1" source="patches" target="vsvig">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="model-score" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=block;endFill=1;fontColor=#334155;fontSize=10;labelBackgroundColor=#FFFFFF;labelBorderColor=#E2E8F0;spacing=4;" edge="1" parent="1" source="vsvig" target="scores">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="score-cam" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=block;endFill=1;fontColor=#334155;fontSize=10;labelBackgroundColor=#FFFFFF;labelBorderColor=#E2E8F0;spacing=4;" edge="1" parent="1" source="scores" target="gradcam">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cam-store" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=block;endFill=1;fontColor=#334155;fontSize=10;labelBackgroundColor=#FFFFFF;labelBorderColor=#E2E8F0;spacing=4;" edge="1" parent="1" source="gradcam" target="store-result">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="store-ui" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=block;endFill=1;fontColor=#334155;fontSize=10;labelBackgroundColor=#FFFFFF;labelBorderColor=#E2E8F0;spacing=4;" edge="1" parent="1" source="store-result" target="ui">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

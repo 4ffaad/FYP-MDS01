@@ -730,8 +730,8 @@ def prepare_reference_playback(
     if job.playback_status == "unavailable":
         raise HTTPException(409, "This source video could not be validated for playback.")
     if job.playback_status == "processing":
-        # A background prewarm may be queued behind other clips. The owner has
-        # opened this one, so promote it without duplicating active work.
+        # If this clip is queued for recovery, prioritize the one the owner
+        # just opened without duplicating active work.
         service.prioritize_reference_playback(job_id)
     job, claimed = service.request_reference_playback(db, job_id, current_user.id)
     if claimed:

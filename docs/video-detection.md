@@ -25,15 +25,17 @@ New media is encrypted as independently authenticated AES-256-GCM chunks, so a
 range request decrypts only the chunks covering those bytes. Responses are
 private/no-store and recheck ownership on every request. After encrypted upload,
 the background metadata worker checks clock and browser compatibility. If a
-clip is unsupported, it automatically queues an audio-free H.264 review copy
-and encrypts that copy while retaining the original. An H.264/yuv420p source
-that only needs a container or audio change is remuxed without re-encoding;
-other codecs require a full conversion. This work is format preparation only:
-it never runs pose readiness or VSViG. One background worker prewarms clips
-after upload; opening a clip promotes it ahead of queued background work, with
-one additional bounded worker for the selected clip. The popup polls status and
-becomes playable as soon as preparation completes. The owner-protected
-preparation endpoint remains available for retry/recovery. The
+clip is unsupported, it records `conversion_required` but leaves the original
+untouched until the owner opens that clip's popup. The protected preparation
+request then creates and encrypts an audio-free H.264 review copy while
+retaining the original. An H.264/yuv420p source that only needs a container or
+audio change is remuxed without re-encoding; other codecs require a full
+conversion. This work is format preparation only: it never runs pose readiness
+or VSViG. The popup polls status and becomes playable as soon as preparation
+completes. Startup recovery resumes a conversion that was already opened and
+interrupted; normal metadata and retention sweeps do not start unopened
+conversions. The owner-protected preparation endpoint remains available for
+retry. The
 job exposes `metadata_pending`, `metadata_checking`, `direct`,
 `conversion_required`, `processing`, `ready`, `failed`, or `unavailable`
 playback state separately from the standalone model job status. A repeated
@@ -242,10 +244,10 @@ MPEG-4 at 640×480 and approximately 25 fps; their durations ranged from about
 current Docker prototype, a 899.9-second MPEG-4 AVI took about 33 seconds from
 the first preparation request until status polling ended. Its H.264 copy was
 151.9 MB from a 97.4 MB encrypted source. Each full conversion still takes
-time, but an opened clip is promoted ahead of background prewarming and can run
-in the separate priority lane; no browser-side request can cancel an active
-encode. The frontend avoids queueing clips that are left during rapid
-selection. A
+time. Conversion starts only after the owner opens the clip; opening another
+clip can prioritize it over recovery work, but no browser-side request can
+cancel an active encode. The frontend avoids queueing clips that are left during
+rapid selection. A
 13.19-second damaged AVI reproduced the decoder warning `Error at MB: 359` and
 produced 329 output frames from 330 indexed source frames. Playback now accepts
 at most a one-frame difference when the output duration and other media checks
@@ -265,8 +267,8 @@ The browser synchronization test remains fixture-backed: it verifies popup
 opt-in, status polling and retry/recovery for a conversion-required clip,
 EEG-led seek/play/pause, buffering holds, clip mapping boundaries, and the
 internal source-clock gap. It does not prove clock accuracy for a completed
-real HUKM case. Backend tests verify automatic queueing after metadata probing,
-direct MP4 range streaming, AVI conversion,
+real HUKM case. Backend tests verify that metadata probing leaves unsupported
+clips unconverted until the owner opens them, direct MP4 range streaming, AVI conversion,
 conversion reuse, cross-owner denial, encrypted retention, cache cleanup, and
 case deletion. Reference-only jobs do not run VSViG.
 

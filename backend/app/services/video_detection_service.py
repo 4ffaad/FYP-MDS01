@@ -110,8 +110,9 @@ _BLURRED_REVIEW_METHODS = frozenset(
         "tracked-face-blur-with-full-frame-fallback",
     }
 )
-# Standalone VSViG inference remains serialized. VEEG playback has a separate
-# background prewarm lane and one owner-priority lane, bounded to two encoders.
+# Standalone VSViG inference remains serialized. VEEG playback conversion is
+# queued only after an owner opens an unsupported clip; recovery work shares a
+# bounded worker lane, while a newly opened clip gets a priority lane.
 PROCESS_LOCK = threading.Lock()
 UPLOAD_LOCK = asyncio.Lock()
 REFERENCE_METADATA_LOCK = threading.Lock()
@@ -124,9 +125,8 @@ REFERENCE_METADATA_LOCK = threading.Lock()
 REFERENCE_METADATA_EXECUTOR = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="veeg-metadata"
 )
-# One background worker prewarms clips after upload. A separate interactive
-# worker lets the clip currently opened by the owner start without waiting for
-# the rest of a long folder upload. At most two FFmpeg conversions run at once.
+# Recovery work is kept separate so an owner-opened clip can start promptly.
+# At most two FFmpeg conversions run at once.
 REFERENCE_PLAYBACK_EXECUTOR = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="veeg-playback"
 )
@@ -210,13 +210,13 @@ def enqueue_reference_metadata(job_id: str) -> None:
 
 
 def enqueue_reference_playback(job_id: str) -> None:
-    """Schedule protected playback preparation outside the request lifecycle."""
+    """Schedule a claimed conversion or restart-recovery task."""
 
     _schedule_reference_playback(job_id, prioritize=False)
 
 
 def prioritize_reference_playback(job_id: str) -> None:
-    """Move an owner-opened clip ahead of background prewarming when possible."""
+    """Give an owner-opened clip priority over queued recovery work."""
 
     _schedule_reference_playback(job_id, prioritize=True)
 
@@ -233,7 +233,7 @@ def _run_scheduled_reference_playback(job_id: str) -> None:
 
 
 def _schedule_reference_playback(job_id: str, *, prioritize: bool) -> None:
-    """Deduplicate work and promote queued jobs without restarting active work."""
+    """Deduplicate work and promote opened clips without restarting active work."""
 
     try:
         with REFERENCE_PLAYBACK_SCHEDULE_LOCK:
@@ -1460,7 +1460,7 @@ def request_reference_playback(
 
 
 def process_reference_metadata(job_id: str) -> None:
-    """Probe a retained clip, refresh sync, and queue browser preparation if needed."""
+    """Probe a retained clip and refresh sync without preparing playback."""
 
     with REFERENCE_METADATA_LOCK:
         with Session(engine) as db:
@@ -1537,23 +1537,6 @@ def process_reference_metadata(job_id: str) -> None:
                         "Reference video sync refresh failed (exception_type=%s).",
                         type(exc).__name__,
                     )
-            # Browser-incompatible VEEG clips are prepared immediately after
-            # encrypted upload so they are ready when clinical review begins.
-            # This is a format-only copy; the retained source remains encrypted
-            # and the reference path never enters pose extraction or VSViG.
-            refreshed = repository.get_job(db, job_id, None)
-            if (
-                refreshed is not None
-                and refreshed.reference_only
-                and refreshed.playback_status == "conversion_required"
-            ):
-                _, claimed = request_reference_playback(
-                    db, job_id, refreshed.owner_user_id
-                )
-                if claimed:
-                    enqueue_reference_playback(job_id)
-
-
 def process_reference_playback(job_id: str) -> None:
     """Prepare one unsupported reference clip, without VSViG or OpenPose."""
 
@@ -1660,7 +1643,7 @@ def sweep(*, startup=False):
     if not inspect(engine).has_table(VideoDetectionJob.__tablename__):
         return
     pending_metadata: list[str] = []
-    pending_playback: list[str] = []
+    recovery_playback: list[str] = []
     with Session(engine) as db:
         if startup:
             # BackgroundTasks are process-local. A conversion interrupted by a
@@ -1692,6 +1675,7 @@ def sweep(*, startup=False):
                     job.playback_status = "conversion_required"
                     job.playback_path = None
                     job.current_stage = "reference-available"
+                    recovery_playback.append(job.job_id)
                 db.add(job)
             db.commit()
         if not startup:
@@ -1771,17 +1755,12 @@ def sweep(*, startup=False):
             for job in jobs
             if job.reference_only and job.playback_status == "metadata_pending"
         ]
-        pending_playback = [
-            job.job_id
-            for job in jobs
-            if job.reference_only and job.playback_status == "conversion_required"
-        ]
         db.commit()
-    # Do not make the 30-second retention sweep perform media decryption. The
-    # persisted pending status lets the executor recover after restarts.
+    # Do not make the periodic retention sweep start unopened conversions. Only
+    # resume work that was already in progress when the process restarted.
     for job_id in pending_metadata:
         enqueue_reference_metadata(job_id)
-    for job_id in pending_playback:
+    for job_id in recovery_playback:
         job, claimed = _claim_reference_playback_for_recovery(job_id)
         if claimed and job is not None:
             enqueue_reference_playback(job_id)

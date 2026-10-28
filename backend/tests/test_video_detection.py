@@ -1365,7 +1365,7 @@ class VideoDetectionTests(unittest.TestCase):
         self.assertIn("disabled by the current runtime setting", response.json()["detail"])
         create_job.assert_not_awaited()
 
-    def test_reference_upload_retains_ciphertext_then_queues_playback_preparation(self):
+    def test_reference_upload_waits_for_owner_to_open_unsupported_playback(self):
         source_bytes = b"synthetic-reference-video"
         metadata = {
             "fps": 30.0,
@@ -1421,7 +1421,7 @@ class VideoDetectionTests(unittest.TestCase):
             service, "_probe_reference_video_path", return_value=metadata
         ), patch.object(service, "enqueue_reference_playback") as enqueue_playback:
             service.process_reference_metadata(job.job_id)
-            enqueue_playback.assert_called_once_with(job.job_id)
+            enqueue_playback.assert_not_called()
 
         with Session(self.engine) as db:
             saved = db.exec(
@@ -1430,7 +1430,7 @@ class VideoDetectionTests(unittest.TestCase):
                 )
             ).one()
             self.assertEqual(saved.status, "ready")
-            self.assertEqual(saved.playback_status, "processing")
+            self.assertEqual(saved.playback_status, "conversion_required")
             self.assertIsNone(saved.error_code)
             self.assertTrue(Path(saved.original_path or "").is_file())
             self.assertIsNone(saved.visualization_path)
@@ -1442,9 +1442,41 @@ class VideoDetectionTests(unittest.TestCase):
             service, "CLINICAL_VIDEO_REVIEW_ENABLED", True
         ):
             review = service.public_job(db, saved, self.storage)
-        self.assertEqual(review["playback_status"], "processing")
+        self.assertEqual(review["playback_status"], "conversion_required")
         self.assertFalse(review["video_available"])
         self.assertTrue(review["source_available"])
+
+    def test_periodic_sweep_does_not_start_unopened_reference_conversion(self):
+        job_id = "VID-UNOPENED-REFERENCE"
+        with Session(self.engine) as db:
+            db.add(
+                VideoDetectionJob(
+                    owner_user_id=self.owner,
+                    case_id="CASE-UNOPENED-REFERENCE",
+                    job_id=job_id,
+                    status="ready",
+                    reference_only=True,
+                    playback_status="conversion_required",
+                )
+            )
+            db.commit()
+
+        storage = SimpleNamespace(
+            cleanup_stale_preflight_uploads=lambda: None,
+            cleanup_stale_playback=lambda _job_id: None,
+            cleanup=lambda *_args, **_kwargs: None,
+        )
+        with patch.object(service, "engine", self.engine), patch.object(
+            service, "VideoStorage", return_value=storage
+        ), patch.object(service, "enqueue_reference_playback") as enqueue_playback:
+            service.sweep()
+            enqueue_playback.assert_not_called()
+
+        with Session(self.engine) as db:
+            saved = db.exec(
+                select(VideoDetectionJob).where(VideoDetectionJob.job_id == job_id)
+            ).one()
+        self.assertEqual(saved.playback_status, "conversion_required")
 
     def test_reference_playback_keeps_one_dropped_frame_as_a_review_warning(self):
         metadata = {

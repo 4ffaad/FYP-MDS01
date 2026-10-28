@@ -61,7 +61,9 @@ class SessionStorage:
     """Manage private files for opaque analysis sessions.
 
     The class owns the directory layout but never exposes private paths in
-    API responses. All original and derived artifacts are transient by default.
+    API responses. Retention policy determines which encrypted originals and
+    derived artifacts remain after processing; plaintext work files are cleaned
+    up after use.
     """
 
     def __init__(self, root: Path = SESSION_STORAGE_DIR, storage_key: bytes | None = None) -> None:

@@ -279,7 +279,7 @@ class SecureOwnerReviewTests(unittest.TestCase):
         self.assertFalse((self.storage.root / job_id).exists())
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg video tooling unavailable")
-    def test_unsupported_reference_is_prepared_in_background_after_upload(self):
+    def test_unsupported_reference_waits_for_owner_to_open_popup(self):
         service_review = patch.object(video_detection_service, "CLINICAL_VIDEO_REVIEW_ENABLED", True)
         api_review = patch.object(video_detection, "CLINICAL_VIDEO_REVIEW_ENABLED", True)
         service_review.start()
@@ -325,10 +325,10 @@ class SecureOwnerReviewTests(unittest.TestCase):
             video_detection_service, "VideoStorage", return_value=self.video
         ), patch.object(video_detection_service, "enqueue_reference_playback") as enqueue_playback:
             video_detection_service.process_reference_metadata(job_id)
-            enqueue_playback.assert_called_once_with(job_id)
+            enqueue_playback.assert_not_called()
 
         metadata_ready = self.client.get(f"/api/video-detection/jobs/{job_id}").json()["job"]
-        self.assertEqual(metadata_ready["playback_status"], "processing")
+        self.assertEqual(metadata_ready["playback_status"], "conversion_required")
         with patch.object(
             video_detection_service,
             "prioritize_reference_playback",

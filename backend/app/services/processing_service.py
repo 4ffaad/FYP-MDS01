@@ -422,10 +422,10 @@ def process_session(session_id: str) -> None:
 
     Privacy
     -------
-    Original and full derived waveform files are removed after processing.
-    Only encrypted artifacts around model-positive windows are retained for
-    private research review; safe result metadata remains available through
-    the API.
+    The uploaded archive and retained source recordings stay encrypted in
+    private storage for until-deletion cases. Processing briefly materializes
+    private work files and removes them after use; historical retention modes
+    may keep only encrypted positive-window artifacts.
     """
 
     storage = SessionStorage()

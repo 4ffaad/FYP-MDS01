@@ -56,10 +56,9 @@ playback for the demo. A backend started without this setting defaults to
 disabled. Combined VEEG intake encrypts and retains the original, then returns
 without waiting for media probing or conversion. Compatible H.264 MP4 with
 optional AAC audio plays directly. Unsupported formats are prepared as an
-encrypted, browser-playable copy in the background so the video is ready by the
-time clinical review begins. This is format conversion only; it does not run
-OpenPose or VSViG. The setting controls reference-media access and does not add
-shared clinician roles.
+encrypted, browser-playable copy only after the owner opens that clip's popup.
+This is format conversion only; it does not run OpenPose or VSViG. The setting
+controls reference-media access and does not add shared clinician roles.
 
 On first visit, create a local account or sign in. EEG/video synchronization
 is available only when a supported Nicolet `.e` recording and a complete

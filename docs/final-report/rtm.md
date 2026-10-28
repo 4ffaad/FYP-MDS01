@@ -1,0 +1,39 @@
+# Appendix A — Draft Requirements Traceability Matrix
+
+**Status:** evidence-based draft for team and supervisor review; this is not
+the supervisor-approved pre-demo RTM. **Evidence context:** backend suite run
+locally on 28 October 2026 (491 passed, 6 skipped); the reported browser
+capture uses synthetic API data. Docker/PostgreSQL and TensorFlow were
+unavailable in this verification environment.
+
+| ID | Requirement / acceptance outcome | Status | Current evidence | Gap or qualification |
+|---|---|---|---|---|
+| EEG-01 | Accept supported EEG archives and preserve source timing, annotations, and readable waveforms for review. | Partial | `backend/app/eeg/`; `backend/tests/test_eeg_formats.py`; `test_retained_signal_regressions.py`; `test_signal_physical_units.py` | Supports reviewed EDF/EDF+ and Nicolet delivery paths. Nicolet `.e` handling is validated against supplied examples, not an official format specification; this report did not run a new real HUKM case. |
+| EEG-02 | Display a clinically styled 12-second page with labelled longitudinal bipolar channels, fixed scale, and full-recording navigation. | Partial | `frontend/src/components/SignalPreview.tsx`; `frontend/src/components/signal-rendering.ts`; `frontend/tests/e2e/signal-rendering.spec.ts`; Appendix B1 | The 12-second UI and synthetic waveform were inspected. The report does not claim sample-by-sample validation against a real HUKM clinical viewer. |
+| EEG-03 | Run the reviewed H5 model on the exact 18-channel, 256 Hz, four-second-window contract and return timestamped window scores. | Partial | `backend/app/ml/h5_inference.py`; `backend/app/eeg/model_input.py`; H5 contract file; `backend/tests/test_backend.py` H5 contract tests | Local H5 artifact and contract exist, but TensorFlow was unavailable and the model was not executed in this report pass. Scores remain uncalibrated research output. |
+| EEG-04 | Let a reviewer navigate from a score/flag or imported source annotation to the corresponding EEG time. | Partial | `backend/app/api/recordings.py`; `frontend/src/components/ResultScreen.tsx`; `frontend/src/components/SignalPreview.tsx`; browser tests | Timestamped imported annotations and flags are reviewable. A clinician observation editor is not exposed in the current UI. |
+| VEEG-01 | Retain combined-upload video encrypted and make reference playback independent of OpenPose/VSViG. | Met (prototype behavior) | `backend/app/api/video_detection.py`; `backend/app/services/video_detection_service.py`; `backend/tests/test_secure_owner_review.py::test_unsupported_reference_waits_for_owner_to_open_popup` | Upload encrypts the original; metadata probing is background work. Unsupported-format preparation starts only after the owner opens playback. |
+| VEEG-02 | Synchronize only when the video-to-EEG mapping is unique and preserve source-clock gaps. | Partial | `backend/app/services/video_sync_service.py`; `backend/tests/test_video_detection.py` sync mapping and ambiguity tests; `frontend/tests/e2e/video-sync-mapping.spec.ts` | Mapping logic and fixture cases are tested. A complete live HUKM owner case was not demonstrated in this report pass; a unique metadata match is not proof of byte identity. |
+| VEEG-03 | Make video popup opt-in; owner-authorize playback/ranges; keep playback on the EEG source clock. | Partial | `backend/app/api/video_detection.py`; `backend/app/services/video_storage_service.py`; `frontend/src/components/SyncedVideoReview.tsx`; `frontend/tests/e2e/video-sync-mapping.spec.ts` | Code and synthetic tests cover authorization, range streaming, seeking, buffering and mappings. End-to-end timing against real source clock anchors was not repeated here. |
+| VID-01 | Run standalone compatible video through pinned multi-person pose preprocessing and VSViG, with one uncalibrated score per window. | Partial | `backend/app/video_detection/runtime.py`; `docs/video-detection.md`; `backend/tests/test_vsvig_runtime.py`; `backend/tests/test_video_detection.py` | Runbook records one prior standalone demo inference (score 0.782). The external pinned runtime was not rerun in this report environment; result is not clinical accuracy evidence. |
+| VID-02 | Show time/keypoint-patch Grad-CAM as bounded model evidence. | Partial | `backend/app/video_detection/runtime.py::_vsvig_gradcam`; `backend/app/api/video_detection.py`; `frontend/tests/e2e/video-detection.spec.ts`; Appendix B2 | The code and browser test cover the evidence payload/display. It is a relative graph contribution map, not pixel localization or clinical explanation. |
+| SEC-01 | Encrypt retained recording files before private-storage persistence; keep plaintext work temporary and clean it up. | Met (prototype storage boundary) | `backend/app/services/storage_service.py`; `backend/app/services/video_storage_service.py`; `backend/tests/test_storage_security.py`; video lifecycle/security tests | Application-level AES-GCM and temporary-file cleanup are implemented. Production KMS, rotation, and recovery are not configured. |
+| SEC-02 | Require account ownership for private reads, media ranges, downloads, and results; avoid public caching and identifying audit logs. | Met (local owner model) | `backend/app/core/security.py`; `backend/app/api/recordings.py`; `backend/app/api/video_detection.py`; `backend/tests/test_auth_security.py`; `backend/tests/test_video_detection.py` | Tests are local API/database tests. There are no shared clinician roles, institutional identity, or live PostgreSQL security checks in this pass. |
+| SEC-03 | Retain new cases until owner deletion and delete linked source files/results together. | Met (prototype policy) | case/video models and deletion services; `backend/tests/test_video_detection.py`; `backend/tests/test_storage_security.py` | Legacy records can carry historical expiry policy; this status applies to the current new-case policy. Backup erasure is not demonstrated. |
+| PRIV-01 | Preserve privacy while proving that transformations retain model utility, as proposed originally. | Not achieved / superseded | Proposal-to-implementation comparison in Section 5; separate `/api/video-privacy/` workflow exists | No calibrated privacy-utility evaluation was delivered. New reference video is owner-only and unblurred; standalone model input uses unblurred RGB patches. |
+| ML-01 | Fuse EEG and video model outputs into one seizure event analysis or provide automatic diagnosis/lateralization. | Not achieved / out of scope | Separate EEG and standalone video endpoints/workflows; no fused model or diagnosis endpoint | The prototype reports independent evidence streams and requires human review. Movement side is not used to infer brain-side onset. |
+| OPS-01 | Support secure, institution-ready deployment with roles, HTTPS, durable processing, key lifecycle, and tested backup recovery. | Not achieved | `docs/project-design.md`; `docs/setup.md`; local Compose and BackgroundTasks implementation | The delivered target is a loopback-bound local research prototype. Deployment controls require follow-on work. |
+
+## Evidence rules
+
+- **Met** means the named behavior is implemented and has relevant automated
+  evidence in the stated prototype context. It does not mean clinically or
+  institutionally validated.
+- **Partial** means implementation exists but an important acceptance
+  condition—such as real-model execution, real-data browser validation, or
+  clinical evaluation—has not been demonstrated.
+- **Not achieved / superseded** records planned scope that was not delivered or
+  was explicitly displaced by the final scope.
+- Test names are provided for traceability. The unit-test suite uses mocks or
+  temporary databases for many cases; passing tests do not substitute for a
+  real clinical review or a deployment security assessment.

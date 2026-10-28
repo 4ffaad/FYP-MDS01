@@ -1,10 +1,12 @@
 # Backend
 
-FastAPI, PostgreSQL, and encrypted private file storage run through Docker
-Compose. Start with the [local setup](../docs/setup.md), then use the
-[backend guide](../docs/backend.md) or [architecture](../docs/architecture.md).
-The [video runbook](../docs/video-detection.md) documents pinned VSViG assets
-and its inference contract.
+New to the project? Start with the [backend handover](../docs/backend-handover.md)
+for the shortest supported startup path, the EEG/VEEG/video request flows, and
+the security boundaries. The [backend file map](../docs/backend-file-map.md)
+explains every tracked file in this directory.
+
+For deeper detail, see [local setup](../docs/setup.md), the [backend guide](../docs/backend.md),
+the [architecture](../docs/architecture.md), and the [video runbook](../docs/video-detection.md).
 
 Keep route handlers thin, database queries in repositories, and patient
 binaries out of PostgreSQL. Use Alembic for schema changes.

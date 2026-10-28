@@ -1,5 +1,9 @@
 # Backend guide
 
+For the shortest run-from-zero instructions and a plain-language security
+walkthrough, start with the [backend handover](backend-handover.md). The
+[backend file map](backend-file-map.md) lists every tracked backend file.
+
 This is the backend's practical map for changing or tracing a request. For a
 plain-language model walkthrough, start with
 [EEG and video inference](inference-walkthrough.md). API schemas are available
@@ -168,12 +172,12 @@ Combined VEEG upload encrypts the source and returns before metadata probing,
 video conversion, or inference. A durable `metadata_pending` row is claimed by
 the background worker; startup and retention sweeps re-enqueue pending checks.
 The worker removes its private temporary plaintext after probing, refreshes the
-encrypted sync mapping, and automatically queues a browser-format copy when
-needed. This is format conversion only and never runs OpenPose or VSViG. `POST
-/api/video-detection/jobs/{job_id}/playback` is owner-scoped and idempotent; it
-promotes the opened clip ahead of queued background conversions and returns
-its `processing` state immediately. One background conversion and one
-owner-priority conversion may run concurrently. `GET
+encrypted sync mapping, and records whether the source plays directly or needs
+preparation. Unsupported clips are not converted until the owner opens the
+popup and calls `POST /api/video-detection/jobs/{job_id}/playback`. This
+owner-scoped, idempotent request returns its `processing` state immediately; a
+background task prepares an audio-free browser copy without invoking OpenPose
+or VSViG. `GET
 /api/video-detection/jobs/{job_id}/playback` serves a protected byte-range
 stream from either a browser-compatible original or its encrypted review copy.
 Each new media chunk is authenticated before it is sent. Old monolithic

@@ -1,0 +1,568 @@
+{
+  "title": "MDS01 Backend Components and Security Flow",
+  "direction": "LR",
+  "page_width": 2240,
+  "page_height": 1500,
+  "auto_icons": false,
+  "nodes": [
+    {
+      "id": "browser",
+      "label": "Next.js browser\nEEG upload + review\nVEEG popup is opt-in\nSeparate video analysis",
+      "type": "service",
+      "x": 55,
+      "y": 155,
+      "width": 235,
+      "height": 165,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=15;fontStyle=1"
+    },
+    {
+      "id": "auth",
+      "label": "FastAPI security dependencies\nLocal session / Cloudflare assertion\nOwner check + write-origin check\nUpload body limits",
+      "type": "service",
+      "x": 350,
+      "y": 135,
+      "width": 280,
+      "height": 145,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF7EF;strokeColor=#16834A;fontColor=#14532D;fontSize=14;fontStyle=1"
+    },
+    {
+      "id": "routes",
+      "label": "API routes\nParse requests + return safe data\n/api/uploads \u00b7 /sessions \u00b7 /recordings\n/api/cases \u00b7 /video-detection",
+      "type": "service",
+      "x": 665,
+      "y": 135,
+      "width": 295,
+      "height": 145,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=14;fontStyle=1"
+    },
+    {
+      "id": "services",
+      "label": "Workflow services\nEEG / VEEG / standalone video\nStorage + model orchestration\nBackground tasks + cleanup",
+      "type": "service",
+      "x": 995,
+      "y": 135,
+      "width": 280,
+      "height": 145,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#7C3AED;fontColor=#4C1D95;fontSize=14;fontStyle=1"
+    },
+    {
+      "id": "repositories",
+      "label": "Repositories + SQLModel\nOwner-filtered database queries\nAlembic owns schema history",
+      "type": "service",
+      "x": 1310,
+      "y": 135,
+      "width": 270,
+      "height": 145,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=14;fontStyle=1"
+    },
+    {
+      "id": "eeg_upload",
+      "label": "1 \u00b7 EEG ZIP upload\nEncrypted draft\nOwner-scoped session",
+      "type": "process",
+      "x": 365,
+      "y": 400,
+      "width": 210,
+      "height": 105,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "eeg_encrypt",
+      "label": "2 \u00b7 AES-256-GCM\nEncrypt before file write\nSource stays outside PostgreSQL",
+      "type": "process",
+      "x": 605,
+      "y": 400,
+      "width": 235,
+      "height": 105,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF7EF;strokeColor=#16834A;fontColor=#14532D;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "eeg_process",
+      "label": "3 \u00b7 EEG processing service\nPrivate temporary work files\nValidate \u2192 de-identify \u2192 preprocess\nRemove plaintext after use",
+      "type": "process",
+      "x": 875,
+      "y": 400,
+      "width": 285,
+      "height": 135,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7E8;strokeColor=#D97706;fontColor=#78350F;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "eeg_h5",
+      "label": "4 \u00b7 Reviewed H5 input\n256 Hz \u00b7 18 bipolar channels\n4 s windows \u00b7 2 s stride\nContract checked at startup",
+      "type": "process",
+      "x": 1195,
+      "y": 400,
+      "width": 260,
+      "height": 135,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#7C3AED;fontColor=#4C1D95;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "eeg_scores",
+      "label": "5 \u00b7 Window scores + timestamps\nResearch finding, not diagnosis\nStored as structured PostgreSQL rows",
+      "type": "process",
+      "x": 1195,
+      "y": 560,
+      "width": 260,
+      "height": 105,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "eeg_review",
+      "label": "Owner waveform read\nBounded source-time range\nSource remains encrypted at rest",
+      "type": "process",
+      "x": 875,
+      "y": 560,
+      "width": 285,
+      "height": 105,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF7EF;strokeColor=#16834A;fontColor=#14532D;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "veeg_upload",
+      "label": "1 \u00b7 Combined VEEG upload\nReference clip only\nNo pose/model admission",
+      "type": "process",
+      "x": 365,
+      "y": 755,
+      "width": 210,
+      "height": 105,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "veeg_encrypt",
+      "label": "2 \u00b7 Chunked AES-256-GCM\nEncrypted original retained\nNo upload-time conversion",
+      "type": "process",
+      "x": 605,
+      "y": 755,
+      "width": 235,
+      "height": 105,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF7EF;strokeColor=#16834A;fontColor=#14532D;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "veeg_metadata",
+      "label": "3 \u00b7 Background metadata check\nClock + format probe\nEncrypted sync anchors\nUnique match required",
+      "type": "process",
+      "x": 875,
+      "y": 745,
+      "width": 285,
+      "height": 135,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7E8;strokeColor=#D97706;fontColor=#78350F;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "veeg_open",
+      "label": "4 \u00b7 Owner opens popup\nCompatible: stream original range\nUnsupported: request conversion now",
+      "type": "process",
+      "x": 1195,
+      "y": 745,
+      "width": 260,
+      "height": 135,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "veeg_stream",
+      "label": "5 \u00b7 Protected playback\nCheck owner on each range\nPrivate / no-store response\nEEG source clock leads",
+      "type": "process",
+      "x": 1195,
+      "y": 905,
+      "width": 260,
+      "height": 120,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF7EF;strokeColor=#16834A;fontColor=#14532D;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "video_upload",
+      "label": "1 \u00b7 Standalone video upload\nSeparate VSViG workflow",
+      "type": "process",
+      "x": 365,
+      "y": 1115,
+      "width": 210,
+      "height": 95,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "video_encrypt",
+      "label": "2 \u00b7 Encrypt original\nPrivate video storage",
+      "type": "process",
+      "x": 605,
+      "y": 1115,
+      "width": 235,
+      "height": 95,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF7EF;strokeColor=#16834A;fontColor=#14532D;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "video_pose",
+      "label": "3 \u00b7 Temporary work file\nOpenPose tracks + pose gate\nMissing required joints \u2192 no score",
+      "type": "process",
+      "x": 875,
+      "y": 1110,
+      "width": 285,
+      "height": 125,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7E8;strokeColor=#D97706;fontColor=#78350F;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "video_model",
+      "label": "4 \u00b7 VSViG + Grad-CAM\nPer-track research score\nNot synchronized with EEG",
+      "type": "process",
+      "x": 1195,
+      "y": 1110,
+      "width": 260,
+      "height": 125,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#7C3AED;fontColor=#4C1D95;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "video_results",
+      "label": "5 \u00b7 Encrypted VSViG result\nAuthenticated ciphertext in PostgreSQL\nOriginal video remains encrypted on disk",
+      "type": "process",
+      "x": 1195,
+      "y": 1260,
+      "width": 260,
+      "height": 105,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF7EF;strokeColor=#16834A;fontColor=#14532D;fontSize=13;fontStyle=1"
+    },
+    {
+      "id": "postgres",
+      "label": "PostgreSQL\nAccounts \u00b7 cases \u00b7 session/job state\nEEG scores + safe metadata\nSelected sensitive fields encrypted\nNot whole-database app encryption",
+      "type": "database",
+      "x": 1665,
+      "y": 145,
+      "width": 500,
+      "height": 210,
+      "style": "shape=cylinder;whiteSpace=wrap;html=1;fillColor=#EFF6FF;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=14;fontStyle=1"
+    },
+    {
+      "id": "private_files",
+      "label": "Private file storage\nAES-GCM encrypted EEG archives + sources\nEncrypted video originals + review copies\nOutside PostgreSQL \u00b7 retained until case deletion",
+      "type": "database",
+      "x": 1665,
+      "y": 425,
+      "width": 500,
+      "height": 190,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF7EF;strokeColor=#16834A;fontColor=#14532D;fontSize=14;fontStyle=1"
+    },
+    {
+      "id": "runtime_key",
+      "label": "Runtime key source\nMDS01_STORAGE_KEY from ignored .env\n32 bytes \u00b7 Base64 encoded\nNot stored in PostgreSQL or Git\nNo KMS / automatic rotation configured",
+      "type": "process",
+      "x": 1665,
+      "y": 690,
+      "width": 500,
+      "height": 195,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7E8;strokeColor=#D97706;fontColor=#78350F;fontSize=14;fontStyle=1"
+    },
+    {
+      "id": "temp_work",
+      "label": "Plaintext work area\nRestricted private directory\nUsed only while parsers/models need bytes\nCleanup after processing or playback",
+      "type": "process",
+      "x": 1665,
+      "y": 960,
+      "width": 500,
+      "height": 165,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7E8;strokeColor=#D97706;fontColor=#78350F;fontSize=14;fontStyle=1"
+    },
+    {
+      "id": "transport_note",
+      "label": "Local Compose binds to loopback.\nLocal demo uses HTTP; network deployment needs HTTPS,\ninstitutional roles, key custody, and tested backup recovery.",
+      "type": "external",
+      "x": 1665,
+      "y": 1195,
+      "width": 500,
+      "height": 105,
+      "style": "rounded=1;whiteSpace=wrap;html=1;fillColor=#F8FAFC;strokeColor=#94A3B8;fontColor=#334155;fontSize=12;fontStyle=1"
+    }
+  ],
+  "edges": [
+    {
+      "id": "browser-auth",
+      "source": "browser",
+      "target": "auth"
+    },
+    {
+      "id": "auth-routes",
+      "source": "auth",
+      "target": "routes"
+    },
+    {
+      "id": "routes-services",
+      "source": "routes",
+      "target": "services"
+    },
+    {
+      "id": "services-repo",
+      "source": "services",
+      "target": "repositories"
+    },
+    {
+      "id": "repo-db",
+      "source": "repositories",
+      "target": "postgres"
+    },
+    {
+      "id": "eeg-route",
+      "source": "routes",
+      "target": "eeg_upload"
+    },
+    {
+      "id": "eeg-upload-encrypt",
+      "source": "eeg_upload",
+      "target": "eeg_encrypt"
+    },
+    {
+      "id": "eeg-encrypt-process",
+      "source": "eeg_encrypt",
+      "target": "eeg_process"
+    },
+    {
+      "id": "eeg-process-h5",
+      "source": "eeg_process",
+      "target": "eeg_h5"
+    },
+    {
+      "id": "eeg-h5-score",
+      "source": "eeg_h5",
+      "target": "eeg_scores"
+    },
+    {
+      "id": "eeg-score-db",
+      "source": "eeg_scores",
+      "target": "postgres"
+    },
+    {
+      "id": "eeg-encrypted-files",
+      "source": "eeg_encrypt",
+      "target": "private_files"
+    },
+    {
+      "id": "eeg-source-review",
+      "source": "private_files",
+      "target": "eeg_review"
+    },
+    {
+      "id": "eeg-review-browser",
+      "source": "eeg_review",
+      "target": "browser"
+    },
+    {
+      "id": "veeg-route",
+      "source": "routes",
+      "target": "veeg_upload"
+    },
+    {
+      "id": "veeg-upload-encrypt",
+      "source": "veeg_upload",
+      "target": "veeg_encrypt"
+    },
+    {
+      "id": "veeg-encrypt-metadata",
+      "source": "veeg_encrypt",
+      "target": "veeg_metadata"
+    },
+    {
+      "id": "veeg-store",
+      "source": "veeg_encrypt",
+      "target": "private_files"
+    },
+    {
+      "id": "veeg-mapping-db",
+      "source": "veeg_metadata",
+      "target": "postgres"
+    },
+    {
+      "id": "veeg-open",
+      "source": "veeg_metadata",
+      "target": "veeg_open"
+    },
+    {
+      "id": "veeg-stream",
+      "source": "veeg_open",
+      "target": "veeg_stream"
+    },
+    {
+      "id": "veeg-read-original",
+      "source": "private_files",
+      "target": "veeg_stream"
+    },
+    {
+      "id": "veeg-output",
+      "source": "veeg_stream",
+      "target": "browser"
+    },
+    {
+      "id": "video-route",
+      "source": "routes",
+      "target": "video_upload"
+    },
+    {
+      "id": "video-upload-encrypt",
+      "source": "video_upload",
+      "target": "video_encrypt"
+    },
+    {
+      "id": "video-encrypt-pose",
+      "source": "video_encrypt",
+      "target": "video_pose"
+    },
+    {
+      "id": "video-files",
+      "source": "video_encrypt",
+      "target": "private_files"
+    },
+    {
+      "id": "video-pose-model",
+      "source": "video_pose",
+      "target": "video_model"
+    },
+    {
+      "id": "video-model-results",
+      "source": "video_model",
+      "target": "video_results"
+    },
+    {
+      "id": "video-results-db",
+      "source": "video_results",
+      "target": "postgres"
+    },
+    {
+      "id": "key-private-files",
+      "source": "runtime_key",
+      "target": "private_files"
+    },
+    {
+      "id": "key-work",
+      "source": "runtime_key",
+      "target": "temp_work"
+    },
+    {
+      "id": "process-work",
+      "source": "eeg_process",
+      "target": "temp_work"
+    },
+    {
+      "id": "video-work",
+      "source": "video_pose",
+      "target": "temp_work"
+    }
+  ],
+  "groups": [
+    {
+      "id": "request-layer",
+      "label": "1 \u00b7 Browser and common FastAPI request path",
+      "members": [
+        "browser",
+        "auth",
+        "routes",
+        "services",
+        "repositories"
+      ],
+      "x": 30,
+      "y": 80,
+      "width": 1580,
+      "height": 250,
+      "style": "swimlaneFillColor=#F8FAFC;fillColor=#F8FAFC;strokeColor=#94A3B8;fontColor=#334155;fontSize=15"
+    },
+    {
+      "id": "eeg-lane",
+      "label": "2 \u00b7 EEG archive \u2192 validated H5 \u2192 review output",
+      "members": [
+        "eeg_upload",
+        "eeg_encrypt",
+        "eeg_process",
+        "eeg_h5",
+        "eeg_scores",
+        "eeg_review"
+      ],
+      "x": 330,
+      "y": 345,
+      "width": 1280,
+      "height": 335,
+      "style": "swimlaneFillColor=#F5FAFF;fillColor=#F5FAFF;strokeColor=#60A5FA;fontColor=#1E3A8A;fontSize=15"
+    },
+    {
+      "id": "veeg-lane",
+      "label": "3 \u00b7 Combined VEEG reference playback \u00b7 never VSViG",
+      "members": [
+        "veeg_upload",
+        "veeg_encrypt",
+        "veeg_metadata",
+        "veeg_open",
+        "veeg_stream"
+      ],
+      "x": 330,
+      "y": 700,
+      "width": 1280,
+      "height": 345,
+      "style": "swimlaneFillColor=#F1FBF5;fillColor=#F1FBF5;strokeColor=#34D399;fontColor=#14532D;fontSize=15"
+    },
+    {
+      "id": "video-lane",
+      "label": "4 \u00b7 Standalone video \u2192 pose gate \u2192 VSViG result",
+      "members": [
+        "video_upload",
+        "video_encrypt",
+        "video_pose",
+        "video_model",
+        "video_results"
+      ],
+      "x": 330,
+      "y": 1065,
+      "width": 1280,
+      "height": 350,
+      "style": "swimlaneFillColor=#F7F3FF;fillColor=#F7F3FF;strokeColor=#A78BFA;fontColor=#4C1D95;fontSize=15"
+    },
+    {
+      "id": "postgres-store",
+      "label": "PostgreSQL \u00b7 selected sensitive fields encrypted",
+      "members": [
+        "postgres"
+      ],
+      "x": 1635,
+      "y": 100,
+      "width": 560,
+      "height": 275,
+      "style": "swimlaneFillColor=#F5F9FF;fillColor=#F5F9FF;strokeColor=#60A5FA;fontColor=#1E3A8A;fontSize=14"
+    },
+    {
+      "id": "private-store",
+      "label": "Encrypted file storage \u00b7 outside PostgreSQL",
+      "members": [
+        "private_files"
+      ],
+      "x": 1635,
+      "y": 390,
+      "width": 560,
+      "height": 250,
+      "style": "swimlaneFillColor=#F1FBF5;fillColor=#F1FBF5;strokeColor=#34D399;fontColor=#14532D;fontSize=14"
+    },
+    {
+      "id": "runtime-key-group",
+      "label": "Key custody",
+      "members": [
+        "runtime_key"
+      ],
+      "x": 1635,
+      "y": 655,
+      "width": 560,
+      "height": 240,
+      "style": "swimlaneFillColor=#FFFBEB;fillColor=#FFFBEB;strokeColor=#F59E0B;fontColor=#78350F;fontSize=14"
+    },
+    {
+      "id": "work-area-group",
+      "label": "Temporary plaintext boundary",
+      "members": [
+        "temp_work"
+      ],
+      "x": 1635,
+      "y": 910,
+      "width": 560,
+      "height": 215,
+      "style": "swimlaneFillColor=#FFFBEB;fillColor=#FFFBEB;strokeColor=#F59E0B;fontColor=#78350F;fontSize=14"
+    },
+    {
+      "id": "deployment-limit-group",
+      "label": "Deployment boundary",
+      "members": [
+        "transport_note"
+      ],
+      "x": 1635,
+      "y": 1140,
+      "width": 560,
+      "height": 185,
+      "style": "swimlaneFillColor=#F8FAFC;fillColor=#F8FAFC;strokeColor=#94A3B8;fontColor=#334155;fontSize=14"
+    }
+  ]
+}

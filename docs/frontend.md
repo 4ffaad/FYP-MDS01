@@ -59,7 +59,7 @@ DOC/DOCX source.
 In combined intake, EEG upload establishes the shared case reference. Once the
 service accepts it, EEG processing and VEEG reference storage run independently.
 Reference clips do not enter the VSViG queue; unsupported browser formats are
-prepared in the background after encrypted upload. Standalone VSViG jobs run one at a time; the
+prepared only after the owner opens their popup. Standalone VSViG jobs run one at a time; the
 progress panel shows the current model clip and upload progress, while the full
 clip list stays collapsed for large batches. EEG
 processing-stage rows come from safe, owner-scoped stage and timing metadata;

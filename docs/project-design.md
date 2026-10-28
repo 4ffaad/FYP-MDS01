@@ -1,6 +1,6 @@
 # MDS01 project design
 
-**Last reviewed: 2026-10-17**
+**Last reviewed: 2026-10-27**
 
 This document describes the system that exists in the repository. It is the
 technical design record for the next project-design write-up; it does not
@@ -88,9 +88,10 @@ probing, decrypting, or converting the video. A restart-recoverable background
 worker checks clock/format metadata and refreshes sync mappings; it does not run
 pose estimation or VSViG. New video originals use authenticated AES-256-GCM
 chunks, so browser-compatible originals stream only the requested byte ranges.
-An unsupported format gets an audio-free H.264 review copy only after the owner
-opens the clip. Originals and derived review files remain encrypted until case
-deletion. The `.env.example`
+The metadata worker records whether the source is browser-compatible. An
+unsupported clip stays encrypted and is converted to an audio-free H.264 review
+copy only after its owner opens the popup.
+Originals and derived review files remain encrypted until case deletion. The `.env.example`
 template enables this for the local owner-only demo. A backend started without
 the setting defaults to disabled.
 
@@ -105,9 +106,9 @@ verified mapping remain available as independent reference video when the
 review setting is enabled, with their alignment status shown.
 
 The review popup is opt-in and remains open until the user closes it. Compatible
-H.264 MP4 originals with optional AAC audio stream directly; unsupported clips
-are converted automatically in the background after encrypted upload, without
-VSViG. The EEG source clock drives verified video
+H.264 MP4 originals with optional AAC audio stream directly. After the
+background metadata probe, unsupported clips remain encrypted and unconverted
+until the owner opens playback. This does not run VSViG. The EEG source clock drives verified video
 seeking, playback state, and playback rate; it holds during buffering, and
 routine video time updates do not reset it. The player supports slow motion,
 frame stepping, and timestamped bookmarks. The UI distinguishes source
