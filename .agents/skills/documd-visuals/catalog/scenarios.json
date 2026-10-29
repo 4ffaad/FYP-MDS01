@@ -1,0 +1,4299 @@
+{
+  "version": "1.0.0",
+  "frozen": "2026-09-25",
+  "metaClusters": {
+    "A": "data & metrics",
+    "B": "process & systems",
+    "C": "infrastructure & governance",
+    "D": "knowledge & expression"
+  },
+  "scoring": "W = 0.30·F + 0.25·R + 0.15·D + 0.15·C + 0.15·X. F = example count (capped). R = strict-JSON fence present. D = icon/template engine present. C = meta cluster A/B. X = single-engine scenario or not.",
+  "scenarios": [
+    {
+      "id": "business-reporting/revenue-mix",
+      "domain": "business-reporting",
+      "meta": "A",
+      "intent": "revenue mix",
+      "engines": [
+        "infographic",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/business-reporting/regional-revenue-split.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/business-reporting/product-mix-donut-badges.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/business-reporting/subscription-tiers-wheel.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/business-reporting/quarterly-share-normalized-stack.md"
+        }
+      ],
+      "F": 5,
+      "R": 5,
+      "D": 5,
+      "C": 5,
+      "X": 3,
+      "W": 4.7,
+      "tier": "T0"
+    },
+    {
+      "id": "delivery-throughput/team-capacity",
+      "domain": "delivery-throughput",
+      "meta": "A",
+      "intent": "team capacity",
+      "engines": [
+        "echarts",
+        "infographic",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/delivery-throughput/pictorialbar-capacity-symbols.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/support-capacity-units.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/delivery-throughput/team-capacity-ramp.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/delivery-throughput/team-throughput-bars.md"
+        }
+      ],
+      "F": 5,
+      "R": 5,
+      "D": 5,
+      "C": 5,
+      "X": 3,
+      "W": 4.7,
+      "tier": "T0"
+    },
+    {
+      "id": "dependencies-and-relations/service-dependencies",
+      "domain": "dependencies-and-relations",
+      "meta": "B",
+      "intent": "service dependencies",
+      "engines": [
+        "echarts",
+        "infographic",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/dependencies-and-relations/platform-dependency-graph.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/dependencies-and-relations/service-dependency-network.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/dependencies-and-relations/service-call-force-map.md"
+        },
+        {
+          "engine": "echarts",
+          "file": "examples/dependencies-and-relations/graph-platform-dependencies.md"
+        }
+      ],
+      "F": 5,
+      "R": 5,
+      "D": 5,
+      "C": 5,
+      "X": 3,
+      "W": 4.7,
+      "tier": "T0"
+    },
+    {
+      "id": "incident-management/escalation-path",
+      "domain": "incident-management",
+      "meta": "B",
+      "intent": "escalation path",
+      "engines": [
+        "echarts",
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/incident-management/incident-escalation-path.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/incident-management/support-escalation-pyramid.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/incident-management/release-blockers-escalation.md"
+        },
+        {
+          "engine": "echarts",
+          "file": "examples/incident-management/tree-support-routing.md"
+        }
+      ],
+      "F": 5,
+      "R": 5,
+      "D": 5,
+      "C": 5,
+      "X": 3,
+      "W": 4.7,
+      "tier": "T0"
+    },
+    {
+      "id": "delivery-throughput/release-packet-profile",
+      "domain": "delivery-throughput",
+      "meta": "A",
+      "intent": "release packet profile",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/release-duration-distribution.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/release-size-violin.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/build-time-candles.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/request-size-distribution.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/asset-size-packing.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/release-time-split-donut.md"
+        }
+      ],
+      "F": 5,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 4.55,
+      "tier": "T0"
+    },
+    {
+      "id": "business-reporting/periodic-results",
+      "domain": "business-reporting",
+      "meta": "A",
+      "intent": "periodic results",
+      "engines": [
+        "echarts",
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/business-reporting/quarterly-results-columns.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/business-reporting/revenue-staircase-plan.md"
+        },
+        {
+          "engine": "echarts",
+          "file": "examples/business-reporting/candlestick-quarterly-price-range.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 5,
+      "C": 5,
+      "X": 3,
+      "W": 4.4,
+      "tier": "T0"
+    },
+    {
+      "id": "cost-and-budget/budget-split",
+      "domain": "cost-and-budget",
+      "meta": "A",
+      "intent": "budget split",
+      "engines": [
+        "echarts",
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/cost-and-budget/pie-budget-share.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/cost-and-budget/budget-allocation-donut.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/cost-and-budget/cost-structure-split.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 5,
+      "C": 5,
+      "X": 3,
+      "W": 4.4,
+      "tier": "T0"
+    },
+    {
+      "id": "cost-and-budget/cost-walk",
+      "domain": "cost-and-budget",
+      "meta": "A",
+      "intent": "cost walk",
+      "engines": [
+        "echarts",
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/cost-and-budget/run-rate-waterfall.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/cost-and-budget/cost-reduction-waterfall.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/cost-and-budget/budget-drawdown-waterfall.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 5,
+      "C": 5,
+      "X": 3,
+      "W": 4.4,
+      "tier": "T0"
+    },
+    {
+      "id": "go-to-market/acquisition-mix",
+      "domain": "go-to-market",
+      "meta": "A",
+      "intent": "acquisition mix",
+      "engines": [
+        "echarts",
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/go-to-market/donut-channel-mix.md"
+        },
+        {
+          "engine": "echarts",
+          "file": "examples/go-to-market/lead-source-rose.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/go-to-market/traffic-source-mix-split.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 5,
+      "C": 5,
+      "X": 3,
+      "W": 4.4,
+      "tier": "T0"
+    },
+    {
+      "id": "product-metrics/conversion-funnel",
+      "domain": "product-metrics",
+      "meta": "A",
+      "intent": "conversion funnel",
+      "engines": [
+        "echarts",
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/product-metrics/funnel-stage-conversion.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/product-metrics/conversion-funnel-journey.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/product-metrics/claims-pipeline-funnel.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 5,
+      "C": 5,
+      "X": 3,
+      "W": 4.4,
+      "tier": "T0"
+    },
+    {
+      "id": "service-reliability/latency-profile",
+      "domain": "service-reliability",
+      "meta": "A",
+      "intent": "latency profile",
+      "engines": [
+        "echarts",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/service-reliability/boxplot-latency-distribution.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/service-reliability/latency-beeswarm-regions.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/service-reliability/service-latency-density.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/service-reliability/before-after-latency-gap.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/service-reliability/service-drift-lasagna.md"
+        }
+      ],
+      "F": 5,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 3,
+      "W": 4.4,
+      "tier": "T0"
+    },
+    {
+      "id": "business-reporting/category-comparison",
+      "domain": "business-reporting",
+      "meta": "A",
+      "intent": "category comparison",
+      "engines": [
+        "echarts",
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/business-reporting/comparison-bars.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/business-reporting/channel-performance-comparison.md"
+        }
+      ],
+      "F": 3,
+      "R": 5,
+      "D": 5,
+      "C": 5,
+      "X": 3,
+      "W": 4.1,
+      "tier": "T0"
+    },
+    {
+      "id": "cost-and-budget/spend-hierarchy",
+      "domain": "cost-and-budget",
+      "meta": "A",
+      "intent": "spend hierarchy",
+      "engines": [
+        "echarts",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/cost-and-budget/treemap-portfolio-breakdown.md"
+        },
+        {
+          "engine": "echarts",
+          "file": "examples/cost-and-budget/sunburst-lifecycle-share.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/cost-and-budget/cost-center-treemap.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 3,
+      "W": 4.1,
+      "tier": "T0"
+    },
+    {
+      "id": "delivery-throughput/rank-movement",
+      "domain": "delivery-throughput",
+      "meta": "A",
+      "intent": "rank movement",
+      "engines": [
+        "echarts",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/delivery-throughput/team-rank-bump-chart.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/rank-movement-over-time.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/adoption-shift-slope.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 3,
+      "W": 4.1,
+      "tier": "T0"
+    },
+    {
+      "id": "goal-and-status-reporting/goal-attainment",
+      "domain": "goal-and-status-reporting",
+      "meta": "A",
+      "intent": "goal attainment",
+      "engines": [
+        "echarts",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/goal-and-status-reporting/goal-attainment-background-bars.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/goal-and-status-reporting/target-attainment-bullet.md"
+        },
+        {
+          "engine": "echarts",
+          "file": "examples/goal-and-status-reporting/delivery-score-threshold-bands.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 3,
+      "W": 4.1,
+      "tier": "T0"
+    },
+    {
+      "id": "knowledge-and-outline/keyword-cloud",
+      "domain": "knowledge-and-outline",
+      "meta": "D",
+      "intent": "keyword cloud",
+      "engines": [
+        "infographic",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/knowledge-and-outline/topic-emphasis-wordcloud.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/knowledge-and-outline/survey-themes-rotated-cloud.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/knowledge-and-outline/topic-landscape-wordcloud.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 5,
+      "C": 3,
+      "X": 3,
+      "W": 4.1,
+      "tier": "T0"
+    },
+    {
+      "id": "ops-monitoring/incident-load",
+      "domain": "ops-monitoring",
+      "meta": "A",
+      "intent": "incident load",
+      "engines": [
+        "echarts",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/ops-monitoring/heatmap-incident-load.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/ops-monitoring/alert-density-contours.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/ops-monitoring/incident-rate-stripes.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 3,
+      "W": 4.1,
+      "tier": "T0"
+    },
+    {
+      "id": "ops-monitoring/service-profile",
+      "domain": "ops-monitoring",
+      "meta": "A",
+      "intent": "service profile",
+      "engines": [
+        "echarts",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/ops-monitoring/radar-capability-profile.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/ops-monitoring/capability-comparison-radar.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/ops-monitoring/risk-profile-parallel.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 3,
+      "W": 4.1,
+      "tier": "T0"
+    },
+    {
+      "id": "ops-monitoring/support-load",
+      "domain": "ops-monitoring",
+      "meta": "A",
+      "intent": "support load",
+      "engines": [
+        "echarts",
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/ops-monitoring/support-volume-radial-bars.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/ops-monitoring/support-ticket-mix-pie.md"
+        }
+      ],
+      "F": 3,
+      "R": 5,
+      "D": 5,
+      "C": 5,
+      "X": 3,
+      "W": 4.1,
+      "tier": "T0"
+    },
+    {
+      "id": "organization-and-roles/org-structure",
+      "domain": "organization-and-roles",
+      "meta": "C",
+      "intent": "org structure",
+      "engines": [
+        "infographic",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/organization-and-roles/platform-org-structure.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/organization-and-roles/team-reporting-tree.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/organization-and-roles/org-chart-radial-tree.md"
+        }
+      ],
+      "F": 4,
+      "R": 5,
+      "D": 5,
+      "C": 3,
+      "X": 3,
+      "W": 4.1,
+      "tier": "T0"
+    },
+    {
+      "id": "data-exploration/distribution-comparison",
+      "domain": "data-exploration",
+      "meta": "A",
+      "intent": "distribution comparison",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/data-exploration/metric-distribution-small-multiples.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/data-exploration/stripplot-region-spread.md"
+        }
+      ],
+      "F": 3,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.95,
+      "tier": "T1"
+    },
+    {
+      "id": "engineering-operations/deploy-rhythm",
+      "domain": "engineering-operations",
+      "meta": "B",
+      "intent": "deploy rhythm",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/engineering-operations/deploy-frequency-calendar.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/engineering-operations/deploy-punchcard-weekday-hour.md"
+        }
+      ],
+      "F": 3,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.95,
+      "tier": "T1"
+    },
+    {
+      "id": "service-reliability/forecast-band",
+      "domain": "service-reliability",
+      "meta": "A",
+      "intent": "forecast band",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/service-reliability/forecast-range-band.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/service-reliability/team-variance-interval.md"
+        }
+      ],
+      "F": 3,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.95,
+      "tier": "T1"
+    },
+    {
+      "id": "data-exploration/correlation",
+      "domain": "data-exploration",
+      "meta": "A",
+      "intent": "correlation",
+      "engines": [
+        "echarts",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/data-exploration/metric-correlation-matrix.md"
+        },
+        {
+          "engine": "echarts",
+          "file": "examples/data-exploration/scatter-segment-correlation.md"
+        }
+      ],
+      "F": 3,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 3,
+      "W": 3.8,
+      "tier": "T1"
+    },
+    {
+      "id": "delivery-throughput/backlog-flow",
+      "domain": "delivery-throughput",
+      "meta": "A",
+      "intent": "backlog flow",
+      "engines": [
+        "echarts",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/delivery-throughput/backlog-ranking-dataset.md"
+        },
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/demand-overview-detail.md"
+        }
+      ],
+      "F": 3,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 3,
+      "W": 3.8,
+      "tier": "T1"
+    },
+    {
+      "id": "delivery-throughput/throughput-vs-cycle",
+      "domain": "delivery-throughput",
+      "meta": "A",
+      "intent": "throughput vs cycle",
+      "engines": [
+        "echarts",
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/growth-vs-efficiency-path.md"
+        },
+        {
+          "engine": "echarts",
+          "file": "examples/delivery-throughput/throughput-band-range-area.md"
+        }
+      ],
+      "F": 3,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 3,
+      "W": 3.8,
+      "tier": "T1"
+    },
+    {
+      "id": "comparison-and-selection/priority-quadrant",
+      "domain": "comparison-and-selection",
+      "meta": "D",
+      "intent": "priority quadrant",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/comparison-and-selection/backlog-priority-quadrant.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/comparison-and-selection/scenario-planning-quadrant.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/comparison-and-selection/test-automation-quadrant.md"
+        }
+      ],
+      "F": 4,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.75,
+      "tier": "T1"
+    },
+    {
+      "id": "dependencies-and-relations/dependency-graph",
+      "domain": "dependencies-and-relations",
+      "meta": "B",
+      "intent": "dependency graph",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/dependencies-and-relations/dependency-graph.md"
+        },
+        {
+          "engine": "plantuml",
+          "file": "examples/dependencies-and-relations/clustered-architecture.md"
+        }
+      ],
+      "F": 3,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.75,
+      "tier": "T1"
+    },
+    {
+      "id": "engineering-operations/ops-rhythm",
+      "domain": "engineering-operations",
+      "meta": "B",
+      "intent": "ops rhythm",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/engineering-operations/quarterly-business-rhythm.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/engineering-operations/operating-cycle-loop.md"
+        }
+      ],
+      "F": 3,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.75,
+      "tier": "T1"
+    },
+    {
+      "id": "engineering-operations/shift-handover",
+      "domain": "engineering-operations",
+      "meta": "B",
+      "intent": "shift handover",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/engineering-operations/support-shift-handover.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/engineering-operations/shift-handover-timeline.md"
+        }
+      ],
+      "F": 3,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.75,
+      "tier": "T1"
+    },
+    {
+      "id": "business-reporting/revenue-concentration",
+      "domain": "business-reporting",
+      "meta": "A",
+      "intent": "revenue concentration",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/business-reporting/revenue-concentration-topk-others.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "cost-and-budget/cost-vs-capacity",
+      "domain": "cost-and-budget",
+      "meta": "A",
+      "intent": "cost vs capacity",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/cost-and-budget/capacity-cost-dual-axis.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "cost-and-budget/spend-by-scope",
+      "domain": "cost-and-budget",
+      "meta": "A",
+      "intent": "spend by scope",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/cost-and-budget/cloud-spend-nested-pie.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "cost-and-budget/variance-vs-plan",
+      "domain": "cost-and-budget",
+      "meta": "A",
+      "intent": "variance vs plan",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/cost-and-budget/headcount-variance-diverging-bars.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "data-exploration/composition-over-time",
+      "domain": "data-exploration",
+      "meta": "A",
+      "intent": "composition over time",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/data-exploration/streamgraph-topic-composition.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "data-exploration/deviation-analysis",
+      "domain": "data-exploration",
+      "meta": "A",
+      "intent": "deviation analysis",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/data-exploration/deviation-from-average.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "data-exploration/missing-data",
+      "domain": "data-exploration",
+      "meta": "A",
+      "intent": "missing data",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/data-exploration/imputed-gap-trend.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "data-exploration/multi-metric-screen",
+      "domain": "data-exploration",
+      "meta": "A",
+      "intent": "multi metric screen",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/data-exploration/parallel-risk-screen.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "data-exploration/regression-fit",
+      "domain": "data-exploration",
+      "meta": "A",
+      "intent": "regression fit",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/data-exploration/regression-trend-fit.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "data-exploration/small-multiples",
+      "domain": "data-exploration",
+      "meta": "A",
+      "intent": "small multiples",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/data-exploration/segment-pattern-small-multiples.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "delivery-throughput/plan-vs-actual",
+      "domain": "delivery-throughput",
+      "meta": "A",
+      "intent": "plan vs actual",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/delivery-throughput/plan-to-actual-bridge.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "delivery-throughput/work-mix",
+      "domain": "delivery-throughput",
+      "meta": "A",
+      "intent": "work mix",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/delivery-throughput/engineering-time-100pct-bars.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "dependencies-and-relations/import-coupling",
+      "domain": "dependencies-and-relations",
+      "meta": "B",
+      "intent": "import coupling",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/dependencies-and-relations/module-import-arcs.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "dependencies-and-relations/ownership-graph",
+      "domain": "dependencies-and-relations",
+      "meta": "B",
+      "intent": "ownership graph",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/dependencies-and-relations/service-ownership-circle-graph.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "engineering-operations/release-pace",
+      "domain": "engineering-operations",
+      "meta": "B",
+      "intent": "release pace",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/engineering-operations/calendar-release-pace.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "goal-and-status-reporting/kpi-dashboard",
+      "domain": "goal-and-status-reporting",
+      "meta": "A",
+      "intent": "kpi dashboard",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/goal-and-status-reporting/kpi-dashboard.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "ops-monitoring/anomaly-scan",
+      "domain": "ops-monitoring",
+      "meta": "A",
+      "intent": "anomaly scan",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/ops-monitoring/effectscatter-outlier-alerts.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "ops-monitoring/incident-trend",
+      "domain": "ops-monitoring",
+      "meta": "A",
+      "intent": "incident trend",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/ops-monitoring/incident-trend-stacked-area.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "ops-monitoring/metric-trend",
+      "domain": "ops-monitoring",
+      "meta": "A",
+      "intent": "metric trend",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/ops-monitoring/trend-line-multi-series.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "ops-monitoring/service-scorecard",
+      "domain": "ops-monitoring",
+      "meta": "A",
+      "intent": "service scorecard",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/ops-monitoring/matrix-service-scorecards.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "product-metrics/channel-flow",
+      "domain": "product-metrics",
+      "meta": "A",
+      "intent": "channel flow",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/product-metrics/sankey-channel-to-fulfilment.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "service-reliability/error-budget",
+      "domain": "service-reliability",
+      "meta": "A",
+      "intent": "error budget",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/service-reliability/error-budget-burn-trail.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "service-reliability/slo-attainment",
+      "domain": "service-reliability",
+      "meta": "A",
+      "intent": "slo attainment",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/service-reliability/gauge-sla-attainment.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "service-reliability/threshold-monitoring",
+      "domain": "service-reliability",
+      "meta": "A",
+      "intent": "threshold monitoring",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/service-reliability/threshold-breach-annotation.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 5,
+      "X": 4,
+      "W": 3.65,
+      "tier": "T1"
+    },
+    {
+      "id": "process-and-workflow/approval-workflow",
+      "domain": "process-and-workflow",
+      "meta": "B",
+      "intent": "approval workflow",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/process-and-workflow/approval-workflow-swimlane.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 5,
+      "W": 3.6,
+      "tier": "T1"
+    },
+    {
+      "id": "process-and-workflow/cicd-pipeline",
+      "domain": "process-and-workflow",
+      "meta": "B",
+      "intent": "cicd pipeline",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/process-and-workflow/cicd-pipeline.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 5,
+      "W": 3.6,
+      "tier": "T1"
+    },
+    {
+      "id": "software-behaviour/api-interaction-sequence",
+      "domain": "software-behaviour",
+      "meta": "B",
+      "intent": "api interaction sequence",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-behaviour/api-interaction-sequence.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 5,
+      "W": 3.6,
+      "tier": "T1"
+    },
+    {
+      "id": "software-behaviour/deployment-topology",
+      "domain": "software-behaviour",
+      "meta": "B",
+      "intent": "deployment topology",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-behaviour/runtime-deployment-topology.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 5,
+      "W": 3.6,
+      "tier": "T1"
+    },
+    {
+      "id": "software-behaviour/eip-message-flow",
+      "domain": "software-behaviour",
+      "meta": "B",
+      "intent": "eip message flow",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-behaviour/eip-message-flow.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 5,
+      "W": 3.6,
+      "tier": "T1"
+    },
+    {
+      "id": "software-behaviour/event-driven-flow",
+      "domain": "software-behaviour",
+      "meta": "B",
+      "intent": "event driven flow",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-behaviour/serverless-event-driven.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 5,
+      "W": 3.6,
+      "tier": "T1"
+    },
+    {
+      "id": "software-behaviour/state-machine",
+      "domain": "software-behaviour",
+      "meta": "B",
+      "intent": "state machine",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-behaviour/order-state-machine.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 5,
+      "W": 3.6,
+      "tier": "T1"
+    },
+    {
+      "id": "software-design/c4-container",
+      "domain": "software-design",
+      "meta": "B",
+      "intent": "c4 container",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-design/c4-container-diagram.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 5,
+      "W": 3.6,
+      "tier": "T1"
+    },
+    {
+      "id": "software-design/component-decomposition",
+      "domain": "software-design",
+      "meta": "B",
+      "intent": "component decomposition",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-design/component-decomposition.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 5,
+      "W": 3.6,
+      "tier": "T1"
+    },
+    {
+      "id": "software-design/domain-class-model",
+      "domain": "software-design",
+      "meta": "B",
+      "intent": "domain class model",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-design/domain-class-model.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 5,
+      "W": 3.6,
+      "tier": "T1"
+    },
+    {
+      "id": "business-reporting/goal-progress",
+      "domain": "business-reporting",
+      "meta": "A",
+      "intent": "goal progress",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/business-reporting/sustainability-goals-progress.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "dependencies-and-relations/causal-tree",
+      "domain": "dependencies-and-relations",
+      "meta": "B",
+      "intent": "causal tree",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/dependencies-and-relations/fishbone-causal-tree.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "dependencies-and-relations/relationship-network",
+      "domain": "dependencies-and-relations",
+      "meta": "B",
+      "intent": "relationship network",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/dependencies-and-relations/relationship-network-neato.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "dependencies-and-relations/tabular-nodes",
+      "domain": "dependencies-and-relations",
+      "meta": "B",
+      "intent": "tabular nodes",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/dependencies-and-relations/table-node-structures.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "engineering-operations/launch-readiness",
+      "domain": "engineering-operations",
+      "meta": "B",
+      "intent": "launch readiness",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/engineering-operations/launch-readiness-checklist.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "engineering-operations/oncall-coverage",
+      "domain": "engineering-operations",
+      "meta": "B",
+      "intent": "oncall coverage",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/engineering-operations/oncall-coverage-wheel.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "engineering-operations/ops-checklist",
+      "domain": "engineering-operations",
+      "meta": "B",
+      "intent": "ops checklist",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/engineering-operations/daily-ops-checklist-columns.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "engineering-operations/standup",
+      "domain": "engineering-operations",
+      "meta": "B",
+      "intent": "standup",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/engineering-operations/sprint-standup-talking-points.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "go-to-market/market-entry",
+      "domain": "go-to-market",
+      "meta": "A",
+      "intent": "market entry",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/go-to-market/market-entry-swot.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "go-to-market/partner-onboarding",
+      "domain": "go-to-market",
+      "meta": "A",
+      "intent": "partner onboarding",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/go-to-market/partner-onboarding-timeline.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "go-to-market/partner-tiers",
+      "domain": "go-to-market",
+      "meta": "A",
+      "intent": "partner tiers",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/go-to-market/partner-tiers-pyramid.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "go-to-market/sales-pipeline",
+      "domain": "go-to-market",
+      "meta": "A",
+      "intent": "sales pipeline",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/go-to-market/sales-qualification-gates.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "goal-and-status-reporting/leadership-board",
+      "domain": "goal-and-status-reporting",
+      "meta": "A",
+      "intent": "leadership board",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/goal-and-status-reporting/leadership-metric-board.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "goal-and-status-reporting/metric-board",
+      "domain": "goal-and-status-reporting",
+      "meta": "A",
+      "intent": "metric board",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/goal-and-status-reporting/metric-snapshot-board.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "goal-and-status-reporting/programme-status",
+      "domain": "goal-and-status-reporting",
+      "meta": "A",
+      "intent": "programme status",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/goal-and-status-reporting/program-status-ribbons.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "incident-management/change-control",
+      "domain": "incident-management",
+      "meta": "B",
+      "intent": "change control",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/incident-management/change-request-columns.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "incident-management/field-playbook",
+      "domain": "incident-management",
+      "meta": "B",
+      "intent": "field playbook",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/incident-management/field-ops-playbook.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "incident-management/incident-review",
+      "domain": "incident-management",
+      "meta": "B",
+      "intent": "incident review",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/incident-management/incident-review-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "incident-management/incident-runbook",
+      "domain": "incident-management",
+      "meta": "B",
+      "intent": "incident runbook",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/incident-management/incident-response-runbook.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "incident-management/triage-filters",
+      "domain": "incident-management",
+      "meta": "B",
+      "intent": "triage filters",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/incident-management/bug-triage-filters.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "people-and-hiring/skills-progression",
+      "domain": "people-and-hiring",
+      "meta": "C",
+      "intent": "skills progression",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/people-and-hiring/engineer-skill-progression.md"
+        },
+        {
+          "engine": "infographic",
+          "file": "examples/people-and-hiring/certification-study-roadmap.md"
+        }
+      ],
+      "F": 3,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "process-and-workflow/approval-path",
+      "domain": "process-and-workflow",
+      "meta": "B",
+      "intent": "approval path",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/process-and-workflow/procurement-approval-path.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "process-and-workflow/basic-activity-flow",
+      "domain": "process-and-workflow",
+      "meta": "B",
+      "intent": "basic activity flow",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/process-and-workflow/basic-activity-flow.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "process-and-workflow/returns-processing",
+      "domain": "process-and-workflow",
+      "meta": "B",
+      "intent": "returns processing",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/process-and-workflow/returns-processing-snake.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "product-metrics/adoption-trend",
+      "domain": "product-metrics",
+      "meta": "A",
+      "intent": "adoption trend",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/product-metrics/feature-adoption-trend.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "product-metrics/customer-journey",
+      "domain": "product-metrics",
+      "meta": "A",
+      "intent": "customer journey",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/product-metrics/customer-health-journey.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "product-metrics/experiment-loop",
+      "domain": "product-metrics",
+      "meta": "A",
+      "intent": "experiment loop",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/product-metrics/growth-experiment-loop.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "product-metrics/onboarding-journey",
+      "domain": "product-metrics",
+      "meta": "A",
+      "intent": "onboarding journey",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/product-metrics/customer-onboarding-journey.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "service-reliability/reliability-maturity",
+      "domain": "service-reliability",
+      "meta": "A",
+      "intent": "reliability maturity",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/service-reliability/reliability-maturity-ladder.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "software-design/object-snapshot",
+      "domain": "software-design",
+      "meta": "B",
+      "intent": "object snapshot",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-design/object-snapshot.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "software-design/package-layering",
+      "domain": "software-design",
+      "meta": "B",
+      "intent": "package layering",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-design/package-layering.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "software-design/sysml-block-definition",
+      "domain": "software-design",
+      "meta": "B",
+      "intent": "sysml block definition",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-design/sysml-block-definition.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "software-design/use-case-model",
+      "domain": "software-design",
+      "meta": "B",
+      "intent": "use case model",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/software-design/use-case-model.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "system-architecture/complex-system-blueprint",
+      "domain": "system-architecture",
+      "meta": "B",
+      "intent": "complex system blueprint",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/system-architecture/complex-system-blueprint.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "system-architecture/layer-stack",
+      "domain": "system-architecture",
+      "meta": "B",
+      "intent": "layer stack",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/system-architecture/layer-stack.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "system-architecture/layered-with-wings",
+      "domain": "system-architecture",
+      "meta": "B",
+      "intent": "layered with wings",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/system-architecture/layered-with-wings.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "system-architecture/nested-zones",
+      "domain": "system-architecture",
+      "meta": "B",
+      "intent": "nested zones",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/system-architecture/nested-zones.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "system-architecture/operations-overview",
+      "domain": "system-architecture",
+      "meta": "B",
+      "intent": "operations overview",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/system-architecture/operations-overview.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "system-architecture/pipeline-stages",
+      "domain": "system-architecture",
+      "meta": "B",
+      "intent": "pipeline stages",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/system-architecture/pipeline-stages.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "system-architecture/request-paths",
+      "domain": "system-architecture",
+      "meta": "B",
+      "intent": "request paths",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/system-architecture/request-paths.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "system-architecture/service-catalog",
+      "domain": "system-architecture",
+      "meta": "B",
+      "intent": "service catalog",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/system-architecture/service-catalog.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 5,
+      "X": 4,
+      "W": 3.45,
+      "tier": "T1"
+    },
+    {
+      "id": "knowledge-and-outline/content-mix",
+      "domain": "knowledge-and-outline",
+      "meta": "D",
+      "intent": "content mix",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/knowledge-and-outline/catalog-sunburst-share.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 3,
+      "X": 4,
+      "W": 3.35,
+      "tier": "T2"
+    },
+    {
+      "id": "knowledge-and-outline/topic-flow",
+      "domain": "knowledge-and-outline",
+      "meta": "D",
+      "intent": "topic flow",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/knowledge-and-outline/themeriver-topic-attention.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 3,
+      "X": 4,
+      "W": 3.35,
+      "tier": "T2"
+    },
+    {
+      "id": "network-topology/route-flows",
+      "domain": "network-topology",
+      "meta": "C",
+      "intent": "route flows",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/network-topology/lines-route-flows.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 3,
+      "X": 4,
+      "W": 3.35,
+      "tier": "T2"
+    },
+    {
+      "id": "organization-and-roles/team-handoffs",
+      "domain": "organization-and-roles",
+      "meta": "C",
+      "intent": "team handoffs",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/organization-and-roles/chord-team-handoffs.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 3,
+      "X": 4,
+      "W": 3.35,
+      "tier": "T2"
+    },
+    {
+      "id": "organization-and-roles/workforce-profile",
+      "domain": "organization-and-roles",
+      "meta": "C",
+      "intent": "workforce profile",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/organization-and-roles/workforce-seniority-pyramid.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 3,
+      "X": 4,
+      "W": 3.35,
+      "tier": "T2"
+    },
+    {
+      "id": "planning-and-roadmap/release-schedule",
+      "domain": "planning-and-roadmap",
+      "meta": "D",
+      "intent": "release schedule",
+      "engines": [
+        "vega"
+      ],
+      "examples": [
+        {
+          "engine": "vega",
+          "file": "examples/planning-and-roadmap/release-window-schedule.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 3,
+      "X": 4,
+      "W": 3.35,
+      "tier": "T2"
+    },
+    {
+      "id": "theme-and-tone/vivid-launch-share",
+      "domain": "theme-and-tone",
+      "meta": "D",
+      "intent": "vivid launch share",
+      "engines": [
+        "echarts"
+      ],
+      "examples": [
+        {
+          "engine": "echarts",
+          "file": "examples/theme-and-tone/vivid-launch-share.md"
+        }
+      ],
+      "F": 2,
+      "R": 5,
+      "D": 3,
+      "C": 3,
+      "X": 4,
+      "W": 3.35,
+      "tier": "T2"
+    },
+    {
+      "id": "data-platform/entity-relationships",
+      "domain": "data-platform",
+      "meta": "C",
+      "intent": "entity relationships",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/data-platform/entity-relationships-crows-foot.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 5,
+      "W": 3.3,
+      "tier": "T2"
+    },
+    {
+      "id": "migration-and-rollout/migration-programme",
+      "domain": "migration-and-rollout",
+      "meta": "D",
+      "intent": "migration programme",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/migration-and-rollout/cloud-migration-programme.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 5,
+      "W": 3.3,
+      "tier": "T2"
+    },
+    {
+      "id": "migration-and-rollout/work-breakdown",
+      "domain": "migration-and-rollout",
+      "meta": "D",
+      "intent": "work breakdown",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/migration-and-rollout/work-breakdown-structure.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 5,
+      "W": 3.3,
+      "tier": "T2"
+    },
+    {
+      "id": "network-topology/packet-layout",
+      "domain": "network-topology",
+      "meta": "C",
+      "intent": "packet layout",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/network-topology/packet-layout-tcp-header.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 5,
+      "W": 3.3,
+      "tier": "T2"
+    },
+    {
+      "id": "catalogues-and-inventories/service-catalogue",
+      "domain": "catalogues-and-inventories",
+      "meta": "D",
+      "intent": "service catalogue",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/catalogues-and-inventories/service-offerings-grid.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "catalogues-and-inventories/support-tiers",
+      "domain": "catalogues-and-inventories",
+      "meta": "D",
+      "intent": "support tiers",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/catalogues-and-inventories/support-tier-entitlements.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "catalogues-and-inventories/tooling-inventory",
+      "domain": "catalogues-and-inventories",
+      "meta": "D",
+      "intent": "tooling inventory",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/catalogues-and-inventories/tooling-standard-inventory.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "cloud-architecture/aws-serverless",
+      "domain": "cloud-architecture",
+      "meta": "C",
+      "intent": "aws serverless",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/cloud-architecture/aws-serverless-architecture.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "cloud-architecture/iot-platform",
+      "domain": "cloud-architecture",
+      "meta": "C",
+      "intent": "iot platform",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/cloud-architecture/iot-platform.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "cloud-architecture/kubernetes-platform",
+      "domain": "cloud-architecture",
+      "meta": "C",
+      "intent": "kubernetes platform",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/cloud-architecture/kubernetes-platform.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "cloud-architecture/migration-options",
+      "domain": "cloud-architecture",
+      "meta": "C",
+      "intent": "migration options",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/cloud-architecture/cloud-migration-approaches.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "cloud-architecture/observability-stack",
+      "domain": "cloud-architecture",
+      "meta": "C",
+      "intent": "observability stack",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/cloud-architecture/operations-observability-aws.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "comparison-and-selection/architecture-options",
+      "domain": "comparison-and-selection",
+      "meta": "D",
+      "intent": "architecture options",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/comparison-and-selection/monolith-vs-modular.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "comparison-and-selection/build-or-buy",
+      "domain": "comparison-and-selection",
+      "meta": "D",
+      "intent": "build or buy",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/comparison-and-selection/buy-vs-build-comparison.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "comparison-and-selection/decision-record",
+      "domain": "comparison-and-selection",
+      "meta": "D",
+      "intent": "decision record",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/comparison-and-selection/decision-comparison-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "comparison-and-selection/operating-model",
+      "domain": "comparison-and-selection",
+      "meta": "D",
+      "intent": "operating model",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/comparison-and-selection/operating-model-option-map.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "comparison-and-selection/packaging-options",
+      "domain": "comparison-and-selection",
+      "meta": "D",
+      "intent": "packaging options",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/comparison-and-selection/packaging-choice-cards.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "comparison-and-selection/release-tradeoffs",
+      "domain": "comparison-and-selection",
+      "meta": "D",
+      "intent": "release tradeoffs",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/comparison-and-selection/release-plan-tradeoff-fold.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "comparison-and-selection/vendor-scorecard",
+      "domain": "comparison-and-selection",
+      "meta": "D",
+      "intent": "vendor scorecard",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/comparison-and-selection/vendor-selection-scorecard.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "customer-and-partner-comms/customer-story",
+      "domain": "customer-and-partner-comms",
+      "meta": "D",
+      "intent": "customer story",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/customer-and-partner-comms/customer-story-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "customer-and-partner-comms/education-module",
+      "domain": "customer-and-partner-comms",
+      "meta": "D",
+      "intent": "education module",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/customer-and-partner-comms/education-module-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "customer-and-partner-comms/news-bulletin",
+      "domain": "customer-and-partner-comms",
+      "meta": "D",
+      "intent": "news bulletin",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/customer-and-partner-comms/news-bulletin-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "customer-and-partner-comms/partner-brief",
+      "domain": "customer-and-partner-comms",
+      "meta": "D",
+      "intent": "partner brief",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/customer-and-partner-comms/partner-brief-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "customer-and-partner-comms/sales-brief",
+      "domain": "customer-and-partner-comms",
+      "meta": "D",
+      "intent": "sales brief",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/customer-and-partner-comms/sales-brief-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "data-platform/lakehouse-architecture",
+      "domain": "data-platform",
+      "meta": "C",
+      "intent": "lakehouse architecture",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/data-platform/data-platform-lakehouse.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "data-platform/ml-pipeline",
+      "domain": "data-platform",
+      "meta": "C",
+      "intent": "ml pipeline",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/data-platform/machine-learning-pipeline.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "enterprise-architecture/archimate-layered-model",
+      "domain": "enterprise-architecture",
+      "meta": "C",
+      "intent": "archimate layered model",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/enterprise-architecture/archimate-layered-model.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "enterprise-architecture/capability-map",
+      "domain": "enterprise-architecture",
+      "meta": "C",
+      "intent": "capability map",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/enterprise-architecture/capability-map.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "enterprise-architecture/stakeholder-map",
+      "domain": "enterprise-architecture",
+      "meta": "C",
+      "intent": "stakeholder map",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/enterprise-architecture/stakeholder-circle-wheel.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "internal-documents/committee-charter",
+      "domain": "internal-documents",
+      "meta": "D",
+      "intent": "committee charter",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/internal-documents/board-committee-charter.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "internal-documents/executive-brief",
+      "domain": "internal-documents",
+      "meta": "D",
+      "intent": "executive brief",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/internal-documents/executive-brief-summary.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "internal-documents/key-quote",
+      "domain": "internal-documents",
+      "meta": "D",
+      "intent": "key quote",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/internal-documents/key-quote-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "internal-documents/policy-memo",
+      "domain": "internal-documents",
+      "meta": "D",
+      "intent": "policy memo",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/internal-documents/policy-memo-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "internal-documents/principles-checklist",
+      "domain": "internal-documents",
+      "meta": "D",
+      "intent": "principles checklist",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/internal-documents/culture-principles-checklist.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "internal-documents/research-abstract",
+      "domain": "internal-documents",
+      "meta": "D",
+      "intent": "research abstract",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/internal-documents/research-abstract-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "knowledge-and-outline/concept-relations",
+      "domain": "knowledge-and-outline",
+      "meta": "D",
+      "intent": "concept relations",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/knowledge-and-outline/capability-relationship-map.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "knowledge-and-outline/knowledge-map",
+      "domain": "knowledge-and-outline",
+      "meta": "D",
+      "intent": "knowledge map",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/knowledge-and-outline/enterprise-knowledge-map.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "knowledge-and-outline/knowledge-tree",
+      "domain": "knowledge-and-outline",
+      "meta": "D",
+      "intent": "knowledge tree",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/knowledge-and-outline/department-capability-tree.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "knowledge-and-outline/topic-mindmap",
+      "domain": "knowledge-and-outline",
+      "meta": "D",
+      "intent": "topic mindmap",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/knowledge-and-outline/topic-mindmap.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "migration-and-rollout/cutover-window",
+      "domain": "migration-and-rollout",
+      "meta": "D",
+      "intent": "cutover window",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/migration-and-rollout/migration-cutover-window.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "migration-and-rollout/launch-effort",
+      "domain": "migration-and-rollout",
+      "meta": "D",
+      "intent": "launch effort",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/migration-and-rollout/launch-effort-curve.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "migration-and-rollout/migration-waves",
+      "domain": "migration-and-rollout",
+      "meta": "D",
+      "intent": "migration waves",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/migration-and-rollout/data-platform-migration-waves.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "migration-and-rollout/rollout-phases",
+      "domain": "migration-and-rollout",
+      "meta": "D",
+      "intent": "rollout phases",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/migration-and-rollout/device-rollout-phases.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "migration-and-rollout/service-lifecycle",
+      "domain": "migration-and-rollout",
+      "meta": "D",
+      "intent": "service lifecycle",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/migration-and-rollout/service-lifecycle-wheel.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "network-topology/enterprise-network",
+      "domain": "network-topology",
+      "meta": "C",
+      "intent": "enterprise network",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/network-topology/network-topology-enterprise.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "network-topology/radial-network",
+      "domain": "network-topology",
+      "meta": "C",
+      "intent": "radial network",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/network-topology/radial-hub-network.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "organization-and-roles/capability-coverage",
+      "domain": "organization-and-roles",
+      "meta": "C",
+      "intent": "capability coverage",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/organization-and-roles/team-capability-icon-grid.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "organization-and-roles/capability-maturity",
+      "domain": "organization-and-roles",
+      "meta": "C",
+      "intent": "capability maturity",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/organization-and-roles/capability-pyramid-framework.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "organization-and-roles/org-update",
+      "domain": "organization-and-roles",
+      "meta": "C",
+      "intent": "org update",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/organization-and-roles/org-update-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "people-and-hiring/career-ladder",
+      "domain": "people-and-hiring",
+      "meta": "C",
+      "intent": "career ladder",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/people-and-hiring/career-growth-ladder.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "people-and-hiring/hiring-loop",
+      "domain": "people-and-hiring",
+      "meta": "C",
+      "intent": "hiring loop",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/people-and-hiring/hiring-loop-checklist.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "people-and-hiring/hiring-plan",
+      "domain": "people-and-hiring",
+      "meta": "C",
+      "intent": "hiring plan",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/people-and-hiring/hiring-plan-roadmap.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "people-and-hiring/onboarding-programme",
+      "domain": "people-and-hiring",
+      "meta": "C",
+      "intent": "onboarding programme",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/people-and-hiring/onboarding-milestone-grid.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "people-and-hiring/onboarding-tasks",
+      "domain": "people-and-hiring",
+      "meta": "C",
+      "intent": "onboarding tasks",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/people-and-hiring/onboarding-task-progress.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "planning-and-roadmap/milestones",
+      "domain": "planning-and-roadmap",
+      "meta": "D",
+      "intent": "milestones",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/planning-and-roadmap/platform-milestone-timeline.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "planning-and-roadmap/planning-cycle",
+      "domain": "planning-and-roadmap",
+      "meta": "D",
+      "intent": "planning cycle",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/planning-and-roadmap/quarterly-planning-cycle.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "planning-and-roadmap/product-roadmap",
+      "domain": "planning-and-roadmap",
+      "meta": "D",
+      "intent": "product roadmap",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/planning-and-roadmap/product-roadmap-sequence.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "planning-and-roadmap/release-gantt",
+      "domain": "planning-and-roadmap",
+      "meta": "D",
+      "intent": "release gantt",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/planning-and-roadmap/release-gantt-plan.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "planning-and-roadmap/roadmap-board",
+      "domain": "planning-and-roadmap",
+      "meta": "D",
+      "intent": "roadmap board",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/planning-and-roadmap/delivery-roadmap-board.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "planning-and-roadmap/strategy-focus",
+      "domain": "planning-and-roadmap",
+      "meta": "D",
+      "intent": "strategy focus",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/planning-and-roadmap/strategy-focus-wheel.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "security-and-compliance/audit-trail",
+      "domain": "security-and-compliance",
+      "meta": "C",
+      "intent": "audit trail",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/security-and-compliance/audit-trail-checkpoints.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "security-and-compliance/compliance-audit",
+      "domain": "security-and-compliance",
+      "meta": "C",
+      "intent": "compliance audit",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/security-and-compliance/compliance-audit-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "security-and-compliance/compliance-evidence",
+      "domain": "security-and-compliance",
+      "meta": "C",
+      "intent": "compliance evidence",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/security-and-compliance/compliance-evidence-zigzag.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "security-and-compliance/hardening-sprint",
+      "domain": "security-and-compliance",
+      "meta": "C",
+      "intent": "hardening sprint",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/security-and-compliance/security-hardening-sprint.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "security-and-compliance/risk-register",
+      "domain": "security-and-compliance",
+      "meta": "C",
+      "intent": "risk register",
+      "engines": [
+        "html-css"
+      ],
+      "examples": [
+        {
+          "engine": "html-css",
+          "file": "examples/security-and-compliance/risk-register-card.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "security-and-compliance/security-baseline",
+      "domain": "security-and-compliance",
+      "meta": "C",
+      "intent": "security baseline",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/security-and-compliance/security-baseline-aws.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "security-and-compliance/threat-model",
+      "domain": "security-and-compliance",
+      "meta": "C",
+      "intent": "threat model",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/security-and-compliance/threat-model-trust-boundaries.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "security-and-compliance/zero-trust-access",
+      "domain": "security-and-compliance",
+      "meta": "C",
+      "intent": "zero trust access",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/security-and-compliance/zero-trust-access.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "theme-and-tone/accessible-service-mix",
+      "domain": "theme-and-tone",
+      "meta": "D",
+      "intent": "accessible service mix",
+      "engines": [
+        "infographic"
+      ],
+      "examples": [
+        {
+          "engine": "infographic",
+          "file": "examples/theme-and-tone/accessible-service-mix.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "theme-and-tone/editorial-policy-flow",
+      "domain": "theme-and-tone",
+      "meta": "D",
+      "intent": "editorial policy flow",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/theme-and-tone/editorial-policy-flow.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    },
+    {
+      "id": "theme-and-tone/print-handout-graph",
+      "domain": "theme-and-tone",
+      "meta": "D",
+      "intent": "print handout graph",
+      "engines": [
+        "plantuml"
+      ],
+      "examples": [
+        {
+          "engine": "plantuml",
+          "file": "examples/theme-and-tone/print-handout-graph.md"
+        }
+      ],
+      "F": 2,
+      "R": 3,
+      "D": 5,
+      "C": 3,
+      "X": 4,
+      "W": 3.15,
+      "tier": "T2"
+    }
+  ]
+}
