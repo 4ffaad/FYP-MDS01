@@ -209,7 +209,6 @@ synchronized.
   HTTPS termination, institution-managed identity, key rotation, and verified
   backup recovery are separate deployment work.
 
-For platforms, model algorithms, the API map, setup requirements, and known
-limits, see the [project design](project-design.md). Operational detail remains
-in the [setup](setup.md), [backend](backend.md), [frontend](frontend.md), and
+For local startup, see [setup](setup.md). For code locations and implementation
+details, see the [backend guide](backend.md), [frontend guide](frontend.md), and
 [video runbook](video-detection.md).

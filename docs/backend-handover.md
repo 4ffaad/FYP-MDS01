@@ -1,161 +1,107 @@
-# Backend handover: start here
+# Start here: where the data goes
 
-This page is the beginner's route through the backend. It explains how to start
-the demo, what happens to an upload, and where the security checks happen. The
-[backend file map](backend-file-map.md) gives a one-line explanation of every
-tracked file under `backend/`.
+If the other project documents feel like too much, read this page only. The key idea is:
 
-## Run the project from zero
+> **Encryption protects saved files. Models need readable data, so the backend decrypts EEG/video into restricted temporary work files while processing, then removes those files. For video playback, it checks the owner and decrypts only the requested chunks.**
 
-You need Docker Desktop, Node.js 22 or newer, internet access for the first
-build, and the reviewed EEG model files listed below.
+The EEG model, synchronized VEEG review, and standalone video model are three separate paths.
 
-1. Put the approved local H5 model and reviewed contract at
-   `backend/model/best_seizure_model.h5` and
-   `backend/model/model-contract.json`. These files are deliberately ignored by
-   Git. The backend checks their reviewed contract when it starts.
-2. From the repository root, run:
+## First: why is there a `.env.example`?
+
+You normally do **not** open or edit it. It is a safe template that lets the setup script create the real local settings file.
+
+1. `node scripts/demo.mjs` runs `scripts/setup.mjs` automatically.
+2. Setup copies `.env.example` to `.env` and `frontend/.env.example` to `frontend/.env.local`.
+3. Setup generates local passwords and encryption keys in `.env`. That real file is ignored by Git; the example contains no real key.
+4. On later runs setup keeps your existing secrets instead of replacing them.
+
+Keep `.env.example`: `scripts/setup.mjs` reads it, so deleting it would break a fresh setup unless we first replace that template mechanism. **You do not need to change it to run the demo.**
+
+## What happens to each upload?
+
+### EEG recording → H5 model
+
+1. The browser sends the EEG ZIP to FastAPI.
+2. FastAPI encrypts it with **AES-256-GCM** and saves the encrypted file outside PostgreSQL.
+3. The background EEG worker decrypts it into a private temporary folder so it can read the EEG. It validates the recording, removes identifying metadata, and prepares the model input.
+4. H5 receives ordinary numeric EEG samples (the reviewed 256 Hz, 18-channel input), **not ciphertext**.
+5. Model scores are saved in PostgreSQL. The original recording and the review waveform are saved as encrypted files. Temporary working files are cleaned up after processing.
+6. When the owner opens the waveform, FastAPI checks ownership, temporarily decrypts the retained signal, reads the requested time range, deletes the temporary copy, and returns the signal with private/no-store headers.
+
+**In short:** encrypt the upload for storage → temporarily decrypt for EEG processing → encrypt retained recording and waveform → decrypt after an owner check for review.
+
+### EEG + reference video → synchronized VEEG review
+
+1. FastAPI encrypts each uploaded video in authenticated AES-GCM chunks and stores it outside PostgreSQL.
+2. A background task checks file and clock metadata to find a reliable EEG/video match. It does **not** run OpenPose or VSViG.
+3. When the owner opens the video popup, FastAPI checks ownership and decrypts the requested video range for playback. A clip in an unsupported browser format is converted only when opened; the encrypted original is kept.
+4. The video follows validated clock mappings. A clip without a reliable match can still be viewed, but it is not presented as synchronized.
+
+### Video-only upload → experimental VSViG
+
+1. FastAPI encrypts and retains the original video outside PostgreSQL.
+2. The video worker temporarily decrypts it to extract pose tracks and 15 RGB patches, then runs VSViG. Grad-CAM is generated for supported model output.
+3. The result payload (including supported Grad-CAM data) is AES-GCM encrypted in PostgreSQL. Retained video artifacts are encrypted files. Temporary plaintext is cleaned up.
+
+This path is a separate research experiment. It is not part of synchronized EEG/video review and does not diagnose seizures.
+
+## Where encryption is—and is not
+
+| Data | Protection in this prototype |
+| --- | --- |
+| Retained EEG/video files | AES-256-GCM encrypted outside PostgreSQL |
+| Selected sensitive database fields and VSViG result payload | Application-level AES-GCM encryption |
+| EEG scores and routine database metadata | Stored as normal PostgreSQL values; the application does not encrypt the whole database |
+| Temporary processing files | Plaintext in restricted private work folders while needed, then removed; processing is not memory-only |
+| Playback and waveform responses | Owner check, then private/no-store response |
+| Network traffic in the local demo | HTTP on loopback; file encryption at rest does not provide HTTPS. Configure HTTPS before network use. |
+
+`MDS01_STORAGE_KEY` is generated into the ignored local `.env`. It is Base64 text that decodes to a 32-byte key. The backend uses it for AES-256-GCM. The local prototype has no KMS/HSM or automatic key rotation; do not expose it to a network as-is.
+
+## Run it
+
+1. Install Docker Desktop and Node.js 22 or newer.
+2. Add the reviewed H5 files: `backend/model/best_seizure_model.h5` and `backend/model/model-contract.json` (these are local assets, not committed to Git).
+3. From the repository root run:
 
    ```sh
    node scripts/demo.mjs
    ```
 
-   This is the normal demo command. It prepares local settings, starts
-   PostgreSQL and FastAPI in Docker, checks backend health, then starts Next.js.
-   On first run Docker also builds the image and initializes the pinned VSViG
-   model assets, so startup takes longer.
-3. Open [the app](http://127.0.0.1:3000), create or sign into a local account,
-   and use the review screens. FastAPI's API reference is at
-   [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
-4. Press Ctrl-C to stop the browser process, then run `docker compose down` to
-   stop backend services while keeping the database and encrypted files.
+Open [the app](http://127.0.0.1:3000). The first run builds containers and initializes pinned video-model assets, so it takes longer. Stop with `docker compose down`. Avoid `docker compose down -v` unless you intend to delete the local database, encrypted files, and model volume.
 
-Do not use `docker compose down -v` unless you intend to erase the local
-database, retained recordings, and model-asset volume. The explicit
-`node scripts/demo.mjs --development-stub` option is only for a synthetic UI
-walkthrough; its EEG scores are not H5 inference.
+## If you need to change code
 
-### What `.env.example` is for
-
-You do not need to fill in every line. `.env.example` is the template consumed
-by `scripts/setup.mjs`; the normal demo command calls that setup automatically.
-It creates ignored local files (`.env` and `frontend/.env.local`) and generates
-local database and encryption secrets once. Keep those files private and never
-commit them. Do not rotate a storage key while recordings encrypted with that
-key still exist.
-
-The settings worth recognizing are:
-
-- `MDS01_STORAGE_KEY`: runtime key used by the backend's AES-GCM storage and
-  protected database fields. Setup creates a 32-byte key encoded as Base64.
-- `MDS01_TEMPLATE_KEY`: separate key for the optional research signal
-  obfuscation path. It is not the normal new-recording display or H5 workflow.
-- `POSTGRES_PASSWORD`: local PostgreSQL login secret, also generated by setup.
-- `MODEL_RUNTIME`: selects H5 or the explicit development stub. The default
-  demo uses the reviewed H5 profile and fails if its local model assets are
-  missing or invalid.
-- `VSVIG_CONTRACT_SHA256`: integrity pin for the separately installed VSViG
-  asset contract; it is not an encryption key.
-
-Other settings configure limits and optional features. Leave them at their
-generated defaults unless you know why a workflow needs a change. Run
-`node scripts/setup.mjs` directly only when you want to create local settings
-without starting the app.
-
-## How a request moves through FastAPI
-
-The [backend security sequence diagrams](architecture.md) show login, EEG
-processing, standalone video, and owner-authorized review. They mark where
-encryption and decryption happen and link to the responsible source files.
-
-Routes in `backend/app/api/` receive HTTP requests and return safe responses.
-They use security dependencies, then hand work to services in
-`backend/app/services/`. Services coordinate model and storage work; database
-queries live in `backend/app/database/`. `backend/app/main.py` connects the
-routers, starts cleanup and recovery tasks, and checks the selected model
-runtime. The detailed inventory is in the [file map](backend-file-map.md).
-
-### EEG upload and H5 findings
-
-1. The browser streams an EEG ZIP to `POST /api/uploads/drafts`. The backend
-   encrypts it into a short-lived draft before saving it. Finalization creates
-   a session and schedules `processing_service.process_session` in FastAPI's
-   background task system.
-2. The processing service decrypts the archive into a private work directory,
-   validates it, reads supported EDF/Nicolet recordings, and creates a
-   de-identified model input. The reviewed H5 contract is 256 Hz, 18 bipolar
-   channels, four-second windows, and a two-second stride.
-3. `model_loader` selects the configured H5 adapter. The adapter checks the
-   model artifact and contract before returning timestamped window scores.
-   These scores are research findings, not a diagnosis.
-4. For cases using the current `until-deletion` policy, the original archive
-   and full source recordings remain encrypted outside PostgreSQL. The waveform
-   API decrypts only after owner authorization and returns a bounded time range.
-   Private work files are removed after processing.
-
-### Combined EEG and video review (VEEG)
-
-Combined video uploads are marked as reference clips. The backend encrypts the
-original video and acknowledges the upload without OpenPose, VSViG, or video
-conversion. A background metadata worker checks the clock/format and refreshes
-the encrypted synchronization mapping. It links a clip only when the metadata
-produces a unique match.
-
-When the owner opens the synchronized-video popup, compatible clips stream from
-the encrypted original. Unsupported formats are converted to an encrypted
-browser-playable copy only after that request. Each playback range is
-owner-checked. This path never runs the video model. EEG source time remains the
-shared playback clock; ambiguous clips are not presented as synchronized.
-
-### Standalone video analysis
-
-The separate video workspace creates a non-reference video job. The original
-is encrypted before the pose and VSViG pipeline reads it in a private work
-directory. Pose readiness gates inference; multiple people are tracked
-separately, and a track without the required model keypoints does not receive a
-score. VSViG scores and Grad-CAM evidence are stored as authenticated ciphertext
-in PostgreSQL. They are experimental model output, not a clinical diagnosis.
-
-## Where the security is applied
-
-| Boundary | What the code does |
+| What you are changing | Start in |
 | --- | --- |
-| Sign-in | Local passwords are stored as scrypt hashes. Only session-token hashes are persisted in PostgreSQL; the raw token goes in an HttpOnly cookie. Cloudflare Access assertion validation is also implemented for a protected deployment. |
-| Request access | Protected routers require authentication. Data lookups include the owner account, so another account cannot read a recording by guessing its ID. State-changing browser requests also check the configured origin. |
-| Upload size | ASGI middleware rejects oversized request bodies early; the upload and parser layers apply additional byte, archive, format, and model-input limits. |
-| Files | EEG archives, source reports, and video files are encrypted with AES-256-GCM before retained private-file writes. The encrypted bytes live in filesystem-backed storage, outside PostgreSQL. New video files use independently authenticated chunks so a range request need not decrypt the entire clip. |
-| Database fields | Patient profiles, clinical observations, synchronization anchors, and new VSViG result payloads have application-level authenticated encryption. Ordinary job/session metadata and EEG window scores are database fields; PostgreSQL is not encrypted wholesale by this application. |
-| Processing | Services briefly decrypt files into private work directories when parsers or models need plaintext. Cleanup removes these work files after use. This is temporary filesystem plaintext, not a claim that processing happens only in memory. |
-| Playback and downloads | Every protected read checks the owner again. Media supports byte ranges, responses use `private, no-store`, and encrypted chunks are authenticated before release. Private paths are not returned by API serializers. |
-| Deletion and audit | Case deletion removes linked rows and encrypted files. A minimal access-event table records selected review actions without patient labels or request bodies. |
+| EEG upload, processing, H5 | `backend/app/api/`, `backend/app/services/processing_service.py`, `backend/app/eeg/`, `backend/app/ml/` |
+| File encryption and storage | `backend/app/services/storage_service.py`, `backend/app/services/video_storage_service.py`, `backend/app/privacy/` |
+| VEEG matching and playback | `backend/app/services/video_sync_service.py`, `backend/app/services/video_detection_service.py` |
+| VSViG, pose, Grad-CAM | `backend/app/video_detection/` |
+| Screens and browser behavior | `frontend/src/` |
 
-The 32-byte `MDS01_STORAGE_KEY` is supplied through the local runtime
-environment, not stored in PostgreSQL or source control. The local prototype
-does not configure an HSM/KMS, automatic key rotation, or a verified key-and-
-ciphertext backup recovery service. The Compose demo binds to loopback and uses
-local development HTTP; it is not configured for network exposure or
-institutional deployment. Cloudflare authentication support does not add
-clinician roles or case sharing.
+<details>
+<summary>Optional: open the pipeline picture and editable source</summary>
 
-## Which scripts are actually needed?
+![EEG, VEEG and standalone video flows with encryption points](assets/handover-security-flow.png)
 
-- **Normal demo:** `scripts/demo.mjs` is the one-command launcher.
-- **Called by the demo:** `scripts/setup.mjs` prepares ignored settings and
-  creates secrets. You normally do not need to call it separately.
-- **Frontend-only development:** `scripts/dev.mjs` starts Next.js while you
-  start Docker Compose yourself.
-- **Alternative local backend:** `scripts/start-native.mjs` runs FastAPI with
-  SQLite. This is optional; the documented demo uses PostgreSQL in Docker.
-- **Required by the Compose image setup:** `backend/scripts/install_vsvig_assets.py`
-  installs the pinned video assets, while the `verify_*_runtime.py` scripts
-  fail fast when model dependencies are incompatible.
-- **Optional research tools:** scripts for dataset evaluation, calibration,
-  inventory, and SHAP background preparation do not start the web app. They
-  remain useful for reproducibility and are not safe to delete just because
-  they are not needed by the launcher.
+<details>
+<summary>Editable diagram source</summary>
 
-Migrations under `backend/migrations/versions/` are also required operational
-history: Compose applies them before Uvicorn starts. Backend tests are not
-needed to launch the web app, but they are kept to protect privacy, storage,
-model-contract, and synchronization behavior. See the [file map](backend-file-map.md)
-for each file's role.
+<div class="mds-handover-flow">
+<style>
+.mds-handover-flow{max-width:1120px;box-sizing:border-box;margin:18px auto;color:#1e1e1e}.mds-handover-flow *{box-sizing:border-box}.mds-hf-shared{padding:16px 18px;margin-bottom:14px;border:1px solid #4a4a4a;border-left:5px solid #0043ce;border-radius:8px;background:#fbfbfb}.mds-hf-shared strong{display:block;margin-bottom:4px;font-size:16px}.mds-hf-shared span{font-size:14px;line-height:1.5;color:#3f3f3f}.mds-hf-lanes{display:grid;gap:12px}.mds-hf-lane{padding:14px;border:1px solid #787878;border-radius:9px;background:#ffffff}.mds-hf-head{display:flex;align-items:center;gap:9px;margin-bottom:11px}.mds-hf-head b{font-size:15px}.mds-hf-head small{margin-left:auto;color:#565656;font-size:12px}.mds-hf-mark{width:10px;height:10px;flex:0 0 10px;border-radius:50%;background:#0043ce}.mds-hf-lane.veeg .mds-hf-mark{background:#0e6027}.mds-hf-lane.vsvig .mds-hf-mark{background:#6929c4}.mds-hf-steps{display:grid;grid-template-columns:minmax(0,1fr) 18px minmax(0,1fr) 18px minmax(0,1fr) 18px minmax(0,1fr);gap:7px;align-items:stretch}.mds-hf-step{min-height:94px;padding:11px;border:1px solid #787878;border-radius:6px;background:#fbfbfb;font-size:13px;line-height:1.4}.mds-hf-step b{display:block;margin-bottom:5px;font-size:13px}.mds-hf-step.secure{border:2px solid #0e6027;background:#edf5ef}.mds-hf-arrow{display:flex;align-items:center;justify-content:center;color:#565656;font-size:18px}.mds-hf-key{margin-top:12px;padding:10px 12px;border-top:1px solid #787878;color:#3f3f3f;font-size:12px;line-height:1.5}.mds-hf-key b{color:#0e6027}.mds-handover-flow p{margin:0}@media(max-width:760px){.mds-hf-steps{grid-template-columns:1fr;gap:6px}.mds-hf-arrow{height:16px;transform:rotate(90deg)}.mds-hf-head{flex-wrap:wrap}.mds-hf-head small{width:100%;margin-left:19px}}
+</style>
+<div class="mds-hf-shared"><strong>Every private-data request starts with the same gate</strong><span>Next.js sends the session cookie → FastAPI authenticates the account and checks that it owns the requested case before private data is read.</span></div>
+<div class="mds-hf-lanes">
+<section class="mds-hf-lane eeg"><div class="mds-hf-head"><i class="mds-hf-mark"></i><b>EEG review · H5 model</b><small>signal analysis</small></div><div class="mds-hf-steps"><div class="mds-hf-step"><b>1 · Upload EEG</b>Browser sends the recording archive to FastAPI.</div><div class="mds-hf-arrow">→</div><div class="mds-hf-step secure"><b>2 · Encrypt for storage</b>AES-256-GCM protects the archive and retained source files outside PostgreSQL.</div><div class="mds-hf-arrow">→</div><div class="mds-hf-step"><b>3 · Process privately</b>Backend temporarily decrypts, validates and preprocesses; H5 receives the normal numeric tensor.</div><div class="mds-hf-arrow">→</div><div class="mds-hf-step"><b>4 · Save and review</b>EEG scores go to PostgreSQL; source signals stay encrypted. Owner checks protect waveform reads.</div></div></section>
+<section class="mds-hf-lane veeg"><div class="mds-hf-head"><i class="mds-hf-mark"></i><b>VEEG review · synchronized video</b><small>no video-model inference</small></div><div class="mds-hf-steps"><div class="mds-hf-step"><b>1 · Upload with EEG</b>Reference clips are attached to the patient case.</div><div class="mds-hf-arrow">→</div><div class="mds-hf-step secure"><b>2 · Encrypt original</b>Video is stored in authenticated AES-GCM chunks outside PostgreSQL.</div><div class="mds-hf-arrow">→</div><div class="mds-hf-step"><b>3 · Match clocks</b>Background work checks metadata and synchronization; it does not run OpenPose or VSViG.</div><div class="mds-hf-arrow">→</div><div class="mds-hf-step secure"><b>4 · Open the popup</b>After an owner check, the backend decrypts requested byte ranges for browser playback.</div></div></section>
+<section class="mds-hf-lane vsvig"><div class="mds-hf-head"><i class="mds-hf-mark"></i><b>Video analysis · standalone VSViG</b><small>separate experiment</small></div><div class="mds-hf-steps"><div class="mds-hf-step"><b>1 · Upload video</b>A video-only job is created for model analysis.</div><div class="mds-hf-arrow">→</div><div class="mds-hf-step secure"><b>2 · Protect original</b>Encrypted file storage retains the source; processing uses temporary private plaintext.</div><div class="mds-hf-arrow">→</div><div class="mds-hf-step"><b>3 · Run models</b>Pose tracks and 15 RGB patches feed VSViG; Grad-CAM is calculated for the strongest valid window.</div><div class="mds-hf-arrow">→</div><div class="mds-hf-step secure"><b>4 · Protect results</b>Scores and Grad-CAM are AES-GCM encrypted in PostgreSQL; video files remain encrypted outside it.</div></div></section>
+</div>
+<div class="mds-hf-key"><b>Security in one line:</b> AES-256-GCM with the runtime <code>MDS01_STORAGE_KEY</code> protects retained files; selected sensitive database fields and VSViG results are encrypted; temporary processing files are removed after use. PostgreSQL is <b>not</b> encrypted wholesale by the application.</div>
+</div>
+</details>
+
+</details>
+
+More detailed setup and troubleshooting are in [setup](setup.md). Other reference pages are indexed in [docs](README.md). The H5 and VSViG outputs are research results, not diagnoses; the local prototype is not configured for institutional network deployment.

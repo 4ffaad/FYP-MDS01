@@ -3,8 +3,8 @@
 **Last reviewed: 2026-10-28**
 
 Start with the [backend handover](../docs/backend-handover.md) for setup and
-request flows. The [technical design](../docs/project-design.md) records the
-model contracts, APIs, and storage boundaries.
+request flows. The [architecture guide](../docs/architecture.md) shows the
+security boundaries and model paths.
 
 ## Current state
 

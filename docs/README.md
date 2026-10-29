@@ -1,24 +1,18 @@
-# Project documentation
+# Documentation
 
-Start with the [backend handover](backend-handover.md) to run the app and
-understand the request and security flows. Use [Project design](project-design.md)
-for the detailed technical design.
+## Start here
 
-| Need to…                                                                            | Read                                                                               |
-| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Explain platforms, architecture, algorithms, models, APIs, and runtime requirements | [Project design](project-design.md)                                                |
-| Understand goals and scope                                                          | [Project goal](project-goal.md)                                                    |
-| Run and test the local app                                                          | [Setup](setup.md)                                                                  |
-| Inspect the component and VEEG flow                                                 | [Architecture](architecture.md)                                                    |
-| Follow login, encryption, model processing, and authorized review                   | [Security sequence diagrams](architecture.md)                                      |
-| Trace EEG parsing, processing, and storage                                          | [Backend guide](backend.md)                                                        |
-| Start from zero and follow backend security and request flows                       | [Backend handover](backend-handover.md) · [backend file map](backend-file-map.md)  |
-| Understand browser screens and behavior                                             | [Frontend guide](frontend.md), then [frontend instructions](../frontend/AGENTS.md) |
-| Understand EEG findings and waveform display                                        | [Inference walkthrough](inference-walkthrough.md)                                  |
-| Run or troubleshoot standalone VSViG                                                | [Video runbook](video-detection.md)                                                |
-| Change visual styling                                                               | [Design rules](../DESIGN.md)                                                       |
-| See remaining work                                                                  | [Current plan](../tasks/plan.md)                                                   |
+Read the [MDS01 handover](backend-handover.md) to start the demo, understand where EEG and video data go, and see where security is applied. You do not need to read every page.
 
-The implementation and tests are the source of truth for runtime behavior.
-Model artifacts and contracts are local assets. All scores are research
-outputs; they are not a diagnosis or proof of clinical accuracy.
+## Find details by task
+
+| If you need to… | Open… |
+| --- | --- |
+| Set up, run or troubleshoot the app | [Setup](setup.md) |
+| Understand authentication, encryption and data paths | [Architecture and security](architecture.md) |
+| Change EEG processing or inspect the waveform | [Backend guide](backend.md) · [EEG/VEEG walkthrough](inference-walkthrough.md) |
+| Change a screen or browser workflow | [Frontend guide](frontend.md) |
+| Run or debug standalone VSViG | [Video runbook](video-detection.md) |
+| Locate a backend module | [Backend file map](backend-file-map.md) |
+
+Implementation and tests are the source of truth. H5 and VSViG outputs are research results, not diagnoses.
